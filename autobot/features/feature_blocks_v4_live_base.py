@@ -7,6 +7,7 @@ from typing import Iterable
 
 import polars as pl
 
+from autobot.common.data_quality_budget import quality_weight_expr_from_synth_ratio
 from autobot.data import expected_interval_ms
 
 from .micro_join import prefixed_micro_columns
@@ -194,11 +195,10 @@ def attach_sample_weight_v4_live_base(
     )
     quality_weight: pl.Expr = pl.lit(1.0, dtype=pl.Float64)
     if "one_m_synth_ratio" in frame.columns:
-        quality_weight = (
-            (pl.lit(1.0, dtype=pl.Float64) - pl.col("one_m_synth_ratio").cast(pl.Float64))
-            .clip(floor, 1.0)
-            .pow(power)
-            .fill_null(1.0)
+        quality_weight = quality_weight_expr_from_synth_ratio(
+            synth_ratio_expr=pl.col("one_m_synth_ratio"),
+            floor=floor,
+            power=power,
         )
     return frame.with_columns((age_weight * quality_weight).cast(pl.Float64).alias("sample_weight"))
 

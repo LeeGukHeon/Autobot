@@ -399,6 +399,74 @@ def test_build_sequence_tensor_store_skips_past_date_market_load_when_ready_tail
     assert summary.selected_markets == 1
 
 
+def test_build_sequence_tensor_store_writes_explicit_source_lineage(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    market = "KRW-BTC"
+    date_value = "2026-03-27"
+    anchor_ts_ms = 1_774_569_660_000
+
+    second_meta = parquet_root / "candles_second_v1" / "_meta"
+    second_meta.mkdir(parents=True, exist_ok=True)
+    (second_meta / "build_report.json").write_text(json.dumps({"run_id": "second-run-1"}, ensure_ascii=False), encoding="utf-8")
+    ws_meta = parquet_root / "ws_candle_v1" / "_meta"
+    ws_meta.mkdir(parents=True, exist_ok=True)
+    (ws_meta / "build_report.json").write_text(json.dumps({"run_id": "ws-run-1"}, ensure_ascii=False), encoding="utf-8")
+    micro_meta = parquet_root / "micro_v1" / "_meta"
+    micro_meta.mkdir(parents=True, exist_ok=True)
+    (micro_meta / "aggregate_report.json").write_text(json.dumps({"run_id": "micro-run-1"}, ensure_ascii=False), encoding="utf-8")
+    (micro_meta / "validate_report.json").write_text(json.dumps({"run_id": "micro-validate-1"}, ensure_ascii=False), encoding="utf-8")
+    lob_meta = parquet_root / "lob30_v1" / "_meta"
+    lob_meta.mkdir(parents=True, exist_ok=True)
+    (lob_meta / "build_report.json").write_text(json.dumps({"run_id": "lob-run-1"}, ensure_ascii=False), encoding="utf-8")
+
+    _write_second_candles(
+        parquet_root / "candles_second_v1" / "tf=1s" / f"market={market}" / "part-000.parquet",
+        start_ts_ms=anchor_ts_ms - 3_000,
+        count=4,
+    )
+    _write_minute_candles(
+        parquet_root / "ws_candle_v1" / "tf=1m" / f"market={market}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_micro_rows(
+        parquet_root / "micro_v1" / "tf=1m" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_lob_rows(
+        parquet_root / "lob30_v1" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms - 2_000, anchor_ts_ms - 1_000, anchor_ts_ms],
+    )
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=(market,),
+        date=date_value,
+        max_anchors_per_market=1,
+        second_lookback_steps=4,
+        minute_lookback_steps=1,
+        micro_lookback_steps=1,
+        lob_lookback_steps=3,
+    )
+
+    build_sequence_tensor_store(options)
+    build_report = json.loads((parquet_root / "sequence_v1" / "_meta" / "build_report.json").read_text(encoding="utf-8"))
+
+    assert build_report["source_contract_ids"] == [
+        "parquet_dataset:candles_second_v1",
+        "parquet_dataset:ws_candle_v1",
+        "micro_dataset:micro_v1",
+        "parquet_dataset:lob30_v1",
+    ]
+    assert build_report["source_run_ids"] == [
+        "second-run-1",
+        "ws-run-1",
+        "micro-run-1",
+        "micro-validate-1",
+        "lob-run-1",
+    ]
+
+
 def test_filter_markets_for_label_source_coverage_skips_stale_markets(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     current_date = "2026-03-20"

@@ -42,6 +42,7 @@ from .breakers import (
 )
 from .model_handoff import (
     build_live_runtime_sync_status,
+    load_feature_platform_runtime_contract,
     load_ws_public_runtime_contract,
     resolve_live_runtime_model_contract,
 )
@@ -196,11 +197,16 @@ def _runtime_model_binding_after_resume(
         micro_aggregate_report_path=Path(str(settings.micro_aggregate_report_path)),
         ts_ms=ts_ms,
     )
+    feature_platform_contract = load_feature_platform_runtime_contract(
+        project_root=Path(str(settings.registry_root)).resolve().parent.parent,
+        feature_set="v4",
+    )
     store.set_ws_public_contract(payload=ws_public_contract, ts_ms=ts_ms)
     runtime_status = build_live_runtime_sync_status(
         pinned_contract=pinned_contract,
         current_contract=current_contract,
         ws_public_contract=ws_public_contract,
+        feature_platform_contract=feature_platform_contract,
     )
     _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
     _clear_stale_online_run_breaker(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
@@ -209,6 +215,15 @@ def _runtime_model_binding_after_resume(
             store,
             reason_codes=["WS_PUBLIC_STALE"],
             source="ws_public",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details=runtime_status,
+        )
+    if not bool(runtime_status.get("feature_platform_ready", False)):
+        arm_breaker(
+            store,
+            reason_codes=["FEATURE_PLATFORM_CONTRACT_INVALID"],
+            source="feature_platform",
             ts_ms=ts_ms,
             action=ACTION_HALT_NEW_INTENTS,
             details=runtime_status,
@@ -268,12 +283,17 @@ def _refresh_runtime_contract_health(
         micro_aggregate_report_path=Path(str(settings.micro_aggregate_report_path)),
         ts_ms=ts_ms,
     )
+    feature_platform_contract = load_feature_platform_runtime_contract(
+        project_root=Path(str(settings.registry_root)).resolve().parent.parent,
+        feature_set="v4",
+    )
     store.set_ws_public_contract(payload=ws_public_contract, ts_ms=ts_ms)
     pinned_contract = store.runtime_contract() or current_contract
     runtime_status = build_live_runtime_sync_status(
         pinned_contract=pinned_contract,
         current_contract=current_contract,
         ws_public_contract=ws_public_contract,
+        feature_platform_contract=feature_platform_contract,
     )
     _clear_runtime_recovery_reasons(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
     _clear_stale_online_run_breaker(store=store, runtime_status=runtime_status, ts_ms=ts_ms)
@@ -294,6 +314,15 @@ def _refresh_runtime_contract_health(
             store,
             reason_codes=["WS_PUBLIC_STALE"],
             source="ws_public",
+            ts_ms=ts_ms,
+            action=ACTION_HALT_NEW_INTENTS,
+            details=runtime_status,
+        )
+    if not bool(runtime_status.get("feature_platform_ready", False)):
+        arm_breaker(
+            store,
+            reason_codes=["FEATURE_PLATFORM_CONTRACT_INVALID"],
+            source="feature_platform",
             ts_ms=ts_ms,
             action=ACTION_HALT_NEW_INTENTS,
             details=runtime_status,
@@ -330,6 +359,14 @@ def _clear_runtime_recovery_reasons(
                 clear_policies=(CLEAR_POLICY_AUTO_HEALTH_RECOVERY,),
             )
         )
+    if bool(runtime_status.get("feature_platform_ready", False)):
+        reasons_to_clear.extend(
+            select_reason_codes(
+                active_reason_codes,
+                breaker_types=(BREAKER_TYPE_STATE_INTEGRITY,),
+                clear_policies=(CLEAR_POLICY_RUNTIME_CONTRACT_RECOVERY,),
+            )
+        )
     clear_breaker_reasons(
         store,
         reason_codes=reasons_to_clear,
@@ -338,6 +375,7 @@ def _clear_runtime_recovery_reasons(
         details={
             "ws_public_stale": bool(runtime_status.get("ws_public_stale")),
             "model_pointer_divergence": bool(runtime_status.get("model_pointer_divergence")),
+            "feature_platform_ready": bool(runtime_status.get("feature_platform_ready", False)),
         },
     )
 

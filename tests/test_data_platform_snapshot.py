@@ -28,6 +28,15 @@ def _write_dataset(root: Path, dataset_name: str) -> None:
     (dataset_root / "build_report.json").write_text(json.dumps({"dataset_name": dataset_name}), encoding="utf-8")
     (dataset_root / "validate_report.json").write_text(json.dumps({"dataset_name": dataset_name}), encoding="utf-8")
     pl.DataFrame({"market": ["KRW-BTC"], "anchor_ts_ms": [1]}).write_parquet(dataset_root / "manifest.parquet")
+    if dataset_name == "features_v4":
+        (dataset_root / "feature_dataset_certification.json").write_text(
+            json.dumps({"status": "PASS", "pass": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (dataset_root / "raw_to_feature_lineage_report.json").write_text(
+            json.dumps({"policy": "raw_to_feature_lineage_report_v1"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 def test_publish_ready_snapshot_writes_pointer_and_resolves_dataset_roots(tmp_path: Path) -> None:

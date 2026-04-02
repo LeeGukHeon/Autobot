@@ -1,13 +1,13 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
-    [string]$PaperUnitName = "autobot-paper-v4.service",
+    [string]$PaperUnitName = "autobot-paper-v5.service",
     [int]$PaperDurationSec = 0,
     [ValidateSet("live_v3", "live_v4", "live_v4_native", "candidate_v4", "offline_v4", "paired_v4", "live_v5", "candidate_v5", "offline_v5", "paired_v5")]
     [string]$PaperPreset = "live_v5",
     [string[]]$PaperCliArgs = @(),
     [string]$PaperRuntimeRole = "",
-    [string]$PaperLaneName = "v4",
+    [string]$PaperLaneName = "v5",
     [string]$PaperModelRefPinned = "",
     [string]$PaperModelFamilyOverride = "",
     [string]$PaperChampionModelFamilyOverride = "",
@@ -199,7 +199,10 @@ $effectivePairedChallengerModelFamily = if ([string]::IsNullOrWhiteSpace($PaperC
 }
 $defaultsToChampionSource = (
     -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
-    -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
+    -and (
+        $runtimeSpec.RuntimeModelRef -eq "champion" `
+        -or $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
+    )
 )
 $defaultsToLatestCandidateSource = (
     -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
@@ -233,7 +236,10 @@ if ($requiresChampionSource) {
 }
 $requiresChampionPointer = (
     -not [string]::IsNullOrWhiteSpace($runtimeSpec.RuntimeModelRef) `
-    -and $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
+    -and (
+        $runtimeSpec.RuntimeModelRef -eq "champion" `
+        -or $runtimeSpec.RuntimeModelRef.StartsWith("champion_")
+    )
 )
 $championPointerMissing = (
     $requiresChampionPointer `

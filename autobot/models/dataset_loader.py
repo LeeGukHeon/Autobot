@@ -11,6 +11,7 @@ from typing import Any, Iterator
 import numpy as np
 import polars as pl
 
+from autobot.common.data_quality_budget import resolve_market_quality_weight_map
 from autobot.features.feature_spec import parse_date_to_ts_ms, sha256_file, sha256_json
 
 
@@ -110,8 +111,11 @@ def feature_columns_from_spec(dataset_root: Path) -> tuple[str, ...]:
 
 
 def select_markets(request: DatasetRequest) -> list[str]:
+    certification = _load_feature_dataset_certification(request.dataset_root)
+    market_budget_map = resolve_market_quality_weight_map(certification)
     if request.markets:
-        return list(request.markets)
+        explicit = list(request.markets)
+        return _rank_markets_by_quality_budget(explicit, market_budget_map)
 
     manifest_path = request.dataset_root / "_meta" / "manifest.parquet"
     quote_prefix = f"{request.quote}-" if request.quote else ""
@@ -123,10 +127,11 @@ def select_markets(request: DatasetRequest) -> list[str]:
             filtered = manifest.filter(pl.col("tf") == tf_value)
             if quote_prefix:
                 filtered = filtered.filter(pl.col("market").str.starts_with(quote_prefix))
-            if request.top_n is not None and request.top_n > 0:
-                filtered = filtered.head(request.top_n)
             markets = [str(row["market"]).strip().upper() for row in filtered.iter_rows(named=True)]
             markets = [market for market in markets if market]
+            markets = _rank_markets_by_quality_budget(markets, market_budget_map)
+            if request.top_n is not None and request.top_n > 0:
+                markets = markets[: request.top_n]
             if markets:
                 return markets
 
@@ -144,6 +149,7 @@ def select_markets(request: DatasetRequest) -> list[str]:
             continue
         markets.append(market)
     markets.sort()
+    markets = _rank_markets_by_quality_budget(markets, market_budget_map)
     if request.top_n is not None and request.top_n > 0:
         markets = markets[: request.top_n]
     return markets
@@ -161,6 +167,8 @@ def iter_feature_batches(
     y_cls_name = str(y_cls_column).strip() or "y_cls"
     y_reg_name = str(y_reg_column).strip() or "y_reg"
     y_rank_name = str(y_rank_column).strip() or "y_rank"
+    certification = _load_feature_dataset_certification(request.dataset_root)
+    market_budget_map = resolve_market_quality_weight_map(certification)
     selected_markets = select_markets(request)
     for market in selected_markets:
         frame = _scan_market_frame(
@@ -185,6 +193,12 @@ def iter_feature_batches(
             y_reg = chunk.get_column("y_reg").to_numpy().astype(np.float32, copy=False)
             y_rank = chunk.get_column("y_rank").to_numpy().astype(np.float32, copy=False)
             sample_weight = chunk.get_column("sample_weight").to_numpy().astype(np.float32, copy=False)
+            sample_weight_multiplier = _market_training_weight_multiplier(
+                market=market,
+                market_budget_map=market_budget_map,
+            )
+            if abs(float(sample_weight_multiplier) - 1.0) > 1e-9:
+                sample_weight = (sample_weight * float(sample_weight_multiplier)).astype(np.float32, copy=False)
             ts_ms = chunk.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
             yield FeatureBatch(
                 market=market,
@@ -695,6 +709,39 @@ def _load_json(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _load_feature_dataset_certification(dataset_root: Path) -> dict[str, Any]:
+    return _load_json(dataset_root / "_meta" / "feature_dataset_certification.json")
+
+
+def _market_training_weight_multiplier(
+    *,
+    market: str,
+    market_budget_map: dict[str, dict[str, Any]],
+) -> float:
+    payload = dict(market_budget_map.get(str(market).strip().upper()) or {})
+    try:
+        value = float(payload.get("training_weight_multiplier") or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(value, 0.0)
+
+
+def _rank_markets_by_quality_budget(
+    markets: list[str],
+    market_budget_map: dict[str, dict[str, Any]],
+) -> list[str]:
+    def _key(value: str) -> tuple[float, float, float, str]:
+        payload = dict(market_budget_map.get(str(value).strip().upper()) or {})
+        selected_for_universe = 1.0 if bool(payload.get("selected_for_universe", False)) else 0.0
+        universe_score = float(payload.get("universe_quality_score") or 0.0)
+        training_weight = float(payload.get("training_weight_multiplier") or 0.0)
+        return (-selected_for_universe, -universe_score, -training_weight, str(value).strip().upper())
+
+    ordered = [str(item).strip().upper() for item in markets if str(item).strip()]
+    ordered.sort(key=_key)
+    return ordered
 
 
 def _collect_lazy(lazy_frame: pl.LazyFrame) -> pl.DataFrame:

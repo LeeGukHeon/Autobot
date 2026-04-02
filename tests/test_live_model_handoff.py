@@ -222,6 +222,39 @@ def _seed_runtime_contract(
             "rows_written_total": 123,
         },
     )
+    features_meta_dir = tmp_path / "data" / "features" / "features_v4" / "_meta"
+    _write_json(
+        features_meta_dir / "build_report.json",
+        {
+            "run_id": "feature-build-1",
+            "status": "PASS",
+            "effective_start": "2026-03-08",
+            "effective_end": "2026-03-09",
+        },
+    )
+    _write_json(
+        features_meta_dir / "validate_report.json",
+        {
+            "run_id": "feature-validate-1",
+            "status": "PASS",
+            "fail_files": 0,
+        },
+    )
+    _write_json(
+        features_meta_dir / "live_feature_parity_report.json",
+        {
+            "status": "PASS",
+            "acceptable": True,
+            "sampled_pairs": 4,
+        },
+    )
+    _write_json(
+        features_meta_dir / "feature_dataset_certification.json",
+        {
+            "status": "PASS",
+            "pass": True,
+        },
+    )
     return registry_root, family_dir / "champion.json", ws_raw_root, ws_meta_dir
 
 
@@ -659,8 +692,9 @@ def test_runtime_installer_dry_run_exposes_model_contract_envs() -> None:
     )
 
     stdout = completed.stdout
-    assert "Environment=AUTOBOT_RUNTIME_MODEL_REF_SOURCE=champion_v4" in stdout
-    assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v4_crypto_cs" in stdout
+    assert "Environment=AUTOBOT_RUNTIME_MODEL_REF_SOURCE=champion" in stdout
+    assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v5_fusion" in stdout
+    assert "Environment=AUTOBOT_PAPER_LANE=v5" in stdout
 
 
 def test_runtime_installer_dry_run_accepts_model_family_override() -> None:
@@ -805,7 +839,7 @@ def test_runtime_installer_requires_explicit_bootstrap_when_champion_missing(tmp
     if not pwsh:
         pytest.skip("PowerShell executable is required for installer test")
     project_root = tmp_path / "project"
-    (project_root / "models" / "registry" / "train_v4_crypto_cs").mkdir(parents=True, exist_ok=True)
+    (project_root / "models" / "registry" / "train_v5_fusion").mkdir(parents=True, exist_ok=True)
     wrappers_dir = tmp_path / "wrappers"
     wrappers_dir.mkdir()
     _make_fake_sudo(wrappers_dir)
@@ -849,7 +883,7 @@ def test_runtime_installer_only_bootstraps_when_explicitly_requested(tmp_path: P
     if not pwsh:
         pytest.skip("PowerShell executable is required for installer test")
     project_root = tmp_path / "project"
-    (project_root / "models" / "registry" / "train_v4_crypto_cs").mkdir(parents=True, exist_ok=True)
+    (project_root / "models" / "registry" / "train_v5_fusion").mkdir(parents=True, exist_ok=True)
     wrappers_dir = tmp_path / "wrappers"
     wrappers_dir.mkdir()
     _make_fake_sudo(wrappers_dir)
@@ -893,6 +927,7 @@ def test_runtime_installer_only_bootstraps_when_explicitly_requested(tmp_path: P
     assert "[paper-install][bootstrap]" in completed.stdout
     python_args = python_log.read_text(encoding="utf-8")
     assert "autobot.cli model promote" in python_args
-    assert "latest_candidate_v4" in python_args
+    assert "latest_candidate" in python_args
+    assert "train_v5_fusion" in python_args
     assert "daemon-reload" in systemctl_log.read_text(encoding="utf-8")
     assert install_log.exists()

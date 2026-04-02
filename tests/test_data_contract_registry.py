@@ -183,6 +183,7 @@ def test_build_data_contract_registry_includes_live_and_runtime_layers(tmp_path:
     assert live_entry["layer"] == "live"
     assert live_entry["validation_status"] == "ready"
     assert live_entry["retention_class"] == "hot"
+    assert live_entry["retention_policy_id"] == "live_hot_v1"
     assert live_entry["source_contract_ids"] == [
         "raw_ws_dataset:upbit_public",
         "micro_dataset:micro_v1",
@@ -194,6 +195,7 @@ def test_build_data_contract_registry_includes_live_and_runtime_layers(tmp_path:
     assert runtime_entry["layer"] == "runtime"
     assert runtime_entry["validation_status"] == "runtime_contract_present"
     assert runtime_entry["retention_class"] == "hot"
+    assert runtime_entry["retention_policy_id"] == "runtime_hot_v1"
     assert runtime_entry["runtime_state"]["live_runtime_model_run_id"] == "run-live"
     assert "live:features_v4_online" in runtime_entry["source_contract_ids"]
     assert candidate_entry["runtime_state"]["live_runtime_model_run_id"] == "run-candidate"

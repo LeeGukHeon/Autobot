@@ -29,11 +29,12 @@ def _powershell_exe() -> str:
 
 
 def _seed_train_snapshot_close_contract(project_root: Path) -> None:
+    batch_date = "2026-03-08"
     _write_json(
         project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
         {
             "policy": "v5_train_snapshot_close_v1",
-            "batch_date": "2026-03-08",
+            "batch_date": batch_date,
             "snapshot_id": "snapshot-cache-001",
             "snapshot_root": str(project_root / "data" / "snapshots" / "data_platform" / "snapshot-cache-001"),
             "published_at_utc": "2026-03-08T00:05:00Z",
@@ -41,11 +42,17 @@ def _seed_train_snapshot_close_contract(project_root: Path) -> None:
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],
+            "coverage_window": {"start": "2026-01-01", "end": batch_date},
+            "train_window": {"start": "2026-01-30", "end": "2026-02-28"},
+            "certification_window": {"start": "2026-03-01", "end": batch_date},
+            "coverage_window_source": "test_seed",
+            "refresh_argument_mode": "explicit_window",
+            "features_v4_effective_end": batch_date,
             "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
             "micro_date_coverage_counts": {},
             "source_freshness": {
                 "candles_api_refresh": {"pass": True},
-                "raw_ticks_daily": {"pass": True, "batch_date": "2026-03-08", "batch_covered": True},
+                "raw_ticks_daily": {"pass": True, "batch_date": batch_date, "batch_covered": True},
             },
         },
     )
@@ -145,6 +152,12 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "live_feature_parity_report.json"
                 write_json(report_path, {"sampled_pairs": 1, "compared_pairs": 1, "passing_pairs": 1, "acceptable": True, "status": "PASS"})
                 print(str(report_path))
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.ops.feature_dataset_certification"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+                write_json(report_path, {"policy": "feature_dataset_certification_v1", "status": "PASS", "pass": True, "reasons": []})
+                print(f"[ops][feature-dataset-certification] path={report_path}")
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):

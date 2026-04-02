@@ -30,6 +30,7 @@ def resolve_portfolio_risk_budget(
     tradability_prob: float | None = None,
     alpha_lcb_bps: float | None = None,
     runtime_model_run_id: str | None = None,
+    platform_quality_budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     market_value = str(market).strip().upper()
     side_value = str(side).strip().lower()
@@ -78,6 +79,7 @@ def resolve_portfolio_risk_budget(
         target_notional_quote=target_quote,
         micro_state=state_features if isinstance(state_features, dict) and state_features else micro_state,
     )
+    data_quality_haircut, data_quality_reason_codes = _data_quality_haircut(platform_quality_budget)
     streak_haircut, streak_reason_codes = _recent_loss_streak_haircut(
         store=store,
         runtime_model_run_id=runtime_model_run_id,
@@ -89,6 +91,7 @@ def resolve_portfolio_risk_budget(
         expected_es_haircut,
         tradability_haircut,
         liquidity_haircut,
+        data_quality_haircut,
         streak_haircut,
     )
     max_notional_quote = max(structural_cap_quote, 0.0)
@@ -111,7 +114,7 @@ def resolve_portfolio_risk_budget(
             reason_codes.append("PORTFOLIO_CLUSTER_BUDGET_EXHAUSTED")
     if quote_free_value + 1e-12 < min(target_quote, min_total_value if min_total_value > 0.0 else target_quote):
         reason_codes.append("PORTFOLIO_AVAILABLE_QUOTE_EXHAUSTED")
-    for code in liquidity_reason_codes + streak_reason_codes:
+    for code in liquidity_reason_codes + data_quality_reason_codes + streak_reason_codes:
         if code not in reason_codes:
             reason_codes.append(code)
     for code in alpha_reason_codes + expected_es_reason_codes + tradability_reason_codes:
@@ -178,7 +181,9 @@ def resolve_portfolio_risk_budget(
         "tradability_prob": _safe_optional_float(tradability_prob),
         "alpha_lcb_bps": _safe_optional_float(alpha_lcb_bps),
         "liquidity_haircut": float(liquidity_haircut),
+        "data_quality_haircut": float(data_quality_haircut),
         "recent_loss_streak_haircut": float(streak_haircut),
+        "platform_quality_budget": dict(platform_quality_budget or {}),
         "cluster_utilization": cluster_utilization,
         "current_total_cash_at_risk_quote": float(current_total),
         "projected_total_cash_at_risk_quote": float(current_total + resolved_notional_quote),
@@ -510,6 +515,52 @@ def _recent_loss_streak_haircut(
     if streak >= 2:
         return 0.75, ["PORTFOLIO_RECENT_LOSS_STREAK_HAIRCUT"]
     return 1.0, []
+
+
+def _data_quality_haircut(platform_quality_budget: dict[str, Any] | None) -> tuple[float, list[str]]:
+    payload = dict(platform_quality_budget or {})
+    if not payload:
+        return 1.0, []
+    haircut = 1.0
+    reason_codes: list[str] = []
+
+    validate_fail_files = _safe_optional_float(payload.get("validate_fail_files"))
+    parity_hard_gate_fail_count = _safe_optional_float(payload.get("parity_hard_gate_fail_count"))
+    parity_missing_feature_columns_total = _safe_optional_float(payload.get("parity_missing_feature_columns_total"))
+    leakage_smoke = str(payload.get("leakage_smoke") or "").strip().upper()
+    if (
+        (validate_fail_files is not None and validate_fail_files > 0.0)
+        or (parity_hard_gate_fail_count is not None and parity_hard_gate_fail_count > 0.0)
+        or (parity_missing_feature_columns_total is not None and parity_missing_feature_columns_total > 0.0)
+        or (leakage_smoke and leakage_smoke != "PASS")
+    ):
+        return 0.0, ["PORTFOLIO_DATA_QUALITY_HARD_BLOCK"]
+
+    micro_available_ratio = _safe_optional_float(payload.get("micro_available_ratio"))
+    if micro_available_ratio is not None and micro_available_ratio < 0.95:
+        haircut = min(haircut, max(float(micro_available_ratio) / 0.95, 0.25))
+        reason_codes.append("PORTFOLIO_DATA_QUALITY_MICRO_AVAILABILITY_HAIRCUT")
+
+    parse_ok_ratio = _safe_optional_float(payload.get("micro_validate_parse_ok_ratio"))
+    if parse_ok_ratio is not None and parse_ok_ratio < 0.99:
+        haircut = min(haircut, max(float(parse_ok_ratio) / 0.99, 0.25))
+        reason_codes.append("PORTFOLIO_DATA_QUALITY_PARSE_OK_HAIRCUT")
+
+    synth_ratio_p90 = _safe_optional_float(payload.get("one_m_synth_ratio_p90"))
+    if synth_ratio_p90 is not None:
+        if synth_ratio_p90 >= 0.75:
+            haircut = min(haircut, 0.5)
+            reason_codes.append("PORTFOLIO_DATA_QUALITY_SYNTH_P90_SEVERE")
+        elif synth_ratio_p90 >= 0.50:
+            haircut = min(haircut, 0.75)
+            reason_codes.append("PORTFOLIO_DATA_QUALITY_SYNTH_P90_HIGH")
+
+    dropped_no_micro = _safe_optional_float(payload.get("rows_dropped_no_micro"))
+    if dropped_no_micro is not None and dropped_no_micro > 0.0:
+        haircut = min(haircut, 0.75)
+        reason_codes.append("PORTFOLIO_DATA_QUALITY_MICRO_DROPS_PRESENT")
+
+    return float(haircut), list(dict.fromkeys(reason_codes))
 
 
 def _safe_optional_float(value: Any) -> float | None:

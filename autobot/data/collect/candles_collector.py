@@ -68,6 +68,7 @@ def collect_candles_from_plan(
     client: UpbitCandlesClient | None = None,
 ) -> CandleCollectSummary:
     started_at = int(time.time())
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     plan = _load_plan(options.plan_path)
     targets = [dict(item) for item in plan.get("targets", []) if isinstance(item, dict)]
     discovered_targets = len(targets)
@@ -187,6 +188,7 @@ def collect_candles_from_plan(
         append_manifest_rows(manifest_file, manifest_rows)
 
     collect_report = {
+        "run_id": run_id,
         "started_at": started_at,
         "finished_at": int(time.time()),
         "plan_file": str(options.plan_path),
@@ -213,6 +215,7 @@ def collect_candles_from_plan(
     )
 
     build_report = {
+        "run_id": run_id,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset_name": options.out_dataset,
         "dataset_root": str(dataset_root),

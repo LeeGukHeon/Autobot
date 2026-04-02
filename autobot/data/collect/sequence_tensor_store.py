@@ -172,6 +172,7 @@ class _MarketSourceFrames:
 def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> SequenceTensorBuildSummary:
     options.meta_root.mkdir(parents=True, exist_ok=True)
     options.cache_root.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     selected_markets = _resolve_markets(options)
     details: list[dict[str, Any]] = []
@@ -289,9 +290,33 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
             total_status_counts[status_value] = 0
         total_status_counts[status_value] += 1
     build_report = {
+        "run_id": run_id,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset_name": options.out_dataset,
         "dataset_root": str(options.out_root),
+        "source_roots": [
+            str(options.second_root),
+            str(options.ws_candle_root),
+            str(options.micro_root),
+            str(options.lob_root),
+        ],
+        "source_contract_ids": [
+            "parquet_dataset:candles_second_v1",
+            "parquet_dataset:ws_candle_v1",
+            "micro_dataset:micro_v1",
+            "parquet_dataset:lob30_v1",
+        ],
+        "source_run_ids": [
+            item
+            for item in [
+                str(_load_json_or_empty(options.second_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+                str(_load_json_or_empty(options.ws_candle_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+                str(_load_json_or_empty(options.micro_root / "_meta" / "aggregate_report.json").get("run_id") or "").strip(),
+                str(_load_json_or_empty(options.micro_root / "_meta" / "validate_report.json").get("run_id") or "").strip(),
+                str(_load_json_or_empty(options.lob_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+            ]
+            if item
+        ],
         "selected_markets": len(selected_markets),
         "discovered_anchors": discovered_anchors,
         "built_anchors": built_anchors,
@@ -560,6 +585,16 @@ def _load_previous_validate_details(*, path: Path) -> list[dict[str, Any]] | Non
     if not isinstance(details, list):
         return None
     return [dict(item) for item in details if isinstance(item, dict)]
+
+
+def _load_json_or_empty(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _resolve_markets(options: SequenceTensorBuildOptions) -> tuple[str, ...]:

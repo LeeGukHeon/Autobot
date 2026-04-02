@@ -9,6 +9,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from .dataset_retention_registry import resolve_retention_policy
+
 
 DATA_CONTRACT_REGISTRY_VERSION = 1
 DEFAULT_REGISTRY_REL_PATH = Path("data") / "_meta" / "data_contract_registry.json"
@@ -143,6 +145,7 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
 
     entries.sort(key=lambda item: (str(item.get("layer", "")), str(item.get("dataset_name", "")), str(item.get("root_path", ""))))
     contract_id_by_root = _build_contract_id_by_root(entries=entries)
+    contract_id_to_run_id = _build_contract_run_id_map(entries=entries)
     for entry in entries:
         explicit_source_ids = [
             str(item).strip()
@@ -157,6 +160,17 @@ def build_data_contract_registry(*, project_root: str | Path) -> dict[str, Any]:
             source_roots=source_roots,
             contract_id_by_root=contract_id_by_root,
         )
+    for entry in entries:
+        source_run_ids: list[str] = [
+            str(item).strip()
+            for item in (entry.get("source_run_ids") or [])
+            if str(item).strip()
+        ]
+        for contract_id in (entry.get("source_contract_ids") or []):
+            run_id = str(contract_id_to_run_id.get(str(contract_id).strip()) or "").strip()
+            if run_id and run_id not in source_run_ids:
+                source_run_ids.append(run_id)
+        entry["source_run_ids"] = source_run_ids
 
     payload = {
         "version": DATA_CONTRACT_REGISTRY_VERSION,
@@ -224,6 +238,13 @@ def _build_raw_contract_entry(
         root_path=root_path,
         meta_files=meta_files,
     )
+    run_id = str((health or {}).get("run_id") or (collect_report or {}).get("run_id") or (validate_report or {}).get("run_id") or "").strip()
+    retention_policy = _resolve_retention_policy_fields(
+        layer=layer,
+        contract_id=contract_id,
+        dataset_name=dataset_name,
+        root_path=_relpath(project_root, root_path),
+    )
     return {
         "contract_id": contract_id,
         "layer": layer,
@@ -232,11 +253,14 @@ def _build_raw_contract_entry(
         "meta_dir": _relpath(project_root, meta_dir) if meta_dir.exists() else None,
         "status": status,
         "validation_status": validation_status,
-        "retention_class": _retention_class_for_layer(layer),
+        "retention_class": retention_policy["retention_class"],
+        "retention_policy_id": retention_policy["policy_id"],
+        "retention_policy_source": retention_policy["policy_source"],
         "coverage_window": _coverage_window_from_reports(
             ws_health=health,
             validate_report=validate_report,
         ),
+        "run_id": run_id or None,
         "identity": identity,
         "artifacts": meta_files,
         "source_roots": source_roots,
@@ -259,6 +283,8 @@ def _build_dataset_contract_entry(
     validate_report = _load_json(meta_dir / "validate_report.json")
 
     source_roots: list[str] = []
+    explicit_source_contract_ids: list[str] = []
+    explicit_source_run_ids: list[str] = []
     if layer == "micro_dataset":
         for key in ("raw_ws_root", "raw_ticks_root", "base_candles_root"):
             value = str((aggregate_report or {}).get(key, "")).strip()
@@ -282,6 +308,19 @@ def _build_dataset_contract_entry(
             normalized = _normalize_root_reference(project_root=project_root, value=value)
             if normalized not in source_roots:
                 source_roots.append(normalized)
+    for payload in (aggregate_report, build_report):
+        for raw_root in payload.get("source_roots") or []:
+            normalized = _normalize_root_reference(project_root=project_root, value=str(raw_root))
+            if normalized and normalized not in source_roots:
+                source_roots.append(normalized)
+        for raw_id in payload.get("source_contract_ids") or []:
+            contract_id_text = str(raw_id).strip()
+            if contract_id_text and contract_id_text not in explicit_source_contract_ids:
+                explicit_source_contract_ids.append(contract_id_text)
+        for raw_run_id in payload.get("source_run_ids") or []:
+            run_id_text = str(raw_run_id).strip()
+            if run_id_text and run_id_text not in explicit_source_run_ids:
+                explicit_source_run_ids.append(run_id_text)
 
     status = "present"
     if validate_report:
@@ -305,6 +344,18 @@ def _build_dataset_contract_entry(
         aggregate_report=aggregate_report,
         validate_report=validate_report,
     )
+    retention_policy = _resolve_retention_policy_fields(
+        layer=layer,
+        contract_id=contract_id,
+        dataset_name=dataset_name,
+        root_path=_relpath(project_root, dataset_root),
+    )
+    run_id = str(
+        (build_report or {}).get("run_id")
+        or (aggregate_report or {}).get("run_id")
+        or (validate_report or {}).get("run_id")
+        or ""
+    ).strip()
     return {
         "contract_id": contract_id,
         "layer": layer,
@@ -313,11 +364,16 @@ def _build_dataset_contract_entry(
         "meta_dir": _relpath(project_root, meta_dir),
         "status": status,
         "validation_status": _validation_status_from_status(status=status, validate_report=validate_report),
-        "retention_class": _retention_class_for_layer(layer),
+        "retention_class": retention_policy["retention_class"],
+        "retention_policy_id": retention_policy["policy_id"],
+        "retention_policy_source": retention_policy["policy_source"],
         "coverage_window": coverage_window,
+        "run_id": run_id or None,
         "identity": identity,
         "artifacts": meta_files,
         "source_roots": source_roots,
+        "source_contract_ids": explicit_source_contract_ids,
+        "source_run_ids": explicit_source_run_ids,
     }
 
 
@@ -347,6 +403,12 @@ def _build_live_feature_contract_entry(
     ]
     if micro_root is not None:
         source_roots.append(_relpath(project_root, micro_root))
+    retention_policy = _resolve_retention_policy_fields(
+        layer="live",
+        contract_id=contract_id,
+        dataset_name=dataset_name,
+        root_path=_relpath(project_root, root_path),
+    )
     return {
         "contract_id": contract_id,
         "layer": "live",
@@ -355,12 +417,15 @@ def _build_live_feature_contract_entry(
         "meta_dir": None,
         "status": status,
         "validation_status": "ready" if feature_ready else _validation_status_from_status(status=status, validate_report=feature_validate or ws_validate),
-        "retention_class": _retention_class_for_layer("live"),
+        "retention_class": retention_policy["retention_class"],
+        "retention_policy_id": retention_policy["policy_id"],
+        "retention_policy_source": retention_policy["policy_source"],
         "coverage_window": _coverage_window_from_reports(
             ws_health=ws_health,
             build_report=feature_build,
             validate_report=feature_validate,
         ),
+        "run_id": str((ws_health or {}).get("run_id") or (feature_build or {}).get("run_id") or "").strip() or None,
         "identity": _contract_identity(
             contract_id=contract_id,
             root_path=root_path,
@@ -402,6 +467,12 @@ def _build_runtime_contract_entry(
         source_roots.append(_relpath(project_root, feature_root))
         source_contract_ids.append(f"feature_dataset:{feature_root.name}")
     source_contract_ids.append("live:features_v4_online")
+    retention_policy = _resolve_retention_policy_fields(
+        layer="runtime",
+        contract_id=contract_id,
+        dataset_name=dataset_name,
+        root_path=_relpath(project_root, db_path),
+    )
     return {
         "contract_id": contract_id,
         "layer": "runtime",
@@ -410,8 +481,11 @@ def _build_runtime_contract_entry(
         "meta_dir": None,
         "status": status,
         "validation_status": "runtime_contract_present" if runtime_run_id else "runtime_contract_missing",
-        "retention_class": _retention_class_for_layer("runtime"),
+        "retention_class": retention_policy["retention_class"],
+        "retention_policy_id": retention_policy["policy_id"],
+        "retention_policy_source": retention_policy["policy_source"],
         "coverage_window": dict(runtime_state.get("coverage_window") or {}),
+        "run_id": runtime_run_id or None,
         "runtime_state": runtime_state,
         "identity": _contract_identity(
             contract_id=contract_id,
@@ -490,6 +564,16 @@ def _build_contract_id_by_root(*, entries: list[dict[str, Any]]) -> dict[str, st
         root_path = str(entry.get("root_path", "")).strip()
         if contract_id and root_path:
             mapping[root_path] = contract_id
+    return mapping
+
+
+def _build_contract_run_id_map(*, entries: list[dict[str, Any]]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for entry in entries:
+        contract_id = str(entry.get("contract_id", "")).strip()
+        run_id = str(entry.get("run_id", "")).strip()
+        if contract_id and run_id:
+            mapping[contract_id] = run_id
     return mapping
 
 
@@ -635,15 +719,24 @@ def _coverage_window_from_reports(
     }
 
 
-def _retention_class_for_layer(layer: str) -> str:
-    key = str(layer).strip().lower()
-    if "raw" in key:
-        return "hot"
-    if key in {"live", "runtime"}:
-        return "hot"
-    if "micro" in key or "feature" in key or "parquet" in key:
-        return "warm"
-    return "cold"
+def _resolve_retention_policy_fields(
+    *,
+    layer: str,
+    contract_id: str,
+    dataset_name: str,
+    root_path: str,
+) -> dict[str, str]:
+    payload = resolve_retention_policy(
+        layer=layer,
+        contract_id=contract_id,
+        dataset_name=dataset_name,
+        root_path=root_path,
+    )
+    return {
+        "retention_class": str(payload.get("retention_class") or "cold").strip() or "cold",
+        "policy_id": str(payload.get("policy_id") or "").strip(),
+        "policy_source": str(payload.get("policy_source") or "").strip(),
+    }
 
 
 def _validation_status_from_status(*, status: str, validate_report: dict[str, Any] | None) -> str:

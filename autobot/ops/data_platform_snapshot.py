@@ -103,6 +103,7 @@ def publish_ready_snapshot(
         source_root = resolved_project_root / relative_source
         if not source_root.exists():
             raise FileNotFoundError(f"derived dataset root missing: {source_root}")
+        requirements = _resolve_snapshot_requirements(dataset_name=name, source_root=source_root)
         target_root = snapshot_root / relative_target
         _copytree_hardlink(src=source_root, dst=target_root)
         dataset_payload[name] = {
@@ -111,6 +112,9 @@ def publish_ready_snapshot(
             "build_report_path": str(target_root / "_meta" / "build_report.json"),
             "validate_report_path": str(target_root / "_meta" / "validate_report.json"),
             "manifest_path": str(target_root / "_meta" / "manifest.parquet"),
+            "feature_dataset_certification_path": requirements.get("feature_dataset_certification_path"),
+            "raw_to_feature_lineage_report_path": requirements.get("raw_to_feature_lineage_report_path"),
+            "requirements": requirements,
         }
 
     summary = {
@@ -157,6 +161,43 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temp.replace(path)
+
+
+def _resolve_snapshot_requirements(*, dataset_name: str, source_root: Path) -> dict[str, Any]:
+    meta_root = Path(source_root) / "_meta"
+    validate_report_path = meta_root / "validate_report.json"
+    validate_report = _load_json_doc(validate_report_path)
+    if not validate_report_path.exists():
+        raise FileNotFoundError(f"snapshot publish requires validate report: {validate_report_path}")
+    validate_status = str(validate_report.get("status") or "").strip().upper()
+    validate_fail_files = int(validate_report.get("fail_files") or 0)
+    if validate_status == "FAIL" or validate_fail_files > 0:
+        raise ValueError(f"snapshot publish blocked by failed validate report: {validate_report_path}")
+
+    requirements: dict[str, Any] = {
+        "validate_report_required": True,
+        "validate_report_path": str(validate_report_path),
+        "validate_report_status": validate_status,
+    }
+    if str(dataset_name).strip().lower() == "features_v4":
+        certification_path = meta_root / "feature_dataset_certification.json"
+        certification = _load_json_doc(certification_path)
+        if not certification_path.exists():
+            raise FileNotFoundError(f"snapshot publish requires feature dataset certification: {certification_path}")
+        if not bool(certification.get("pass", False)):
+            raise ValueError(f"snapshot publish blocked by failed feature dataset certification: {certification_path}")
+        lineage_path = meta_root / "raw_to_feature_lineage_report.json"
+        if not lineage_path.exists():
+            raise FileNotFoundError(f"snapshot publish requires raw-to-feature lineage report: {lineage_path}")
+        requirements.update(
+            {
+                "feature_dataset_certification_required": True,
+                "feature_dataset_certification_path": str(certification_path),
+                "feature_dataset_certification_status": str(certification.get("status") or "").strip(),
+                "raw_to_feature_lineage_report_path": str(lineage_path),
+            }
+        )
+    return requirements
 
 
 def main() -> int:

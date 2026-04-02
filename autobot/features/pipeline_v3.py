@@ -12,6 +12,7 @@ from typing import Any
 import polars as pl
 import yaml
 
+from autobot.common.data_quality_budget import resolve_universe_quality_score
 from autobot.data import expected_interval_ms
 
 from .feature_set_v3 import build_feature_set_v3_from_candles, feature_columns_v3
@@ -1077,9 +1078,15 @@ def _select_v3_universe_markets(
                 from_ts_ms=quality_from_ts_ms,
                 to_ts_ms_exclusive=to_ts_ms_exclusive,
             )
-            q_value = min(max(1.0 - float(synth_ratio), q_floor), 1.0)
-            quality_weight = q_value ** beta
-            score = trade_value_est * quality_weight
+            quality_payload = resolve_universe_quality_score(
+                value_est=trade_value_est,
+                synth_ratio_lookback=synth_ratio,
+                q_floor=q_floor,
+                beta=beta,
+            )
+            q_value = float(quality_payload["q"])
+            quality_weight = float(quality_payload["quality_weight"])
+            score = float(quality_payload["score"])
 
         candidates.append(
             {

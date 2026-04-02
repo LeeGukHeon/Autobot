@@ -135,6 +135,20 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(str(report_path))
                 sys.exit(0)
 
+            if tuple(args[:2]) == ("-m", "autobot.ops.feature_dataset_certification"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+                write_json(
+                    report_path,
+                    {
+                        "policy": "feature_dataset_certification_v1",
+                        "status": "PASS",
+                        "pass": True,
+                        "reasons": [],
+                    },
+                )
+                print(f"[ops][feature-dataset-certification] path={report_path}")
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
                 dataset_root = Path(arg_value("--dataset-root"))
                 contract_path = dataset_root.parent / "fusion_runtime_input_contract.json"
@@ -340,6 +354,10 @@ def _powershell_exe() -> str:
 
 
 def _seed_train_snapshot_close_contract(project_root: Path, *, batch_date: str = "2026-03-07") -> None:
+    coverage_start = "2026-01-01"
+    certification_start = "2026-02-28"
+    train_end = "2026-02-27"
+    train_start = "2026-01-29"
     _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": "snapshot-test-001"})
     _write_json(
         project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
@@ -353,6 +371,12 @@ def _seed_train_snapshot_close_contract(project_root: Path, *, batch_date: str =
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],
+            "coverage_window": {"start": coverage_start, "end": batch_date},
+            "train_window": {"start": train_start, "end": train_end},
+            "certification_window": {"start": certification_start, "end": batch_date},
+            "coverage_window_source": "test_seed",
+            "refresh_argument_mode": "explicit_window",
+            "features_v4_effective_end": batch_date,
             "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
             "micro_date_coverage_counts": {},
             "source_freshness": {

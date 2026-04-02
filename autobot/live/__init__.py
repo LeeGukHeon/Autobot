@@ -26,6 +26,7 @@ from .daemon import (
 from .model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
 from .model_handoff import (
     build_live_runtime_sync_status,
+    load_feature_platform_runtime_contract,
     load_ws_public_runtime_contract,
     resolve_live_model_ref_source,
     resolve_live_runtime_model_contract,
@@ -92,6 +93,7 @@ __all__ = [
     "reconcile_exchange_snapshot",
     "resolve_live_model_ref_source",
     "resolve_live_runtime_model_contract",
+    "load_feature_platform_runtime_contract",
     "load_ws_public_runtime_contract",
     "build_live_runtime_sync_status",
     "ACTION_WARN",

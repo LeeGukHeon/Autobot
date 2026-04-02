@@ -761,6 +761,7 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
     one_m_synth_ratio_p50 = _quantile(one_m_synth_ratio_values, 0.50)
     one_m_synth_ratio_p90 = _quantile(one_m_synth_ratio_values, 0.90)
     report = {
+        "run_id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         "dataset_name": config.dataset_name,
         "tf": tf,
         "quote": quote,
@@ -789,6 +790,15 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
         },
         "base_candles_root": str(base_root),
         "micro_root": str(micro_root),
+        "source_run_ids": [
+            item
+            for item in [
+                str(_read_json(base_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+                str(_read_json(micro_root / "_meta" / "aggregate_report.json").get("run_id") or "").strip(),
+                str(_read_json(micro_root / "_meta" / "validate_report.json").get("run_id") or "").strip(),
+            ]
+            if item
+        ],
         "order_flow_panel_v1_diagnostics": order_flow_diagnostics,
         "details": details,
         "status": "PASS",

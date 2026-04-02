@@ -119,6 +119,7 @@ from .live import (
     evaluate_live_limit_order,
     evaluate_live_rollout_gate,
     hash_arm_token,
+    load_feature_platform_runtime_contract,
     load_ws_public_runtime_contract,
     reconcile_exchange_snapshot,
     resolve_rollout_gate_inputs,
@@ -4862,6 +4863,10 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             pinned_contract=pinned_contract,
                             current_contract=current_runtime_contract,
                             ws_public_contract=ws_public_contract,
+                            feature_platform_contract=load_feature_platform_runtime_contract(
+                                project_root=project_root,
+                                feature_set="v4",
+                            ),
                         )
                         rollout_mode, rollout_target_unit = resolve_rollout_gate_inputs(
                             default_mode=str(defaults["rollout_mode"]),

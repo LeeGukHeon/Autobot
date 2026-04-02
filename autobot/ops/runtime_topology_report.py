@@ -11,6 +11,7 @@ from typing import Any
 
 from autobot.live.breaker_taxonomy import annotate_reason_payload
 from autobot.live.model_handoff import build_live_runtime_sync_status, load_ws_public_runtime_contract, resolve_live_runtime_model_contract
+from autobot.live.model_handoff import load_feature_platform_runtime_contract
 from autobot.live.rollout import load_rollout_latest
 from autobot.models.registry import load_json
 from .data_contract_registry import build_data_contract_registry
@@ -129,12 +130,14 @@ def build_runtime_topology_report(
         pinned_contract=dict((live_state.get("runtime_contract") or {})),
         current_contract=live_current_contract,
         ws_public_contract=ws_public_contract,
+        feature_platform_contract=load_feature_platform_runtime_contract(project_root=root, feature_set="v4"),
     )
 
     candidate_runtime_sync_status = build_live_runtime_sync_status(
         pinned_contract=dict((candidate_state.get("runtime_contract") or {})),
         current_contract=candidate_current_contract,
         ws_public_contract=ws_public_contract,
+        feature_platform_contract=load_feature_platform_runtime_contract(project_root=root, feature_set="v4"),
     )
     is_candidate_target = effective_target_unit in {
         *_CANDIDATE_RUNTIME_UNITS,

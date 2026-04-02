@@ -586,7 +586,7 @@
   - legacy `live_v4/candidate_v4/offline_v4`: preserved for compatibility and explicit rollback only
   - when the loaded model run contains `selection_recommendations.json`, runtime uses the learned recommendation entry for the active `registry_threshold_key` instead of these fallback breadth values
 - `scripts/install_server_runtime_services.ps1 -PaperPreset`: `live_v3 | live_v4 | live_v5 | candidate_v4 | candidate_v5 | offline_v4 | offline_v5 | paired_v4 | paired_v5`
-  - current default install target is the existing paper unit with the `live_v5` preset and `train_v5_panel_ensemble` family
+  - current default install target is `autobot-paper-v5.service` with the `live_v5` preset and `train_v5_fusion` family
   - `live_v3/live_v4/offline_v4` preset installs no longer auto-bootstrap the corresponding `champion` pointer
   - if the family has no `champion` pointer, promote explicitly first or rerun the installer with `-BootstrapChampion`
 - `scripts/candidate_acceptance.ps1`: generic acceptance runner for `v3` and `v4`

@@ -257,11 +257,26 @@ def collect_lob30_from_plan(
     options.collect_report_path.write_text(json.dumps(collect_report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
     build_report = {
+        "run_id": run_id,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dataset_name": options.out_dataset,
         "dataset_root": str(dataset_root),
         "manifest_file": str(manifest_file),
         "collect_report_file": str(options.collect_report_path),
+        "source_roots": [
+            str((options.parquet_root.parent / "raw_ws" / "upbit" / "public").resolve()),
+        ],
+        "source_contract_ids": [
+            "raw_ws_dataset:upbit_public",
+        ],
+        "source_run_ids": [
+            item
+            for item in [
+                str(_load_json_or_empty(options.parquet_root.parent / "raw_ws" / "upbit" / "_meta" / "ws_public_health.json").get("run_id") or "").strip(),
+                str(_load_json_or_empty(options.parquet_root.parent / "raw_ws" / "upbit" / "_meta" / "ws_collect_report.json").get("run_id") or "").strip(),
+            ]
+            if item
+        ],
         "summary": {
             "received_messages": int(counters.received_messages),
             "snapshot_messages": int(counters.snapshot_messages),
@@ -529,3 +544,13 @@ def _load_plan(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("lob30 plan file must contain JSON object")
     return raw
+
+
+def _load_json_or_empty(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}

@@ -636,6 +636,28 @@ def _make_fake_python_exe(
                     sys.exit(2)
                 sys.exit(0)
 
+            if tuple(args[:3]) == ("-m", "autobot.ops.feature_dataset_certification", "--project-root"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+                append_log(
+                    {{
+                        "command": "feature dataset certification",
+                        "project_root": arg_value("--project-root"),
+                    }}
+                )
+                write_json(
+                    report_path,
+                    {{
+                        "policy": "feature_dataset_certification_v1",
+                        "status": "PASS" if WRITE_FEATURE_VALIDATE_REPORT and WRITE_LIVE_FEATURE_PARITY_REPORT and LIVE_FEATURE_PARITY_ACCEPTABLE else "FAIL",
+                        "pass": bool(WRITE_FEATURE_VALIDATE_REPORT and WRITE_LIVE_FEATURE_PARITY_REPORT and LIVE_FEATURE_PARITY_ACCEPTABLE),
+                        "reasons": [],
+                    }},
+                )
+                print(f"[ops][feature-dataset-certification] path={{report_path}}")
+                if (not WRITE_FEATURE_VALIDATE_REPORT) or (not WRITE_LIVE_FEATURE_PARITY_REPORT) or (not LIVE_FEATURE_PARITY_ACCEPTABLE):
+                    sys.exit(2)
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
                 dataset_root = Path(arg_value("--dataset-root"))
                 contract_path = dataset_root.parent / "fusion_runtime_input_contract.json"

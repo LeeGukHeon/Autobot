@@ -324,6 +324,29 @@ if (-not $SkipRegistryRefresh) {
             "--project-root", $resolvedProjectRoot
         )
     })
+    $steps += ,([ordered]@{
+        name = "refresh_dataset_retention_registry"
+        args = @(
+            "-m", "autobot.ops.dataset_retention_registry",
+            "--project-root", $resolvedProjectRoot
+        )
+    })
+    $steps += ,([ordered]@{
+        name = "refresh_raw_to_feature_lineage_report"
+        args = @(
+            "-m", "autobot.ops.raw_to_feature_lineage_report",
+            "--project-root", $resolvedProjectRoot,
+            "--feature-set", $FeatureSet
+        )
+    })
+    $steps += ,([ordered]@{
+        name = "refresh_feature_dataset_certification"
+        args = @(
+            "-m", "autobot.ops.feature_dataset_certification",
+            "--project-root", $resolvedProjectRoot,
+            "--feature-set", $FeatureSet
+        )
+    })
 }
 
 $stepResults = @()
@@ -366,7 +389,10 @@ $summary = [ordered]@{
         features_build_report = (Join-Path $featureMetaRoot "build_report.json")
         features_validate_report = (Join-Path $featureMetaRoot "validate_report.json")
         features_live_parity_report = (Join-Path $featureMetaRoot "live_feature_parity_report.json")
+        feature_dataset_certification = (Join-Path $featureMetaRoot "feature_dataset_certification.json")
+        raw_to_feature_lineage_report = (Join-Path $featureMetaRoot "raw_to_feature_lineage_report.json")
         data_contract_registry = (Join-Path $resolvedProjectRoot "data/_meta/data_contract_registry.json")
+        dataset_retention_registry = (Join-Path $resolvedProjectRoot "data/_meta/dataset_retention_registry.json")
     }
 }
 

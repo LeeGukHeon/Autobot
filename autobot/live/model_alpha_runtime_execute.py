@@ -984,6 +984,17 @@ def resolve_live_strategy_execution(
     operational_payload: dict[str, Any] = {}
     portfolio_budget_payload: dict[str, Any] = {}
     trade_gate_payload: dict[str, Any] = {"enabled": True}
+    runtime_health_payload = store.live_runtime_health() if hasattr(store, "live_runtime_health") else {}
+    feature_platform_payload = (
+        dict((runtime_health_payload or {}).get("feature_platform_contract") or {})
+        if isinstance((runtime_health_payload or {}).get("feature_platform_contract"), dict)
+        else {}
+    )
+    platform_quality_budget = (
+        dict(feature_platform_payload.get("quality_budget") or {})
+        if isinstance(feature_platform_payload.get("quality_budget"), dict)
+        else {}
+    )
     forced_volume = safe_optional_float_fn(strategy_meta.get("force_volume"))
     local_position = store.position_by_market(market=market) if side == "ask" else None
     entry_notional_quote = (
@@ -1103,6 +1114,7 @@ def resolve_live_strategy_execution(
                 else None
             ),
             runtime_model_run_id=str(runtime_model_run_id or "").strip() or None,
+            platform_quality_budget=platform_quality_budget,
         )
         if portfolio_budget_payload.get("enabled"):
             strategy_meta = _finalize_strategy_meta_entry_decision(

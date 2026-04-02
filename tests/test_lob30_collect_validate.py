@@ -144,3 +144,8 @@ def test_collect_lob30_dedupes_latest_snapshot_and_validates(tmp_path: Path) -> 
     )
     assert validate_summary.fail_files == 0
     assert validate_summary.ok_files == 1
+
+    build_report = json.loads(summary.build_report_file.read_text(encoding="utf-8"))
+    assert build_report["run_id"] == summary.run_id
+    assert build_report["source_contract_ids"] == ["raw_ws_dataset:upbit_public"]
+    assert "source_run_ids" in build_report

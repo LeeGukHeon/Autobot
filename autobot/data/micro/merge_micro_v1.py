@@ -189,6 +189,15 @@ def aggregate_micro_v1(options: MicroAggregateOptions) -> MicroAggregateSummary:
         "started_at": started_at,
         "finished_at": int(time.time()),
         "run_id": run_id,
+        "source_run_ids": [
+            item
+            for item in [
+                str(_load_json(options.raw_ws_root.parent / "_meta" / "ws_collect_report.json").get("run_id") or "").strip(),
+                str(_load_json(options.raw_ticks_root.parent / "_meta" / "ticks_collect_report.json").get("run_id") or "").strip(),
+                str(_load_json(options.base_candles_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+            ]
+            if item
+        ],
         "tf_set": list(tf_set),
         "start": options.start,
         "end": options.end,
@@ -473,3 +482,13 @@ def _micro_schema() -> dict[str, pl.DataType]:
         "microprice_bias_bps_mean": pl.Float64,
         "book_update_count": pl.Int64,
     }
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}

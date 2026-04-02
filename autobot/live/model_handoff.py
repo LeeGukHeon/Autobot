@@ -109,15 +109,68 @@ def load_ws_public_runtime_contract(
     }
 
 
+def load_feature_platform_runtime_contract(
+    *,
+    project_root: Path,
+    feature_set: str = "v4",
+) -> dict[str, Any]:
+    feature_set_value = str(feature_set).strip().lower() or "v4"
+    meta_dir = Path(project_root) / "data" / "features" / f"features_{feature_set_value}" / "_meta"
+    artifacts_present = bool(meta_dir.exists())
+    validate_report = _load_dict(meta_dir / "validate_report.json")
+    parity_report = _load_dict(meta_dir / "live_feature_parity_report.json")
+    certification_report = _load_dict(meta_dir / "feature_dataset_certification.json")
+    retention_registry = _load_dict(Path(project_root) / "data" / "_meta" / "dataset_retention_registry.json")
+    quality_budget = dict(certification_report.get("quality_budget") or {}) if isinstance(certification_report.get("quality_budget"), dict) else {}
+    lineage = dict(certification_report.get("lineage") or {}) if isinstance(certification_report.get("lineage"), dict) else {}
+    validate_pass = (
+        str(validate_report.get("status") or "").strip().upper() in {"PASS", "OK"}
+        and _coerce_int(validate_report.get("fail_files")) in (None, 0)
+    )
+    parity_pass = (
+        str(parity_report.get("status") or "").strip().upper() == "PASS"
+        and bool(parity_report.get("acceptable", False))
+    )
+    certification_pass = bool(certification_report.get("pass", False))
+    reason_codes: list[str] = []
+    if artifacts_present and not validate_report:
+        reason_codes.append("FEATURE_VALIDATE_REPORT_MISSING")
+    elif artifacts_present and not validate_pass:
+        reason_codes.append("FEATURE_VALIDATE_REPORT_FAILED")
+    if artifacts_present and not parity_report:
+        reason_codes.append("LIVE_FEATURE_PARITY_REPORT_MISSING")
+    elif artifacts_present and not parity_pass:
+        reason_codes.append("LIVE_FEATURE_PARITY_REPORT_FAILED")
+    if artifacts_present and not certification_report:
+        reason_codes.append("FEATURE_DATASET_CERTIFICATION_MISSING")
+    elif artifacts_present and not certification_pass:
+        reason_codes.append("FEATURE_DATASET_CERTIFICATION_FAILED")
+    return {
+        "feature_set": feature_set_value,
+        "meta_dir": str(meta_dir),
+        "validate_report": _report_excerpt(validate_report),
+        "parity_report": _report_excerpt(parity_report),
+        "certification_report": _report_excerpt(certification_report),
+        "retention_registry_present": bool(retention_registry),
+        "quality_budget": quality_budget,
+        "lineage": lineage,
+        "artifacts_present": artifacts_present,
+        "feature_platform_ready": (len(reason_codes) == 0) if artifacts_present else True,
+        "feature_platform_reason_codes": reason_codes,
+    }
+
+
 def build_live_runtime_sync_status(
     *,
     pinned_contract: dict[str, Any] | None,
     current_contract: dict[str, Any] | None,
     ws_public_contract: dict[str, Any] | None,
+    feature_platform_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pinned = dict(pinned_contract or {})
     current = dict(current_contract or {})
     ws_public = dict(ws_public_contract or {})
+    feature_platform = dict(feature_platform_contract or {})
     pinned_run_id = str(pinned.get("live_runtime_model_run_id", "")).strip()
     champion_pointer_run_id = str(current.get("champion_pointer_run_id", "")).strip()
     expected_pointer_run_id = str(current.get("resolved_pointer_run_id", "")).strip()
@@ -147,9 +200,15 @@ def build_live_runtime_sync_status(
         "ws_public_run_id": ((ws_public.get("health_snapshot") or {}).get("run_id") if isinstance(ws_public.get("health_snapshot"), dict) else None),
         "ws_public_validate_run_id": ((ws_public.get("validate_report") or {}).get("run_id") if isinstance(ws_public.get("validate_report"), dict) else None),
         "micro_aggregate_run_id": ((ws_public.get("micro_aggregate") or {}).get("run_id") if isinstance(ws_public.get("micro_aggregate"), dict) else None),
+        "feature_platform_ready": bool(feature_platform.get("feature_platform_ready", False)),
+        "feature_platform_reason_codes": list(feature_platform.get("feature_platform_reason_codes") or []),
+        "feature_validate_run_id": ((feature_platform.get("validate_report") or {}).get("run_id") if isinstance(feature_platform.get("validate_report"), dict) else None),
+        "feature_parity_status": ((feature_platform.get("parity_report") or {}).get("status") if isinstance(feature_platform.get("parity_report"), dict) else None),
+        "feature_dataset_certification_status": ((feature_platform.get("certification_report") or {}).get("status") if isinstance(feature_platform.get("certification_report"), dict) else None),
         "pinned_contract": pinned,
         "current_contract": current,
         "ws_public_contract": ws_public,
+        "feature_platform_contract": feature_platform,
     }
 
 
@@ -235,11 +294,16 @@ def _report_excerpt(payload: dict[str, Any]) -> dict[str, Any]:
         "warn_files",
         "fail_files",
         "parse_ok_ratio",
+        "acceptable",
+        "sampled_pairs",
         "parts",
         "rows_total",
         "bytes_total",
         "min_date",
         "max_date",
+        "status",
+        "pass",
+        "reasons",
     )
     return {key: payload.get(key) for key in keys if key in payload}
 

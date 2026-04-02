@@ -905,12 +905,20 @@ def _build_paired_gate(*, report: dict[str, Any], min_matched_opportunities: int
     clock_alignment = dict(report.get("clock_alignment") or {})
     matched_opportunities = int(clock_alignment.get("matched_opportunities") or 0)
     pair_ready = bool(clock_alignment.get("pair_ready"))
+    feature_hash_match_ratio = clock_alignment.get("feature_hash_match_ratio")
     min_required = max(int(min_matched_opportunities), 1)
-    gate_pass = pair_ready and matched_opportunities >= min_required
+    feature_hash_ready = (
+        feature_hash_match_ratio is not None and float(feature_hash_match_ratio) >= 1.0
+    )
+    gate_pass = pair_ready and matched_opportunities >= min_required and feature_hash_ready
     if gate_pass:
         reason = "PAIRED_PAPER_READY"
     elif not pair_ready:
         reason = "PAIRED_PAPER_NOT_READY"
+    elif feature_hash_match_ratio is None:
+        reason = "PAIRED_FEATURE_HASH_ALIGNMENT_UNAVAILABLE"
+    elif float(feature_hash_match_ratio) < 1.0:
+        reason = "PAIRED_FEATURE_HASH_MISMATCH"
     else:
         reason = "INSUFFICIENT_MATCHED_OPPORTUNITIES"
     return {
@@ -918,6 +926,7 @@ def _build_paired_gate(*, report: dict[str, Any], min_matched_opportunities: int
         "pair_ready": pair_ready,
         "matched_opportunities": matched_opportunities,
         "min_matched_opportunities": min_required,
+        "feature_hash_match_ratio": feature_hash_match_ratio,
         "pass": gate_pass,
         "reason": reason,
     }
@@ -965,6 +974,10 @@ def _build_paired_promotion_decision(
     matched_no_trade_delta = int(paired_deltas.get("matched_no_trade_delta") or 0)
     matched_fill_delta = int(paired_deltas.get("matched_fill_delta") or 0)
     matched_slippage_delta_bps = paired_deltas.get("matched_slippage_delta_bps")
+    feature_certification = _load_feature_dataset_certification_for_run(
+        champion_run_dir=champion_run_dir,
+        challenger_run_dir=challenger_run_dir,
+    )
     matched_evidence_checks = {
         "matched_pnl_available": matched_pnl_coverage > 0,
         "matched_pnl_not_worse": True if matched_pnl_coverage <= 0 else matched_pnl_delta_quote >= 0.0,
@@ -975,16 +988,32 @@ def _build_paired_promotion_decision(
             if matched_slippage_delta_bps in (None, "")
             else float(matched_slippage_delta_bps) <= 0.0
         ),
+        "feature_dataset_certification_pass": (
+            True
+            if not feature_certification.get("available")
+            else bool(feature_certification.get("pass", False))
+        ),
+        "feature_data_quality_budget_pass": (
+            True
+            if not feature_certification.get("available")
+            else bool((feature_certification.get("quality_budget_summary") or {}).get("paired_inclusion_pass", False))
+        ),
     }
     if not matched_evidence_checks["matched_pnl_not_worse"]:
         hard_failures.append("PAIRED_MATCHED_PNL_DELTA_NEGATIVE")
     if not matched_evidence_checks["matched_no_trade_not_worse"]:
         hard_failures.append("PAIRED_MATCHED_NO_TRADE_DELTA_NEGATIVE")
+    if not matched_evidence_checks["feature_dataset_certification_pass"]:
+        hard_failures.append("PAIRED_FEATURE_DATASET_CERTIFICATION_FAILED")
+    if not matched_evidence_checks["feature_data_quality_budget_pass"]:
+        hard_failures.append("PAIRED_FEATURE_DATA_QUALITY_BUDGET_FAILED")
     promote = (
         bool(base_decision.get("promote", False))
         and gate_pass
         and matched_evidence_checks["matched_pnl_not_worse"]
         and matched_evidence_checks["matched_no_trade_not_worse"]
+        and matched_evidence_checks["feature_dataset_certification_pass"]
+        and matched_evidence_checks["feature_data_quality_budget_pass"]
     )
     if not gate_pass and gate_reason:
         hard_failures.append(gate_reason)
@@ -997,6 +1026,7 @@ def _build_paired_promotion_decision(
             "paired_deltas": paired_deltas,
             "taxonomy_counts": dict(paired_report.get("taxonomy_counts") or {}),
             "decision_language_counts": dict(paired_report.get("decision_language_counts") or {}),
+            "feature_dataset_certification": dict(feature_certification),
             "report_path": str(paired_report.get("report_path") or ""),
         },
         "champion": champion_agg,
@@ -1019,6 +1049,27 @@ def _load_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_feature_dataset_certification_for_run(
+    *,
+    champion_run_dir: Path,
+    challenger_run_dir: Path,
+) -> dict[str, Any]:
+    for base in (Path(champion_run_dir), Path(challenger_run_dir)):
+        for parent in [base, *base.parents]:
+            certification_path = parent / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+            if certification_path.exists():
+                payload = _load_json(certification_path)
+                return {
+                    "available": True,
+                    "path": str(certification_path),
+                    "status": str(payload.get("status") or "").strip(),
+                    "pass": bool(payload.get("pass", False)),
+                    "reasons": list(payload.get("reasons") or []),
+                    "quality_budget_summary": dict(payload.get("quality_budget_summary") or {}),
+                }
+    return {"available": False, "path": "", "status": "", "pass": False, "reasons": [], "quality_budget_summary": {}}
 
 
 def _load_quote_markets(upbit_settings: Any, *, quote: str) -> list[str]:

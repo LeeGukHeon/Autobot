@@ -118,6 +118,12 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(str(report_path))
                 sys.exit(0)
 
+            if tuple(args[:2]) == ("-m", "autobot.ops.feature_dataset_certification"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+                write_json(report_path, {"policy": "feature_dataset_certification_v1", "status": "PASS", "pass": True, "reasons": []})
+                print(f"[ops][feature-dataset-certification] path={report_path}")
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
                 raise RuntimeError("backtest should not run when runtime coverage preflight fails")
 

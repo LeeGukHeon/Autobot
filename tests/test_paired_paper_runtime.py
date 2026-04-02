@@ -526,6 +526,69 @@ def test_build_paired_promotion_decision_reads_decision_language_from_run_dirs(t
     assert decision["decision"]["safety_failure_summary"]["challenger_safety_veto_total"] == 1
 
 
+def test_build_paired_promotion_decision_blocks_failed_quality_budget_summary(tmp_path: Path) -> None:
+    champion_run = tmp_path / "paper-champion-quality"
+    challenger_run = tmp_path / "paper-challenger-quality"
+    champion_run.mkdir(parents=True, exist_ok=True)
+    challenger_run.mkdir(parents=True, exist_ok=True)
+    _write_summary(
+        champion_run,
+        role="champion",
+        model_ref="champion-run",
+        model_run_id="champion-run-id",
+        realized_pnl=100.0,
+    )
+    _write_summary(
+        challenger_run,
+        role="challenger",
+        model_ref="candidate-run",
+        model_run_id="candidate-run-id",
+        realized_pnl=120.0,
+    )
+
+    cert_meta = tmp_path / "data" / "features" / "features_v4" / "_meta"
+    cert_meta.mkdir(parents=True, exist_ok=True)
+    (cert_meta / "feature_dataset_certification.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "pass": True,
+                "quality_budget_summary": {
+                    "paired_inclusion_pass": False,
+                    "eligible_market_ratio": 0.0,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    decision = _build_paired_promotion_decision(
+        champion_run_dir=champion_run,
+        challenger_run_dir=challenger_run,
+        paired_report={
+            "clock_alignment": {"pair_ready": True, "matched_opportunities": 1},
+            "paired_deltas": {},
+            "taxonomy_counts": {},
+            "decision_language_counts": {},
+            "report_path": str(tmp_path / "paired_paper_report.json"),
+        },
+        paired_gate={"pass": True, "reason": "PAIRED_PAPER_READY"},
+        min_challenger_hours=0.0,
+        min_orders_filled=0,
+        min_realized_pnl_quote=0.0,
+        min_micro_quality_score=0.0,
+        min_nonnegative_ratio=0.0,
+        max_drawdown_deterioration_factor=1.10,
+        micro_quality_tolerance=0.02,
+        nonnegative_ratio_tolerance=0.05,
+        max_time_to_fill_deterioration_factor=1.25,
+    )
+
+    assert decision["decision"]["promote"] is False
+    assert "PAIRED_FEATURE_DATA_QUALITY_BUDGET_FAILED" in decision["decision"]["hard_failures"]
+
+
 def test_build_paper_run_settings_allows_unbounded_duration_for_service_mode() -> None:
     settings = paired_runtime_module._build_paper_run_settings(
         model_ref="candidate-run",

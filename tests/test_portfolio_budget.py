@@ -197,6 +197,35 @@ def test_resolve_portfolio_risk_budget_canary_enforces_soft_haircuts(tmp_path) -
     assert payload["soft_budget_clamped"] is True
 
 
+def test_resolve_portfolio_risk_budget_applies_platform_quality_haircut(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        payload = resolve_portfolio_risk_budget(
+            store=store,
+            market="KRW-BTC",
+            side="bid",
+            target_notional_quote=10_000.0,
+            base_budget_quote=10_000.0,
+            quote_free=20_000.0,
+            min_total_krw=5_000.0,
+            effective_max_positions=2,
+            rollout_mode="live",
+            runtime_model_run_id="run-live",
+            platform_quality_budget={
+                "micro_available_ratio": 0.50,
+                "micro_validate_parse_ok_ratio": 0.80,
+                "one_m_synth_ratio_p90": 0.80,
+                "rows_dropped_no_micro": 2,
+            },
+        )
+
+    assert payload["data_quality_haircut"] < 1.0
+    assert payload["resolved_notional_quote"] < 10_000.0
+    assert "PORTFOLIO_DATA_QUALITY_MICRO_AVAILABILITY_HAIRCUT" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_DATA_QUALITY_PARSE_OK_HAIRCUT" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_DATA_QUALITY_SYNTH_P90_SEVERE" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_DATA_QUALITY_MICRO_DROPS_PRESENT" in payload["risk_reason_codes"]
+
+
 def test_resolve_portfolio_risk_budget_ignores_pre_reset_loss_streak_history(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         store.upsert_trade_journal(

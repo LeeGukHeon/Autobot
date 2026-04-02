@@ -146,6 +146,14 @@ _REASON_SPECS: dict[str, BreakerReasonSpec] = {
         clear_policy=CLEAR_POLICY_RUNTIME_CONTRACT_RECOVERY,
         summary="The requested runtime model pointer could not be resolved.",
     ),
+    "FEATURE_PLATFORM_CONTRACT_INVALID": BreakerReasonSpec(
+        reason_code="FEATURE_PLATFORM_CONTRACT_INVALID",
+        breaker_type=BREAKER_TYPE_STATE_INTEGRITY,
+        subtype="feature_platform_contract",
+        default_action=ACTION_HALT_NEW_INTENTS,
+        clear_policy=CLEAR_POLICY_RUNTIME_CONTRACT_RECOVERY,
+        summary="The feature-platform certification or parity contract is missing or invalid.",
+    ),
     "LIVE_ROLLOUT_NOT_ARMED": BreakerReasonSpec(
         reason_code="LIVE_ROLLOUT_NOT_ARMED",
         breaker_type=BREAKER_TYPE_OPERATIONAL_POLICY,

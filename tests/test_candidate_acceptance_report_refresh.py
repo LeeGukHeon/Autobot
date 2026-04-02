@@ -151,6 +151,26 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(f"[ops][live-feature-parity] path={report_path}")
                 sys.exit(0)
 
+            if tuple(args[:3]) == ("-m", "autobot.ops.feature_dataset_certification", "--project-root"):
+                report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+                write_json(
+                    report_path,
+                    {
+                        "policy": "feature_dataset_certification_v1",
+                        "status": "PASS",
+                        "pass": True,
+                        "reasons": [],
+                    },
+                )
+                append_log(
+                    {
+                        "command": "feature dataset certification",
+                        "project_root": arg_value("--project-root"),
+                    }
+                )
+                print(f"[ops][feature-dataset-certification] path={report_path}")
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
                 dataset_root = Path(arg_value("--dataset-root"))
                 contract_path = dataset_root.parent / "fusion_runtime_input_contract.json"
@@ -336,6 +356,10 @@ def _seed_train_snapshot_close_contract(
     batch_date: str = "2026-03-07",
     snapshot_id: str = "snapshot-refresh-001",
 ) -> None:
+    coverage_start = "2026-01-01"
+    certification_start = "2026-02-28"
+    train_end = "2026-02-27"
+    train_start = "2026-01-29"
     _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": snapshot_id})
     _write_json(
         project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json",
@@ -349,12 +373,31 @@ def _seed_train_snapshot_close_contract(
             "deadline_met": True,
             "overall_pass": True,
             "failure_reasons": [],
+            "coverage_window": {"start": coverage_start, "end": batch_date},
+            "train_window": {"start": train_start, "end": train_end},
+            "certification_window": {"start": certification_start, "end": batch_date},
+            "coverage_window_source": "test_seed",
+            "refresh_argument_mode": "explicit_window",
+            "features_v4_effective_end": batch_date,
             "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
             "micro_date_coverage_counts": {},
             "source_freshness": {
                 "candles_api_refresh": {"pass": True},
                 "raw_ticks_daily": {"pass": True, "batch_date": batch_date, "batch_covered": True},
             },
+        },
+    )
+    _write_json(
+        project_root / "data" / "features" / "features_v4" / "_meta" / "build_report.json",
+        {
+            "dataset_name": "features_v4",
+            "requested_start": train_start,
+            "requested_end": train_end,
+            "effective_start": train_start,
+            "effective_end": train_end,
+            "rows_final": 100,
+            "min_rows_for_train": 10,
+            "status": "PASS",
         },
     )
 
@@ -427,9 +470,11 @@ def test_candidate_acceptance_uses_nonempty_smoke_report_path_for_refresh_when_p
         if line.strip()
     ]
     commands = [entry["command"] for entry in python_invocations]
-    assert "features build" in commands
+    assert "features validate" in commands
+    assert "live feature parity" in commands
+    assert "feature dataset certification" in commands
     assert "model train" in commands
-    assert commands.index("features build") < commands.index("model train")
+    assert commands.index("feature dataset certification") < commands.index("model train")
 
     latest_report = json.loads(
         (project_root / "logs" / "model_acceptance_test" / "latest.json").read_text(encoding="utf-8-sig")

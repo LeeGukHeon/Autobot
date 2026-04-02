@@ -5295,6 +5295,23 @@ function Resolve-LiveFeatureParityReportPathFromText {
     return $reportedPath.Trim()
 }
 
+function Resolve-FeatureDatasetCertificationPathFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+    $pattern = '(?m)^\[ops\]\[feature-dataset-certification\]\s+path=(.+)$'
+    $match = [Regex]::Match($TextValue, $pattern)
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
 function Get-DateRangeAscending {
     param(
         [string]$StartDate,
@@ -5566,6 +5583,47 @@ function Invoke-LiveFeatureParityAndLoadReport {
         PassingPairs = $passingPairs
         Acceptable = [bool]$acceptable
         Status = $status
+        Usable = [bool]$usable
+    }
+}
+
+function Invoke-FeatureDatasetCertificationAndLoadReport {
+    param([string]$PythonPath)
+    $args = @(
+        "-m", "autobot.ops.feature_dataset_certification",
+        "--project-root", $resolvedProjectRoot,
+        "--feature-set", $FeatureSet
+    )
+    $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
+    $exec = $null
+    try {
+        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    } catch {
+        $exec = [PSCustomObject]@{
+            ExitCode = 2
+            Output = [string]$_.Exception.Message
+            Command = $commandText
+        }
+    }
+    $reportPath = if ($DryRun) { "" } else { Resolve-FeatureDatasetCertificationPathFromText -TextValue ([string]$exec.Output) }
+    if ([string]::IsNullOrWhiteSpace($reportPath) -and (-not $DryRun)) {
+        $defaultReportPath = Join-Path $resolvedProjectRoot ("data/features/features_" + $FeatureSet + "/_meta/feature_dataset_certification.json")
+        if (Test-Path $defaultReportPath) {
+            $reportPath = $defaultReportPath
+        }
+    }
+    $reportDoc = if ([string]::IsNullOrWhiteSpace($reportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $reportPath }
+    $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
+    $pass = To-Bool (Get-PropValue -ObjectValue $reportDoc -Name "pass" -DefaultValue $false) $false
+    $reasons = @((Get-PropValue -ObjectValue $reportDoc -Name "reasons" -DefaultValue @()))
+    $usable = ($exec.ExitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($reportPath)) -and ($pass) -and ($status -eq "PASS")
+    return [PSCustomObject]@{
+        Exec = $exec
+        ReportPath = $reportPath
+        Report = $reportDoc
+        Status = $status
+        Pass = [bool]$pass
+        Reasons = @($reasons)
         Usable = [bool]$usable
     }
 }
@@ -6029,6 +6087,39 @@ try {
         }
     } else {
         $report.steps.features_live_parity = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_FEATURE_SET"
+        }
+    }
+
+    $featureDatasetCertificationAttempt = $null
+    if ([string]::Equals($FeatureSet, "v4", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $featureDatasetCertificationAttempt = Invoke-FeatureDatasetCertificationAndLoadReport -PythonPath $resolvedPythonExe
+        $report.steps.feature_dataset_certification = [ordered]@{
+            attempted = $true
+            exit_code = [int]$featureDatasetCertificationAttempt.Exec.ExitCode
+            command = $featureDatasetCertificationAttempt.Exec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$featureDatasetCertificationAttempt.Exec.Output))
+            report_path = [string]$featureDatasetCertificationAttempt.ReportPath
+            status = [string]$featureDatasetCertificationAttempt.Status
+            pass = [bool]$featureDatasetCertificationAttempt.Pass
+            reasons = @($featureDatasetCertificationAttempt.Reasons)
+        }
+        if (-not $featureDatasetCertificationAttempt.Usable) {
+            $report.steps.train = [ordered]@{
+                attempted = $false
+                reason = "FEATURE_DATASET_CERTIFICATION_MISSING_OR_FAILED"
+                start = $trainStartDate
+                end = $trainEndDate
+            }
+            $report.reasons = @("FEATURE_DATASET_CERTIFICATION_MISSING_OR_FAILED")
+            $report.gates.overall_pass = $false
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.feature_dataset_certification = [ordered]@{
             attempted = $false
             reason = "NOT_REQUIRED_FOR_FEATURE_SET"
         }

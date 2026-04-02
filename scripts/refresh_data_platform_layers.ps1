@@ -377,16 +377,25 @@ $registryStep = New-RefreshStep `
     -LockFile $PublishLockFile `
     -BlockingLock
 
+$retentionRegistryStep = New-RefreshStep `
+    -Name "refresh_dataset_retention_registry" `
+    -StepArgs @(
+        "-m", "autobot.ops.dataset_retention_registry",
+        "--project-root", $resolvedProjectRoot
+    ) `
+    -LockFile $PublishLockFile `
+    -BlockingLock
+
 $steps = @()
 switch ($Mode) {
     "training_critical" {
-        $steps = @($trainingCriticalSteps + $microSteps + $tensorSteps + @($registryStep))
+        $steps = @($trainingCriticalSteps + $microSteps + $tensorSteps + @($registryStep, $retentionRegistryStep))
         if (-not $SkipPublishReadySnapshot) {
             $steps += ,$publishStep
         }
     }
     "runtime_rich" {
-        $steps = @($runtimeRichSteps + @($registryStep))
+        $steps = @($runtimeRichSteps + @($registryStep, $retentionRegistryStep))
         if (-not $SkipPublishReadySnapshot) {
             $steps += ,$publishStep
         }
