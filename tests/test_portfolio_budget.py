@@ -213,6 +213,8 @@ def test_resolve_portfolio_risk_budget_applies_platform_quality_haircut(tmp_path
             platform_quality_budget={
                 "micro_available_ratio": 0.50,
                 "micro_validate_parse_ok_ratio": 0.80,
+                "micro_validate_short_trade_coverage_ratio": 0.95,
+                "micro_validate_short_book_coverage_ratio": 0.60,
                 "one_m_synth_ratio_p90": 0.80,
                 "rows_dropped_no_micro": 2,
             },
@@ -222,6 +224,8 @@ def test_resolve_portfolio_risk_budget_applies_platform_quality_haircut(tmp_path
     assert payload["resolved_notional_quote"] < 10_000.0
     assert "PORTFOLIO_DATA_QUALITY_MICRO_AVAILABILITY_HAIRCUT" in payload["risk_reason_codes"]
     assert "PORTFOLIO_DATA_QUALITY_PARSE_OK_HAIRCUT" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_DATA_QUALITY_SHORT_TRADE_COVERAGE_SEVERE" in payload["risk_reason_codes"]
+    assert "PORTFOLIO_DATA_QUALITY_SHORT_BOOK_COVERAGE_HIGH" in payload["risk_reason_codes"]
     assert "PORTFOLIO_DATA_QUALITY_SYNTH_P90_SEVERE" in payload["risk_reason_codes"]
     assert "PORTFOLIO_DATA_QUALITY_MICRO_DROPS_PRESENT" in payload["risk_reason_codes"]
 

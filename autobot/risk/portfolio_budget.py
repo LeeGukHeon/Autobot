@@ -546,6 +546,24 @@ def _data_quality_haircut(platform_quality_budget: dict[str, Any] | None) -> tup
         haircut = min(haircut, max(float(parse_ok_ratio) / 0.99, 0.25))
         reason_codes.append("PORTFOLIO_DATA_QUALITY_PARSE_OK_HAIRCUT")
 
+    short_trade_coverage_ratio = _safe_optional_float(payload.get("micro_validate_short_trade_coverage_ratio"))
+    if short_trade_coverage_ratio is not None:
+        if short_trade_coverage_ratio >= 0.90:
+            haircut = min(haircut, 0.50)
+            reason_codes.append("PORTFOLIO_DATA_QUALITY_SHORT_TRADE_COVERAGE_SEVERE")
+        elif short_trade_coverage_ratio >= 0.50:
+            haircut = min(haircut, 0.75)
+            reason_codes.append("PORTFOLIO_DATA_QUALITY_SHORT_TRADE_COVERAGE_HIGH")
+
+    short_book_coverage_ratio = _safe_optional_float(payload.get("micro_validate_short_book_coverage_ratio"))
+    if short_book_coverage_ratio is not None:
+        if short_book_coverage_ratio >= 0.90:
+            haircut = min(haircut, 0.50)
+            reason_codes.append("PORTFOLIO_DATA_QUALITY_SHORT_BOOK_COVERAGE_SEVERE")
+        elif short_book_coverage_ratio >= 0.50:
+            haircut = min(haircut, 0.75)
+            reason_codes.append("PORTFOLIO_DATA_QUALITY_SHORT_BOOK_COVERAGE_HIGH")
+
     synth_ratio_p90 = _safe_optional_float(payload.get("one_m_synth_ratio_p90"))
     if synth_ratio_p90 is not None:
         if synth_ratio_p90 >= 0.75:

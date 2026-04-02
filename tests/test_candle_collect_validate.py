@@ -243,6 +243,10 @@ def test_collect_second_candles_uses_second_artifact_paths_and_sparse_validation
     )
     assert validate_summary.fail_files == 0
     assert validate_summary.ok_files == 1
+    build_report = json.loads((parquet_root / "candles_second_v1" / "_meta" / "build_report.json").read_text(encoding="utf-8"))
+    assert build_report["source_mode"] == "external_upbit_rest_candle_api"
+    assert build_report["source_contract_ids"] == []
+    assert build_report["source_run_ids"] == []
 
 
 def _candle_row(ts_ms: int, price: float) -> dict:

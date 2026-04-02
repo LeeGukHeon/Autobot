@@ -109,6 +109,39 @@ def backfill_trade_candles_from_raw_ws(options: RawWsTradeCandleBackfillOptions)
         append_manifest_rows(manifest_path(options.ws_candle_root), manifest_rows_ws)
     if manifest_rows_second:
         append_manifest_rows(manifest_path(options.second_candle_root), manifest_rows_second)
+    source_run_ids = [
+        item
+        for item in [
+            str(_load_json_or_empty(options.raw_ws_root.parent / "_meta" / "ws_public_health.json").get("run_id") or "").strip(),
+            str(_load_json_or_empty(options.raw_ws_root.parent / "_meta" / "ws_collect_report.json").get("run_id") or "").strip(),
+            str(_load_json_or_empty(options.raw_ws_root.parent / "_meta" / "ws_validate_report.json").get("run_id") or "").strip(),
+        ]
+        if item
+    ]
+    if rows_written_total > 0:
+        build_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if manifest_rows_ws:
+            _write_dataset_build_report(
+                dataset_root=options.ws_candle_root,
+                dataset_name="ws_candle_v1",
+                run_id=build_run_id,
+                collect_report_path=options.summary_path,
+                source_root=options.raw_ws_root,
+                source_run_ids=source_run_ids,
+                rows_written_total=sum(int(item.get("rows") or 0) for item in manifest_rows_ws),
+                partition_count=len(manifest_rows_ws),
+            )
+        if manifest_rows_second:
+            _write_dataset_build_report(
+                dataset_root=options.second_candle_root,
+                dataset_name="candles_second_v1",
+                run_id=build_run_id,
+                collect_report_path=options.summary_path,
+                source_root=options.raw_ws_root,
+                source_run_ids=source_run_ids,
+                rows_written_total=sum(int(item.get("rows") or 0) for item in manifest_rows_second),
+                partition_count=len(manifest_rows_second),
+            )
 
     report = {
         "policy": "raw_ws_trade_candle_backfill_v1",
@@ -325,6 +358,51 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-ws-candle-1m", action="store_true")
     parser.add_argument("--skip-second-candle-1s", action="store_true")
     return parser.parse_args()
+
+
+def _load_json_or_empty(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_dataset_build_report(
+    *,
+    dataset_root: Path,
+    dataset_name: str,
+    run_id: str,
+    collect_report_path: Path,
+    source_root: Path,
+    source_run_ids: list[str],
+    rows_written_total: int,
+    partition_count: int,
+) -> None:
+    meta_root = dataset_root / "_meta"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": str(run_id).strip(),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "dataset_name": str(dataset_name).strip(),
+        "dataset_root": str(dataset_root),
+        "manifest_file": str(manifest_path(dataset_root)),
+        "collect_report_file": str(collect_report_path),
+        "source_mode": "raw_ws_trade_backfill",
+        "source_roots": [str(source_root)],
+        "source_contract_ids": ["raw_ws_dataset:upbit_public"],
+        "source_run_ids": list(source_run_ids),
+        "summary": {
+            "rows_written_total": int(rows_written_total),
+            "partitions_written": int(partition_count),
+        },
+    }
+    (meta_root / "build_report.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def main() -> int:

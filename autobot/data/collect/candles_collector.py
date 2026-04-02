@@ -221,6 +221,10 @@ def collect_candles_from_plan(
         "dataset_root": str(dataset_root),
         "manifest_file": str(manifest_file),
         "collect_report_file": str(options.collect_report_path),
+        "source_mode": "external_upbit_rest_candle_api",
+        "source_roots": [],
+        "source_contract_ids": [],
+        "source_run_ids": [],
         "summary": {
             "processed_targets": processed_targets,
             "ok_targets": ok_targets,
