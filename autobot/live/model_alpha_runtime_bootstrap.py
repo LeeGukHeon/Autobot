@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -90,7 +91,13 @@ def build_live_strategy(
     return model_alpha_strategy_cls(
         predictor=predictor,
         feature_groups=None,
-        settings=settings.model_alpha,
+        settings=replace(
+            settings.model_alpha,
+            position=replace(
+                settings.model_alpha.position,
+                base_budget_quote=float(settings.per_trade_krw),
+            ),
+        ),
         interval_ms=interval_ms,
         live_frame_provider=lambda ts_ms, markets: feature_provider.build_frame(ts_ms=ts_ms, markets=markets),
         enable_operational_overlay=True,

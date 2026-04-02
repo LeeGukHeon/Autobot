@@ -42,10 +42,15 @@ from autobot.strategy.operational_overlay_v1 import (
 from autobot.strategy.micro_snapshot import MicroSnapshot
 from autobot.strategy.v5_post_model_contract import (
     V5_CONTINUATION_EXIT_REASON,
+    V5_ENTRY_OWNER,
     V5_POST_MODEL_CONTRACT_VERSION,
+    V5_SIZING_OWNER,
     V5_STALE_TIMEOUT_EXIT_REASON,
+    V5_TRADE_ACTION_ROLE,
     annotate_v5_runtime_recommendations,
+    build_v5_liquidation_policy,
     build_v5_entry_decision_payload,
+    finalize_v5_entry_decision,
     is_v5_post_model_contract,
     rank_v5_entry_candidates,
     resolve_v5_entry_gate,
@@ -73,6 +78,7 @@ class ModelAlphaPositionSettings:
     max_positions_total: int = 3
     cooldown_bars: int = 6
     entry_min_notional_buffer_bps: float = 25.0
+    base_budget_quote: float | None = None
     sizing_mode: str = "prob_ramp"  # fixed | prob_ramp
     size_multiplier_min: float = 0.5
     size_multiplier_max: float = 1.5
@@ -328,13 +334,21 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             )
             if reason_code is None:
                 continue
+            exit_intent_meta = (
+                _build_v5_exit_intent_meta(
+                    state=state,
+                    reason_code=reason_code,
+                )
+                if self._is_v5_post_model_contract
+                else {"strategy": "model_alpha_v1", "exit_mode": str(self._settings.exit.mode)}
+            )
             intents.append(
                 StrategyOrderIntent(
                     market=market,
                     side="ask",
                     ref_price=ref_price,
                     reason_code=reason_code,
-                    meta={"strategy": "model_alpha_v1", "exit_mode": str(self._settings.exit.mode)},
+                    meta=exit_intent_meta,
                 )
             )
 
@@ -695,7 +709,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             )
             v5_sizing_decision = (
                 resolve_v5_target_notional(
-                    base_budget_quote=None,
+                    base_budget_quote=self._settings.position.base_budget_quote,
                     final_expected_return=_safe_optional_float(row.get("final_expected_return")),
                     final_expected_es=_safe_optional_float(row.get("final_expected_es")),
                     final_tradability=_safe_optional_float(row.get("final_tradability")),
@@ -1838,7 +1852,7 @@ def _reprice_position_exit_plan(
         normalized["path_risk_bounded_sl"] = guided_sl
         normalized["path_risk_terminal_return_q50"] = _safe_optional_float(path_risk_guidance.get("terminal_return_q50"))
         normalized["path_risk_terminal_return_q75"] = _safe_optional_float(path_risk_guidance.get("terminal_return_q75"))
-        normalized["continue_value_lcb"] = _safe_optional_float(path_risk_guidance.get("continue_value_net"))
+        normalized["continue_value_lcb"] = _safe_optional_float(path_risk_guidance.get("continue_value_lcb"))
         normalized["exit_now_value_net"] = _safe_optional_float(path_risk_guidance.get("exit_now_value_net"))
         normalized["expected_liquidation_cost"] = _safe_optional_float(path_risk_guidance.get("immediate_exit_cost_ratio"))
         normalized["alpha_decay_penalty"] = _safe_optional_float(path_risk_guidance.get("alpha_decay_penalty_ratio"))
@@ -2046,6 +2060,32 @@ def _build_v5_liquidation_policy_payload(
         "expected_fill_probability": _safe_optional_float(decision.get("selected_fill_probability")),
         "expected_net_edge_bps": _safe_optional_float(decision.get("selected_net_edge_bps")),
         "expected_slippage_bps": _safe_optional_float(decision.get("selected_expected_slippage_bps")),
+    }
+
+
+def _build_v5_exit_intent_meta(
+    *,
+    state: _PositionState,
+    reason_code: str,
+) -> dict[str, Any]:
+    plan = dict(state.exit_plan or {})
+    exit_decision = dict(plan.get("exit_decision") or {})
+    liquidation_policy = build_v5_liquidation_policy(
+        exit_decision=exit_decision,
+        model_exit_plan=plan,
+    )
+    return {
+        "strategy": "model_alpha_v1",
+        "exit_mode": str(plan.get("mode", "")),
+        "decision_contract_version": V5_POST_MODEL_CONTRACT_VERSION,
+        "entry_ownership": V5_ENTRY_OWNER,
+        "sizing_ownership": V5_SIZING_OWNER,
+        "trade_action_role": V5_TRADE_ACTION_ROLE,
+        "exit_ownership": "continuation_value_controller",
+        "model_exit_plan": plan,
+        "exit_decision": exit_decision,
+        "liquidation_policy": liquidation_policy,
+        "reason_code": str(reason_code).strip(),
     }
 
 

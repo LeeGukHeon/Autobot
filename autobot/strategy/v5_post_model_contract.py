@@ -124,6 +124,50 @@ def build_v5_entry_decision_payload(
     return payload
 
 
+def finalize_v5_entry_decision(
+    *,
+    payload: dict[str, Any] | None,
+    portfolio_budget_allowed: bool | None = None,
+    breaker_clear: bool | None = None,
+    rollout_allowed: bool | None = None,
+    budget_reason_code: str | None = None,
+    breaker_reason_codes: list[str] | None = None,
+    rollout_reason_code: str | None = None,
+) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    reason_codes = [
+        str(code).strip()
+        for code in (normalized.get("reason_codes") or [])
+        if str(code).strip()
+    ]
+    if portfolio_budget_allowed is not None:
+        normalized["portfolio_budget_allowed"] = bool(portfolio_budget_allowed)
+        if not bool(portfolio_budget_allowed):
+            code = str(budget_reason_code or "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED").strip()
+            if code and code not in reason_codes:
+                reason_codes.append(code)
+    if breaker_clear is not None:
+        normalized["breaker_clear"] = bool(breaker_clear)
+        if not bool(breaker_clear):
+            resolved_codes = [
+                str(code).strip()
+                for code in (breaker_reason_codes or ["ENTRY_GATE_BREAKER_ACTIVE"])
+                if str(code).strip()
+            ]
+            for code in resolved_codes:
+                if code not in reason_codes:
+                    reason_codes.append(code)
+    if rollout_allowed is not None:
+        normalized["rollout_allowed"] = bool(rollout_allowed)
+        if not bool(rollout_allowed):
+            code = str(rollout_reason_code or "ENTRY_GATE_ROLLOUT_BLOCKED").strip()
+            if code and code not in reason_codes:
+                reason_codes.append(code)
+    normalized["reason_codes"] = reason_codes
+    normalized["allowed"] = len(reason_codes) == 0
+    return normalized
+
+
 def resolve_v5_target_notional(
     *,
     base_budget_quote: float | None,
@@ -182,20 +226,11 @@ def resolve_v5_exit_decision(
     guidance = dict(continuation_guidance or {})
     exit_now_value_net = _safe_optional_float(guidance.get("exit_now_value_net"))
     continue_value_net = _safe_optional_float(guidance.get("continue_value_net"))
-    continue_value_lcb = continue_value_net
+    continue_value_lcb = _safe_optional_float(guidance.get("continue_value_lcb"))
+    if continue_value_lcb is None:
+        continue_value_lcb = continue_value_net
     alpha_decay_penalty = _safe_optional_float(guidance.get("alpha_decay_penalty_ratio"))
     expected_liquidation_cost = _safe_optional_float(guidance.get("immediate_exit_cost_ratio"))
-    if bool(guidance.get("continuation_should_exit")):
-        return {
-            "should_exit": True,
-            "decision_reason_code": V5_CONTINUATION_EXIT_REASON,
-            "mode": str(mode).strip().lower(),
-            "exit_now_value_net": exit_now_value_net,
-            "continue_value_net": continue_value_net,
-            "continue_value_lcb": continue_value_lcb,
-            "expected_liquidation_cost": expected_liquidation_cost,
-            "alpha_decay_penalty": alpha_decay_penalty,
-        }
     resolved_net_return = _safe_optional_float(net_return_ratio)
     if stop_loss_ratio > 0.0 and resolved_net_return is not None and float(resolved_net_return) <= -float(stop_loss_ratio):
         return {
@@ -231,6 +266,21 @@ def resolve_v5_exit_decision(
             "expected_liquidation_cost": expected_liquidation_cost,
             "alpha_decay_penalty": alpha_decay_penalty,
         }
+    if (
+        exit_now_value_net is not None
+        and continue_value_lcb is not None
+        and float(exit_now_value_net) > float(continue_value_lcb)
+    ):
+        return {
+            "should_exit": True,
+            "decision_reason_code": V5_CONTINUATION_EXIT_REASON,
+            "mode": str(mode).strip().lower(),
+            "exit_now_value_net": exit_now_value_net,
+            "continue_value_net": continue_value_net,
+            "continue_value_lcb": continue_value_lcb,
+            "expected_liquidation_cost": expected_liquidation_cost,
+            "alpha_decay_penalty": alpha_decay_penalty,
+        }
     return {
         "should_exit": False,
         "decision_reason_code": "",
@@ -240,6 +290,58 @@ def resolve_v5_exit_decision(
         "continue_value_lcb": continue_value_lcb,
         "expected_liquidation_cost": expected_liquidation_cost,
         "alpha_decay_penalty": alpha_decay_penalty,
+    }
+
+
+def build_v5_liquidation_policy(
+    *,
+    exit_decision: dict[str, Any] | None,
+    model_exit_plan: dict[str, Any] | None,
+    execution_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    decision = dict(exit_decision or {})
+    plan = dict(model_exit_plan or {})
+    execution = dict(execution_decision or {})
+    decision_reason_code = str(decision.get("decision_reason_code", "")).strip()
+    if decision_reason_code == V5_SAFETY_STOP_EXIT_REASON:
+        ord_type = "best"
+        time_in_force = "ioc"
+        price_mode = "CROSS_1T"
+        timeout_ms = 15_000
+        replace_interval_ms = 5_000
+        max_replaces = 0
+    elif decision_reason_code == V5_STALE_TIMEOUT_EXIT_REASON:
+        ord_type = "limit"
+        time_in_force = "ioc"
+        price_mode = "JOIN"
+        timeout_ms = 30_000
+        replace_interval_ms = 15_000
+        max_replaces = 1
+    else:
+        ord_type = "limit"
+        time_in_force = "ioc"
+        price_mode = str(
+            plan.get("expected_immediate_exit_price_mode")
+            or execution.get("selected_price_mode")
+            or "JOIN"
+        ).strip().upper()
+        timeout_ms = int(_safe_optional_float(plan.get("expected_immediate_exit_time_to_fill_ms")) or 30_000)
+        replace_interval_ms = max(int(timeout_ms // 2), 5_000)
+        max_replaces = 1
+    return {
+        "owner": "liquidation_execution_policy",
+        "decision_reason_code": decision_reason_code,
+        "ord_type": str(ord_type),
+        "time_in_force": str(time_in_force),
+        "price_mode": str(price_mode),
+        "timeout_ms": int(timeout_ms),
+        "replace_interval_ms": int(replace_interval_ms),
+        "max_replaces": int(max_replaces),
+        "expected_liquidation_cost": _safe_optional_float(
+            decision.get("expected_liquidation_cost", plan.get("expected_liquidation_cost"))
+        ),
+        "exit_now_value_net": _safe_optional_float(decision.get("exit_now_value_net")),
+        "continue_value_lcb": _safe_optional_float(decision.get("continue_value_lcb")),
     }
 
 

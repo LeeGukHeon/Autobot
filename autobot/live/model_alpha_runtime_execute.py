@@ -13,6 +13,7 @@ from autobot.execution.order_supervisor import (
     normalize_order_exec_profile,
     order_exec_profile_from_dict,
 )
+from autobot.strategy.v5_post_model_contract import finalize_v5_entry_decision
 from autobot.live.execution_attempts import record_execution_attempt_submission
 from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_decision,
@@ -235,6 +236,85 @@ def strategy_live_exec_profile(
         max_chase_bps=10_000,
         min_replace_interval_ms_global=1_500,
     )
+
+
+def _apply_liquidation_policy_to_exec_profile(
+    *,
+    exec_profile: OrderExecProfile,
+    liquidation_policy: dict[str, Any] | None,
+) -> OrderExecProfile:
+    payload = dict(liquidation_policy or {})
+    if not payload:
+        return exec_profile
+    timeout_ms = _safe_optional_int(payload.get("timeout_ms"))
+    replace_interval_ms = _safe_optional_int(payload.get("replace_interval_ms"))
+    max_replaces = _safe_optional_int(payload.get("max_replaces"))
+    price_mode = str(payload.get("price_mode") or exec_profile.price_mode).strip().upper() or str(exec_profile.price_mode)
+    return normalize_order_exec_profile(
+        OrderExecProfile(
+            timeout_ms=max(int(timeout_ms or exec_profile.timeout_ms), 1),
+            replace_interval_ms=max(int(replace_interval_ms or exec_profile.replace_interval_ms), 1),
+            max_replaces=max(int(max_replaces if max_replaces is not None else exec_profile.max_replaces), 0),
+            price_mode=price_mode,
+            max_chase_bps=int(exec_profile.max_chase_bps),
+            min_replace_interval_ms_global=int(exec_profile.min_replace_interval_ms_global),
+            post_only=bool(exec_profile.post_only),
+        )
+    )
+
+
+def _finalize_strategy_meta_entry_decision(
+    *,
+    strategy_meta: dict[str, Any],
+    portfolio_budget_allowed: bool | None = None,
+    budget_reason_code: str | None = None,
+    breaker_clear: bool | None = None,
+    breaker_reason_codes: list[str] | None = None,
+    rollout_allowed: bool | None = None,
+    rollout_reason_code: str | None = None,
+) -> dict[str, Any]:
+    payload = dict(strategy_meta)
+    entry_decision = dict(payload.get("entry_decision") or {}) if isinstance(payload.get("entry_decision"), dict) else {}
+    if not entry_decision:
+        return payload
+    payload["entry_decision"] = finalize_v5_entry_decision(
+        payload=entry_decision,
+        portfolio_budget_allowed=portfolio_budget_allowed,
+        budget_reason_code=budget_reason_code,
+        breaker_clear=breaker_clear,
+        breaker_reason_codes=breaker_reason_codes,
+        rollout_allowed=rollout_allowed,
+        rollout_reason_code=rollout_reason_code,
+    )
+    return payload
+
+
+def _finalize_meta_payload_entry_decision(
+    *,
+    meta_payload: dict[str, Any],
+    portfolio_budget_allowed: bool | None = None,
+    budget_reason_code: str | None = None,
+    breaker_clear: bool | None = None,
+    breaker_reason_codes: list[str] | None = None,
+    rollout_allowed: bool | None = None,
+    rollout_reason_code: str | None = None,
+) -> dict[str, Any]:
+    payload = dict(meta_payload)
+    strategy_payload = dict(payload.get("strategy") or {}) if isinstance(payload.get("strategy"), dict) else {}
+    strategy_meta = dict(strategy_payload.get("meta") or {}) if isinstance(strategy_payload.get("meta"), dict) else {}
+    if not strategy_meta:
+        return payload
+    strategy_payload["meta"] = _finalize_strategy_meta_entry_decision(
+        strategy_meta=strategy_meta,
+        portfolio_budget_allowed=portfolio_budget_allowed,
+        budget_reason_code=budget_reason_code,
+        breaker_clear=breaker_clear,
+        breaker_reason_codes=breaker_reason_codes,
+        rollout_allowed=rollout_allowed,
+        rollout_reason_code=rollout_reason_code,
+    )
+    payload["strategy"] = strategy_payload
+    return payload
 
 
 def effective_live_trade_gate_max_positions(settings: Any) -> int:
@@ -765,6 +845,11 @@ def resolve_live_strategy_execution(
         if isinstance(strategy_meta.get("trade_action"), dict)
         else {}
     )
+    liquidation_policy_payload = (
+        dict(strategy_meta.get("liquidation_policy") or {})
+        if isinstance(strategy_meta.get("liquidation_policy"), dict)
+        else {}
+    )
     size_ladder_decision = resolve_execution_risk_control_size_decision_fn(
         risk_control_payload=risk_control_payload,
         trade_action=trade_action_payload,
@@ -832,6 +917,13 @@ def resolve_live_strategy_execution(
             execution_trace["strategy_intent_exec_profile"] = dict(strategy_exec_profile)
             exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
             execution_trace["after_strategy_exec_profile"] = order_exec_profile_to_dict_fn(exec_profile)
+    elif liquidation_policy_payload:
+        execution_trace["liquidation_policy_exec_profile"] = dict(liquidation_policy_payload)
+        exec_profile = _apply_liquidation_policy_to_exec_profile(
+            exec_profile=exec_profile,
+            liquidation_policy=liquidation_policy_payload,
+        )
+        execution_trace["after_liquidation_policy"] = order_exec_profile_to_dict_fn(exec_profile)
     operational_payload: dict[str, Any] = {}
     portfolio_budget_payload: dict[str, Any] = {}
     trade_gate_payload: dict[str, Any] = {"enabled": True}
@@ -956,6 +1048,11 @@ def resolve_live_strategy_execution(
             runtime_model_run_id=str(runtime_model_run_id or "").strip() or None,
         )
         if portfolio_budget_payload.get("enabled"):
+            strategy_meta = _finalize_strategy_meta_entry_decision(
+                strategy_meta=strategy_meta,
+                portfolio_budget_allowed=bool(portfolio_budget_payload.get("allowed", True)),
+                budget_reason_code=str(portfolio_budget_payload.get("primary_reason_code", "")).strip() or None,
+            )
             if not bool(portfolio_budget_payload.get("allowed", True)):
                 return resolution_cls(
                     allowed=False,
@@ -1373,8 +1470,16 @@ def resolve_live_strategy_execution(
             },
         )
 
-    selected_ord_type = str(execution_policy.get("selected_ord_type", "limit")).strip().lower() or "limit"
-    selected_time_in_force = str(execution_policy.get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
+    selected_ord_type = str(
+        execution_policy.get("selected_ord_type")
+        or liquidation_policy_payload.get("ord_type")
+        or "limit"
+    ).strip().lower() or "limit"
+    selected_time_in_force = str(
+        execution_policy.get("selected_time_in_force")
+        or liquidation_policy_payload.get("time_in_force")
+        or "gtc"
+    ).strip().lower() or "gtc"
     selected_price_mode = str(execution_policy.get("selected_price_mode", exec_profile.price_mode)).strip().upper() or str(exec_profile.price_mode)
     if selected_price_mode != str(exec_profile.price_mode).strip().upper():
         exec_profile = normalize_order_exec_profile(
@@ -1800,6 +1905,17 @@ def handle_strategy_intent(
         )
         return "skipped"
     meta_payload["admissibility"] = admissibility_report
+    rollout_status = store.live_rollout_status() or {}
+    rollout_allowed = bool(rollout_status.get("order_emission_allowed"))
+    emission_allowed = bool(order_emission_allowed_fn(store))
+    breaker_clear = (True if emission_allowed and rollout_allowed else False if rollout_allowed else None)
+    meta_payload = _finalize_meta_payload_entry_decision(
+        meta_payload=meta_payload,
+        rollout_allowed=rollout_allowed,
+        rollout_reason_code=("ENTRY_GATE_ROLLOUT_BLOCKED" if not rollout_allowed else None),
+        breaker_clear=breaker_clear,
+        breaker_reason_codes=(["ENTRY_GATE_BREAKER_ACTIVE"] if breaker_clear is False else None),
+    )
     execution_payload = dict(meta_payload.get("execution") or {})
     execution_policy_payload = dict(meta_payload.get("execution_policy") or {})
     intent = new_order_intent_fn(
@@ -1828,7 +1944,7 @@ def handle_strategy_intent(
         )
         return "skipped"
 
-    if not order_emission_allowed_fn(store):
+    if not emission_allowed:
         record_strategy_intent_fn(
             store=store,
             market=market,

@@ -4,7 +4,9 @@ from autobot.strategy.v5_post_model_contract import (
     V5_CONTINUATION_EXIT_REASON,
     V5_POST_MODEL_CONTRACT_VERSION,
     annotate_v5_runtime_recommendations,
+    finalize_v5_entry_decision,
     rank_v5_entry_candidates,
+    build_v5_liquidation_policy,
     resolve_v5_entry_gate,
     resolve_v5_exit_decision,
     resolve_v5_target_notional,
@@ -67,6 +69,32 @@ def test_resolve_v5_target_notional_reuses_portfolio_signal_haircuts() -> None:
     assert "PORTFOLIO_CONFIDENCE_HAIRCUT" in payload["reason_codes"]
 
 
+def test_finalize_v5_entry_decision_applies_runtime_budget_breaker_rollout_state() -> None:
+    payload = finalize_v5_entry_decision(
+        payload={
+            "allowed": True,
+            "reason_codes": [],
+            "decision_contract_version": V5_POST_MODEL_CONTRACT_VERSION,
+        },
+        portfolio_budget_allowed=False,
+        budget_reason_code="PORTFOLIO_BUDGET_BLOCKED",
+        breaker_clear=False,
+        breaker_reason_codes=["LIVE_BREAKER_ACTIVE"],
+        rollout_allowed=False,
+        rollout_reason_code="ROLLOUT_DISABLED",
+    )
+
+    assert payload["allowed"] is False
+    assert payload["portfolio_budget_allowed"] is False
+    assert payload["breaker_clear"] is False
+    assert payload["rollout_allowed"] is False
+    assert payload["reason_codes"] == [
+        "PORTFOLIO_BUDGET_BLOCKED",
+        "LIVE_BREAKER_ACTIVE",
+        "ROLLOUT_DISABLED",
+    ]
+
+
 def test_resolve_v5_entry_gate_blocks_nonpositive_edge() -> None:
     payload = resolve_v5_entry_gate(
         market="KRW-BTC",
@@ -86,9 +114,9 @@ def test_resolve_v5_entry_gate_blocks_nonpositive_edge() -> None:
 def test_resolve_v5_exit_decision_prefers_continuation_controller() -> None:
     payload = resolve_v5_exit_decision(
         continuation_guidance={
-            "continuation_should_exit": True,
             "exit_now_value_net": 0.006,
-            "continue_value_net": 0.003,
+            "continue_value_net": 0.007,
+            "continue_value_lcb": 0.005,
             "immediate_exit_cost_ratio": 0.001,
             "alpha_decay_penalty_ratio": 0.0005,
         },
@@ -102,4 +130,15 @@ def test_resolve_v5_exit_decision_prefers_continuation_controller() -> None:
 
     assert payload["should_exit"] is True
     assert payload["decision_reason_code"] == V5_CONTINUATION_EXIT_REASON
-    assert payload["continue_value_lcb"] == 0.003
+    assert payload["continue_value_lcb"] == 0.005
+
+
+def test_build_v5_liquidation_policy_maps_exit_reason_to_execution_terms() -> None:
+    payload = build_v5_liquidation_policy(
+        exit_decision={"decision_reason_code": "SAFETY_STOP_EXIT", "expected_liquidation_cost": 0.002},
+        model_exit_plan={"expected_immediate_exit_price_mode": "JOIN"},
+    )
+
+    assert payload["ord_type"] == "best"
+    assert payload["time_in_force"] == "ioc"
+    assert payload["price_mode"] == "CROSS_1T"

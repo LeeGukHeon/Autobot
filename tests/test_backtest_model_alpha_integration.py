@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from autobot.backtest.engine import BacktestRunEngine, BacktestRunSettings
+from autobot.backtest.strategy_adapter import StrategyFillEvent
 from autobot.models.live_execution_policy import build_live_execution_contract
 from autobot.models.predictor import ModelPredictor
 from autobot.models.registry import RegistrySavePayload, save_run
@@ -366,6 +367,7 @@ def test_model_alpha_v5_contract_emits_signal_first_sizing_meta() -> None:
         ),
         settings=ModelAlphaSettings(
             selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(base_budget_quote=10_000.0),
         ),
         runtime_recommendations={"decision_contract_version": "v5_post_model_contract_v1"},
     )
@@ -384,8 +386,79 @@ def test_model_alpha_v5_contract_emits_signal_first_sizing_meta() -> None:
     assert meta["notional_multiplier_source"] == "v5_signal_haircuts"
     assert sizing_decision["sizing_owner"] == "portfolio_budget_first"
     assert float(sizing_decision["requested_notional_multiplier"]) > 0.0
+    assert sizing_decision["target_notional_quote"] == 5_000.0
     assert "PORTFOLIO_TRADABILITY_HAIRCUT" in sizing_decision["reason_codes"]
     assert "PORTFOLIO_CONFIDENCE_HAIRCUT" in sizing_decision["reason_codes"]
+
+
+def test_model_alpha_v5_exit_intent_carries_exit_decision_and_liquidation_policy() -> None:
+    entry_frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [1.0],
+            "close": [100.0],
+        }
+    )
+    exit_frame = pl.DataFrame(
+        {
+            "ts_ms": [301_000],
+            "market": ["KRW-BTC"],
+            "f1": [1.0],
+            "close": [101.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, entry_frame), (301_000, exit_frame)],
+        estimator=_V5ContractEstimator(
+            score_mean=[0.7],
+            final_expected_return=[0.012],
+            final_expected_es=[0.006],
+            final_tradability=[0.85],
+            final_uncertainty=[0.01],
+            final_alpha_lcb=[0.006],
+        ),
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(base_budget_quote=10_000.0, cooldown_bars=0),
+            exit=ModelAlphaExitSettings(mode="hold", hold_bars=1),
+        ),
+        runtime_recommendations={"decision_contract_version": "v5_post_model_contract_v1"},
+    )
+    entry_result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+    bid_intent = next(intent for intent in entry_result.intents if intent.side == "bid")
+    strategy.on_fill(
+        StrategyFillEvent(
+            ts_ms=1_000,
+            market="KRW-BTC",
+            side="bid",
+            price=100.0,
+            volume=1.0,
+            fee_quote=0.0,
+            meta=dict(bid_intent.meta or {}),
+        )
+    )
+
+    exit_result = strategy.on_ts(
+        ts_ms=301_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 101.0},
+        open_markets={"KRW-BTC"},
+    )
+    ask_intent = next(intent for intent in exit_result.intents if intent.side == "ask")
+    ask_meta = dict(ask_intent.meta or {})
+
+    assert ask_intent.reason_code == "STALE_TIMEOUT_EXIT"
+    assert ask_meta["decision_contract_version"] == "v5_post_model_contract_v1"
+    assert dict(ask_meta.get("exit_decision") or {})["decision_reason_code"] == "STALE_TIMEOUT_EXIT"
+    liquidation_policy = dict(ask_meta.get("liquidation_policy") or {})
+    assert liquidation_policy["time_in_force"] == "ioc"
+    assert liquidation_policy["price_mode"] == "JOIN"
 
 
 def test_model_alpha_manual_selection_can_disable_registry_recommendations() -> None:

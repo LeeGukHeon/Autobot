@@ -71,6 +71,9 @@ def resolve_path_risk_guidance_from_plan(
     continue_edge_q50 = _as_float(selected.get("continue_edge_q50"))
     if continue_edge_q50 is None:
         continue_edge_q50 = terminal_return_q50
+    continue_edge_q25 = _as_float(selected.get("continue_edge_q25"))
+    if continue_edge_q25 is None:
+        continue_edge_q25 = terminal_return_q25
     continue_edge_q75 = _as_float(selected.get("continue_edge_q75"))
     if continue_edge_q75 is None:
         continue_edge_q75 = terminal_return_q75
@@ -135,6 +138,11 @@ def resolve_path_risk_guidance_from_plan(
         float(continue_edge_q50) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
         if continue_edge_q50 is not None
         else None
+    )
+    continue_value_lcb = (
+        float(continue_edge_q25) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
+        if continue_edge_q25 is not None
+        else continue_value_net
     )
     optimistic_continue_value_net = (
         float(continue_edge_q75) - float(deferred_exit_cost_ratio)
@@ -253,6 +261,7 @@ def resolve_path_risk_guidance_from_plan(
         "terminal_return_q75": terminal_return_q75,
         "terminal_return_mean": terminal_return_mean,
         "continue_edge_q50": continue_edge_q50,
+        "continue_edge_q25": continue_edge_q25,
         "continue_edge_q75": continue_edge_q75,
         "terminal_positive_rate": terminal_positive_rate,
         "terminal_nonnegative_rate": terminal_nonnegative_rate,
@@ -272,6 +281,7 @@ def resolve_path_risk_guidance_from_plan(
         "continuation_value_ratio": continuation_value_ratio,
         "exit_now_value_net": exit_now_value_net,
         "continue_value_net": continue_value_net,
+        "continue_value_lcb": continue_value_lcb,
         "optimistic_continue_value_net": optimistic_continue_value_net,
         "alpha_decay_penalty_ratio": alpha_decay_penalty_ratio,
         "profit_preservation_rate": profit_preservation_rate,

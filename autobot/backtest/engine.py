@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import csv
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
 import heapq
 import json
@@ -65,6 +65,7 @@ from autobot.strategy.model_alpha_v1 import (
     resolve_model_alpha_runtime_row_columns,
     resolve_runtime_model_alpha_settings,
 )
+from autobot.strategy.v5_post_model_contract import finalize_v5_entry_decision
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
 from autobot.strategy.micro_order_policy import (
@@ -1595,6 +1596,7 @@ class BacktestRunEngine:
         ticker = market_data.get_latest_ticker(candidate.market)
         if ticker is None:
             return False
+        candidate_meta = dict(candidate.meta or {}) if isinstance(candidate.meta, dict) else {}
 
         rules = self._rules_provider.get_rules(
             market=candidate.market,
@@ -1603,18 +1605,27 @@ class BacktestRunEngine:
         )
         side_value = str(candidate.proposed_side).strip().lower()
         forced_volume = None
-        if isinstance(candidate.meta, dict):
-            forced_volume = _safe_optional_float(candidate.meta.get("force_volume"))
+        if candidate_meta:
+            forced_volume = _safe_optional_float(candidate_meta.get("force_volume"))
         entry_notional_quote = (
             _entry_notional_quote_for_strategy(
                 strategy_mode=str(self._run_settings.strategy).strip().lower() or "candidates_v1",
                 per_trade_krw=float(self._run_settings.per_trade_krw),
                 min_total_krw=max(float(rules.min_total), float(self._run_settings.min_order_krw)),
                 model_alpha_settings=self._run_settings.model_alpha,
-                candidate_meta=(candidate.meta if isinstance(candidate.meta, dict) else None),
+                candidate_meta=candidate_meta,
             )
             if side_value == "bid" and (forced_volume is None or forced_volume <= 0)
             else None
+        )
+        candidate_meta = _finalize_candidate_entry_decision(
+            candidate_meta=candidate_meta,
+            portfolio_budget_allowed=bool(entry_notional_quote is not None and float(entry_notional_quote) > 0.0),
+            budget_reason_code=(
+                "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
+                if entry_notional_quote is None or float(entry_notional_quote) <= 0.0
+                else None
+            ),
         )
         if side_value == "ask" and (forced_volume is None or forced_volume <= 0):
             base_currency = _base_currency(candidate.market)
@@ -1715,8 +1726,8 @@ class BacktestRunEngine:
 
         ref_price = max(float(candidate.ref_price), float(ticker.trade_price), 1e-8)
         model_prob = (
-            _safe_optional_float(candidate.meta.get("model_prob"))
-            if isinstance(candidate.meta, dict)
+            _safe_optional_float(candidate_meta.get("model_prob"))
+            if candidate_meta
             else None
         )
         strategy_mode = str(self._run_settings.strategy).strip().lower() or "candidates_v1"
@@ -1730,10 +1741,20 @@ class BacktestRunEngine:
                 else None
             ),
         )
-        if strategy_mode == "model_alpha_v1" and isinstance(candidate.meta, dict):
-            strategy_exec_profile = candidate.meta.get("exec_profile")
+        if strategy_mode == "model_alpha_v1" and candidate_meta:
+            strategy_exec_profile = candidate_meta.get("exec_profile")
             if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
                 exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
+            liquidation_policy_payload = (
+                dict(candidate_meta.get("liquidation_policy") or {})
+                if side_value == "ask" and isinstance(candidate_meta.get("liquidation_policy"), dict)
+                else {}
+            )
+            if liquidation_policy_payload:
+                exec_profile = _apply_candidate_liquidation_policy(
+                    exec_profile=exec_profile,
+                    liquidation_policy=liquidation_policy_payload,
+                )
         execution_recommendations_enabled = bool(
             strategy_mode == "model_alpha_v1"
             and bool(self._run_settings.model_alpha.execution.use_learned_recommendations)
@@ -1798,7 +1819,7 @@ class BacktestRunEngine:
         if strategy_mode == "model_alpha_v1" and side_value == "bid" and execution_recommendations_enabled:
             execution_contract = dict(self._runtime_state.get("execution_contract") or {})
             if int(execution_contract.get("rows_total", 0) or 0) > 0:
-                expected_edge_bps = _candidate_expected_edge_bps(candidate.meta if isinstance(candidate.meta, dict) else None)
+                expected_edge_bps = _candidate_expected_edge_bps(candidate_meta)
                 execution_policy = select_live_execution_action(
                     model_payload=execution_contract,
                     current_state=build_execution_policy_state(
@@ -1860,10 +1881,28 @@ class BacktestRunEngine:
             return False
         profile_payload = order_exec_profile_to_dict(exec_profile)
         selected_ord_type = (
-            str((execution_policy or {}).get("selected_ord_type", "limit")).strip().lower() or "limit"
+            str(
+                (execution_policy or {}).get("selected_ord_type")
+                or (
+                    candidate_meta.get("liquidation_policy", {}).get("ord_type")
+                    if isinstance(candidate_meta.get("liquidation_policy"), dict)
+                    else None
+                )
+                or "limit"
+            ).strip().lower()
+            or "limit"
         )
         selected_time_in_force = (
-            str((execution_policy or {}).get("selected_time_in_force", "gtc")).strip().lower() or "gtc"
+            str(
+                (execution_policy or {}).get("selected_time_in_force")
+                or (
+                    candidate_meta.get("liquidation_policy", {}).get("time_in_force")
+                    if isinstance(candidate_meta.get("liquidation_policy"), dict)
+                    else None
+                )
+                or "gtc"
+            ).strip().lower()
+            or "gtc"
         )
         simulated_ord_type = selected_ord_type
         submit_price = limit_price
@@ -1893,12 +1932,12 @@ class BacktestRunEngine:
             price=submit_price,
             volume=submit_volume,
             reason_code=(
-                str(candidate.meta.get("reason_code"))
-                if isinstance(candidate.meta, dict) and str(candidate.meta.get("reason_code", "")).strip()
+                str(candidate_meta.get("reason_code"))
+                if candidate_meta and str(candidate_meta.get("reason_code", "")).strip()
                 else "BACKTEST_CANDIDATE_V1"
             ),
             meta={
-                **candidate.meta,
+                **candidate_meta,
                 "candidate_score": candidate.score,
                 "target_notional_quote": (float(entry_notional_quote) if entry_notional_quote is not None else None),
                 "submit_price": (float(submit_price) if submit_price is not None else None),
@@ -2293,6 +2332,13 @@ class BacktestRunEngine:
             predictor=predictor,
             settings=settings.model_alpha,
         )
+        resolved_model_alpha = replace(
+            resolved_model_alpha,
+            position=replace(
+                resolved_model_alpha.position,
+                base_budget_quote=float(settings.per_trade_krw),
+            ),
+        )
         self._runtime_state["resolved_model_alpha_settings"] = resolved_model_alpha
         self._runtime_state["model_alpha_runtime_recommendation_state"] = runtime_recommendation_state
         dataset_root = (
@@ -2623,6 +2669,50 @@ def _resolve_candidate_target_notional_quote(
         if value is not None and value > 0.0:
             return float(value)
     return max(float(per_trade_krw), 1.0) * _resolve_candidate_notional_multiplier(candidate_meta)
+
+
+def _finalize_candidate_entry_decision(
+    *,
+    candidate_meta: dict[str, Any] | None,
+    portfolio_budget_allowed: bool,
+    budget_reason_code: str | None = None,
+) -> dict[str, Any]:
+    payload = dict(candidate_meta or {})
+    entry_decision = dict(payload.get("entry_decision") or {}) if isinstance(payload.get("entry_decision"), dict) else {}
+    if not entry_decision:
+        return payload
+    payload["entry_decision"] = finalize_v5_entry_decision(
+        payload=entry_decision,
+        portfolio_budget_allowed=bool(portfolio_budget_allowed),
+        budget_reason_code=budget_reason_code,
+        breaker_clear=True,
+        rollout_allowed=True,
+    )
+    return payload
+
+
+def _apply_candidate_liquidation_policy(
+    *,
+    exec_profile: OrderExecProfile,
+    liquidation_policy: dict[str, Any] | None,
+) -> OrderExecProfile:
+    payload = dict(liquidation_policy or {})
+    if not payload:
+        return exec_profile
+    return normalize_order_exec_profile(
+        OrderExecProfile(
+            timeout_ms=max(int(_safe_optional_float(payload.get("timeout_ms")) or exec_profile.timeout_ms), 1),
+            replace_interval_ms=max(
+                int(_safe_optional_float(payload.get("replace_interval_ms")) or exec_profile.replace_interval_ms),
+                1,
+            ),
+            max_replaces=max(int(_safe_optional_float(payload.get("max_replaces")) or exec_profile.max_replaces), 0),
+            price_mode=str(payload.get("price_mode") or exec_profile.price_mode).strip().upper() or str(exec_profile.price_mode),
+            max_chase_bps=int(exec_profile.max_chase_bps),
+            min_replace_interval_ms_global=int(exec_profile.min_replace_interval_ms_global),
+            post_only=bool(exec_profile.post_only),
+        )
+    )
 
 
 def _resolve_candidate_notional_multiplier(candidate_meta: dict[str, Any] | None) -> float:

@@ -6,7 +6,7 @@ import json
 import time
 import asyncio
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -274,6 +274,13 @@ async def run_live_model_alpha_runtime(
     resolved_model_alpha_settings, _ = resolve_runtime_model_alpha_settings(
         predictor=predictor,
         settings=settings.model_alpha,
+    )
+    resolved_model_alpha_settings = replace(
+        resolved_model_alpha_settings,
+        position=replace(
+            resolved_model_alpha_settings.position,
+            base_budget_quote=float(settings.per_trade_krw),
+        ),
     )
     markets = _load_quote_markets(public_client=public_client, quote=str(settings.quote))
     if not markets:
