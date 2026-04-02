@@ -123,6 +123,7 @@ def build_candidate_canary_report(db_path: Path) -> dict[str, Any]:
 
     for row in closed_rows:
         row["exit_meta"] = _parse_json_text(row.get("exit_meta_json"))
+        row["entry_meta"] = _parse_json_text(row.get("entry_meta_json"))
 
     verified_rows = [row for row in closed_rows if (row.get("exit_meta") or {}).get("close_verified") is True]
     unverified_rows = [row for row in closed_rows if (row.get("exit_meta") or {}).get("close_verified") is False]
@@ -137,6 +138,35 @@ def build_candidate_canary_report(db_path: Path) -> dict[str, Any]:
 
     close_modes = Counter(str(row.get("close_mode") or "").strip() for row in closed_rows)
     close_reasons = Counter(str(row.get("close_reason_code") or "").strip() for row in closed_rows)
+    entry_decision_reasons = Counter()
+    safety_veto_reasons = Counter()
+    exit_decision_reasons = Counter()
+    liquidation_policy_tiers = Counter()
+    for row in closed_rows:
+        strategy_meta = (
+            (((row.get("entry_meta") or {}).get("strategy") or {}).get("meta"))
+            if isinstance((row.get("entry_meta") or {}).get("strategy"), dict)
+            else {}
+        )
+        strategy_meta = dict(strategy_meta or {}) if isinstance(strategy_meta, dict) else {}
+        for item in ((strategy_meta.get("entry_decision") or {}).get("reason_codes") or []):
+            reason = str(item).strip()
+            if reason:
+                entry_decision_reasons[reason] += 1
+        safety_vetoes = dict(strategy_meta.get("safety_vetoes") or {}) if isinstance(strategy_meta.get("safety_vetoes"), dict) else {}
+        for payload in safety_vetoes.values():
+            if not isinstance(payload, dict):
+                continue
+            for item in (payload.get("reason_codes") or []):
+                reason = str(item).strip()
+                if reason:
+                    safety_veto_reasons[reason] += 1
+        exit_decision_reason = str(((strategy_meta.get("exit_decision") or {}).get("decision_reason_code")) or "").strip()
+        if exit_decision_reason:
+            exit_decision_reasons[exit_decision_reason] += 1
+        liquidation_tier = str(((strategy_meta.get("liquidation_policy") or {}).get("tier_name")) or "").strip()
+        if liquidation_tier:
+            liquidation_policy_tiers[liquidation_tier] += 1
     verification_status = Counter(str((row.get("exit_meta") or {}).get("close_verification_status") or "").strip() for row in closed_rows)
 
     by_market: dict[str, dict[str, Any]] = defaultdict(lambda: {"closed": 0, "verified": 0, "realized_pnl_quote": 0.0, "wins": 0, "losses": 0})
@@ -176,6 +206,10 @@ def build_candidate_canary_report(db_path: Path) -> dict[str, Any]:
         "median_hold_minutes_all_closed": round(median(hold_minutes), 3) if hold_minutes else None,
         "close_modes": dict(close_modes),
         "close_reasons_top": close_reasons.most_common(10),
+        "entry_decision_reasons_top": entry_decision_reasons.most_common(10),
+        "safety_veto_reasons_top": safety_veto_reasons.most_common(10),
+        "exit_decision_reasons_top": exit_decision_reasons.most_common(10),
+        "liquidation_policy_tiers": dict(liquidation_policy_tiers),
         "verification_status": dict(verification_status),
         "markets_top": sorted(
             (
@@ -243,6 +277,15 @@ def render_candidate_canary_markdown(report: dict[str, Any]) -> str:
         lines.append(f"- {key}: {value}")
     lines.extend(["", "## Close Reasons (Top 10)"])
     for key, value in report.get("close_reasons_top") or []:
+        lines.append(f"- {key}: {value}")
+    lines.extend(["", "## Entry Decision Reasons"])
+    for key, value in report.get("entry_decision_reasons_top") or []:
+        lines.append(f"- {key}: {value}")
+    lines.extend(["", "## Safety Veto Reasons"])
+    for key, value in report.get("safety_veto_reasons_top") or []:
+        lines.append(f"- {key}: {value}")
+    lines.extend(["", "## Exit Decision Reasons"])
+    for key, value in report.get("exit_decision_reasons_top") or []:
         lines.append(f"- {key}: {value}")
     lines.extend(["", "## Markets"])
     lines.append("| Market | Closed | Verified | Wins | Losses | Realized PnL |")

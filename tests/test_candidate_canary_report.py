@@ -62,6 +62,20 @@ def test_candidate_canary_report_builds_metrics_and_dedupes_synthetic_rows(tmp_p
                 entry_reason_code="MODEL_ALPHA_ENTRY_V1",
                 close_reason_code="CLOSED_ORDERS_BACKFILL",
                 close_mode="done_ask_order",
+                entry_meta_json=json.dumps(
+                    {
+                        "strategy": {
+                            "meta": {
+                                "entry_decision": {"reason_codes": ["ENTRY_GATE_BREAKER_ACTIVE"]},
+                                "safety_vetoes": {"entry_boundary": {"reason_codes": ["ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE"]}},
+                                "exit_decision": {"decision_reason_code": "CONTINUATION_VALUE_EXIT"},
+                                "liquidation_policy": {"tier_name": "normal_protective"},
+                            }
+                        }
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
                 exit_meta_json=json.dumps(
                     {"close_verified": True, "close_verification_status": "verified_exit_order"},
                     ensure_ascii=False,
@@ -170,6 +184,10 @@ def test_candidate_canary_report_builds_metrics_and_dedupes_synthetic_rows(tmp_p
     assert report["wins_verified"] == 1
     assert report["losses_verified"] == 1
     assert report["realized_pnl_quote_total_verified"] == 0.6995
+    assert report["entry_decision_reasons_top"][0][0] == "ENTRY_GATE_BREAKER_ACTIVE"
+    assert report["safety_veto_reasons_top"][0][0] == "ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE"
+    assert report["exit_decision_reasons_top"][0][0] == "CONTINUATION_VALUE_EXIT"
+    assert report["liquidation_policy_tiers"]["normal_protective"] == 1
     assert report["latest_closed"][0]["journal_id"] == "journal-loss"
     assert all(item["journal_id"] != "trade-KRW-ETH-1900" for item in report["latest_closed"])
 

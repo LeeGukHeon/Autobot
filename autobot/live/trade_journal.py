@@ -1210,6 +1210,36 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
         if isinstance(strategy_meta.get("exit_recommendation"), dict)
         else {}
     )
+    entry_decision = (
+        dict(strategy_meta.get("entry_decision") or {})
+        if isinstance(strategy_meta.get("entry_decision"), dict)
+        else {}
+    )
+    sizing_decision = (
+        dict(strategy_meta.get("sizing_decision") or {})
+        if isinstance(strategy_meta.get("sizing_decision"), dict)
+        else {}
+    )
+    safety_vetoes = (
+        dict(strategy_meta.get("safety_vetoes") or {})
+        if isinstance(strategy_meta.get("safety_vetoes"), dict)
+        else {}
+    )
+    exit_decision = (
+        dict(strategy_meta.get("exit_decision") or {})
+        if isinstance(strategy_meta.get("exit_decision"), dict)
+        else {}
+    )
+    liquidation_policy = (
+        dict(strategy_meta.get("liquidation_policy") or {})
+        if isinstance(strategy_meta.get("liquidation_policy"), dict)
+        else {}
+    )
+    legacy_heuristics_applied = (
+        dict(strategy_meta.get("legacy_heuristics_applied") or {})
+        if isinstance(strategy_meta.get("legacy_heuristics_applied"), dict)
+        else {}
+    )
     model_exit_plan = (
         normalize_model_exit_plan_payload(strategy_meta.get("model_exit_plan"))
         if isinstance(strategy_meta.get("model_exit_plan"), dict)
@@ -1313,6 +1343,40 @@ def _build_entry_meta_summary(meta_payload: Any) -> dict[str, Any]:
                     "expected_exit_fee_rate": model_exit_plan.get("expected_exit_fee_rate"),
                     "expected_exit_slippage_bps": model_exit_plan.get("expected_exit_slippage_bps"),
                 },
+                "entry_decision": {
+                    "allowed": entry_decision.get("allowed"),
+                    "reason_codes": list(entry_decision.get("reason_codes") or []),
+                    "selected_rank": entry_decision.get("selected_rank"),
+                    "entry_owner": entry_decision.get("entry_owner"),
+                    "portfolio_budget_allowed": entry_decision.get("portfolio_budget_allowed"),
+                    "breaker_clear": entry_decision.get("breaker_clear"),
+                    "rollout_allowed": entry_decision.get("rollout_allowed"),
+                },
+                "sizing_decision": {
+                    "sizing_owner": sizing_decision.get("sizing_owner"),
+                    "target_notional_quote": sizing_decision.get("target_notional_quote"),
+                    "requested_notional_multiplier": sizing_decision.get("requested_notional_multiplier"),
+                    "resolved_notional_multiplier": sizing_decision.get("resolved_notional_multiplier"),
+                    "reason_codes": list(sizing_decision.get("reason_codes") or []),
+                },
+                "safety_vetoes": dict(safety_vetoes),
+                "exit_decision": {
+                    "decision_reason_code": exit_decision.get("decision_reason_code"),
+                    "trigger_reason": exit_decision.get("trigger_reason"),
+                    "exit_now_value_net": exit_decision.get("exit_now_value_net"),
+                    "continue_value_net": exit_decision.get("continue_value_net"),
+                    "continue_value_lcb": exit_decision.get("continue_value_lcb"),
+                    "expected_liquidation_cost": exit_decision.get("expected_liquidation_cost"),
+                },
+                "liquidation_policy": {
+                    "tier_name": liquidation_policy.get("tier_name"),
+                    "ord_type": liquidation_policy.get("ord_type"),
+                    "time_in_force": liquidation_policy.get("time_in_force"),
+                    "price_mode": liquidation_policy.get("price_mode"),
+                    "decision_reason_code": liquidation_policy.get("decision_reason_code"),
+                    "reason_codes": list(liquidation_policy.get("reason_codes") or []),
+                },
+                "legacy_heuristics_applied": dict(legacy_heuristics_applied),
             },
         },
         "admissibility": {

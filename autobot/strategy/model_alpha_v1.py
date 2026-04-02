@@ -130,6 +130,7 @@ class _PositionState:
     entry_price: float
     peak_price: float
     entry_fee_rate: float
+    qty: float
     exit_plan: dict[str, Any] = field(default_factory=dict)
 
 
@@ -338,6 +339,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 _build_v5_exit_intent_meta(
                     state=state,
                     reason_code=reason_code,
+                    trigger_ts_ms=ts_value,
                 )
                 if self._is_v5_post_model_contract
                 else {"strategy": "model_alpha_v1", "exit_mode": str(self._settings.exit.mode)}
@@ -1112,6 +1114,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 entry_price=price,
                 peak_price=peak_price,
                 entry_fee_rate=fee_rate,
+                qty=max(float(event.volume), 0.0),
                 exit_plan=exit_plan,
             )
             return
@@ -1140,6 +1143,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             interval_ms=self._interval_ms,
         )
         state.exit_plan = dict(plan)
+        state.exit_plan["last_price"] = float(ref_price)
         mode = str(plan.get("mode", "hold")).strip().lower() or "hold"
         hold_ms = max(int(plan.get("timeout_delta_ms", 0) or 0), 0)
         tp_pct = max(float(plan.get("tp_pct", 0.0) or 0.0), 0.0)
@@ -1199,6 +1203,27 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             risk_feature_value=_resolve_row_risk_volatility(
                 row=row,
                 feature_name=str(plan.get("risk_vol_feature", "")).strip(),
+            ),
+            portfolio_open_positions=len(self._positions),
+            same_cluster_open_positions=sum(
+                1
+                for open_market in self._positions
+                if _classify_market_cluster(open_market) == _classify_market_cluster(market)
+            ),
+            portfolio_pressure_ratio=(
+                (
+                    sum(
+                        max(float(position.entry_price), 0.0) * max(float(position.qty), 0.0)
+                        for position in self._positions.values()
+                    )
+                    / max(
+                        float(self._settings.position.base_budget_quote or 0.0)
+                        * float(max(int(self._settings.position.max_positions_total), 1)),
+                        1e-12,
+                    )
+                )
+                if self._settings.position.base_budget_quote is not None
+                else None
             ),
         )
         trailing_drawdown = _net_drawdown_from_peak_after_costs(
@@ -2067,12 +2092,20 @@ def _build_v5_exit_intent_meta(
     *,
     state: _PositionState,
     reason_code: str,
+    trigger_ts_ms: int | None = None,
 ) -> dict[str, Any]:
     plan = dict(state.exit_plan or {})
     exit_decision = dict(plan.get("exit_decision") or {})
     liquidation_policy = build_v5_liquidation_policy(
         exit_decision=exit_decision,
         model_exit_plan=plan,
+        entry_price=float(state.entry_price),
+        qty=float(state.qty),
+        last_price=_safe_optional_float(plan.get("last_price")),
+        tick_size=_safe_optional_float(plan.get("tick_size")),
+        ts_ms=trigger_ts_ms,
+        created_ts_ms=int(state.entry_ts_ms),
+        trigger_ts_ms=trigger_ts_ms,
     )
     return {
         "strategy": "model_alpha_v1",
@@ -2085,6 +2118,9 @@ def _build_v5_exit_intent_meta(
         "model_exit_plan": plan,
         "exit_decision": exit_decision,
         "liquidation_policy": liquidation_policy,
+        "entry_price": float(state.entry_price),
+        "entry_ts_ms": int(state.entry_ts_ms),
+        "qty": float(state.qty),
         "reason_code": str(reason_code).strip(),
     }
 
@@ -2340,6 +2376,18 @@ def _resolve_row_risk_volatility(*, row: dict[str, Any] | None, feature_name: st
     if value is None:
         return None
     return max(float(value), 0.0)
+
+
+def _classify_market_cluster(market: str) -> str:
+    market_value = str(market).strip().upper()
+    if "-" not in market_value:
+        return "UNKNOWN"
+    _, base = market_value.split("-", 1)
+    if base == "BTC":
+        return "BTC_LED"
+    if base == "ETH":
+        return "ETH_LED"
+    return "ALT_CLUSTER"
 
 
 def _resolve_expected_exit_costs(

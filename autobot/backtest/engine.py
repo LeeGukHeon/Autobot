@@ -65,7 +65,7 @@ from autobot.strategy.model_alpha_v1 import (
     resolve_model_alpha_runtime_row_columns,
     resolve_runtime_model_alpha_settings,
 )
-from autobot.strategy.v5_post_model_contract import finalize_v5_entry_decision
+from autobot.strategy.v5_post_model_contract import build_v5_liquidation_policy, finalize_v5_entry_decision
 from autobot.strategy.candidates_v1 import Candidate, CandidateGeneratorV1, CandidateSettings
 from autobot.strategy.micro_gate_v1 import MicroGateSettings, MicroGateV1
 from autobot.strategy.micro_order_policy import (
@@ -1746,8 +1746,21 @@ class BacktestRunEngine:
             if isinstance(strategy_exec_profile, dict) and strategy_exec_profile:
                 exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
             liquidation_policy_payload = (
-                dict(candidate_meta.get("liquidation_policy") or {})
-                if side_value == "ask" and isinstance(candidate_meta.get("liquidation_policy"), dict)
+                build_v5_liquidation_policy(
+                    exit_decision=(candidate_meta.get("exit_decision") if isinstance(candidate_meta.get("exit_decision"), dict) else {}),
+                    model_exit_plan=(candidate_meta.get("model_exit_plan") if isinstance(candidate_meta.get("model_exit_plan"), dict) else {}),
+                    execution_decision=(candidate_meta.get("execution_decision") if isinstance(candidate_meta.get("execution_decision"), dict) else {}),
+                    entry_price=_safe_optional_float(candidate_meta.get("entry_price")),
+                    qty=_safe_optional_float(candidate_meta.get("qty")) or float(forced_volume or 0.0),
+                    last_price=float(ref_price),
+                    tick_size=float(rules.tick_size),
+                    ts_ms=int(ts_ms),
+                    created_ts_ms=_safe_optional_int(candidate_meta.get("entry_ts_ms")) or int(ts_ms),
+                    trigger_ts_ms=int(ts_ms),
+                    micro_snapshot=snapshot,
+                    active_order_present=bool(exchange.has_open_order(candidate.market, side="ask")),
+                )
+                if side_value == "ask" and isinstance(candidate_meta.get("exit_decision"), dict)
                 else {}
             )
             if liquidation_policy_payload:

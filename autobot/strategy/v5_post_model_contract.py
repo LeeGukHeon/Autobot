@@ -233,9 +233,12 @@ def resolve_v5_exit_decision(
     expected_liquidation_cost = _safe_optional_float(guidance.get("immediate_exit_cost_ratio"))
     resolved_net_return = _safe_optional_float(net_return_ratio)
     if stop_loss_ratio > 0.0 and resolved_net_return is not None and float(resolved_net_return) <= -float(stop_loss_ratio):
+        stop_breach_ratio = max(abs(float(resolved_net_return)) - float(stop_loss_ratio), 0.0)
         return {
             "should_exit": True,
             "decision_reason_code": V5_SAFETY_STOP_EXIT_REASON,
+            "trigger_reason": "SL",
+            "stop_breach_ratio": float(stop_breach_ratio),
             "mode": str(mode).strip().lower(),
             "exit_now_value_net": exit_now_value_net,
             "continue_value_net": continue_value_net,
@@ -245,9 +248,12 @@ def resolve_v5_exit_decision(
         }
     resolved_trailing = _safe_optional_float(trailing_drawdown_ratio)
     if trailing_ratio > 0.0 and resolved_trailing is not None and float(resolved_trailing) >= float(trailing_ratio):
+        trailing_breach_ratio = max(float(resolved_trailing) - float(trailing_ratio), 0.0)
         return {
             "should_exit": True,
             "decision_reason_code": V5_SAFETY_STOP_EXIT_REASON,
+            "trigger_reason": "TRAILING",
+            "stop_breach_ratio": float(trailing_breach_ratio),
             "mode": str(mode).strip().lower(),
             "exit_now_value_net": exit_now_value_net,
             "continue_value_net": continue_value_net,
@@ -259,6 +265,8 @@ def resolve_v5_exit_decision(
         return {
             "should_exit": True,
             "decision_reason_code": V5_STALE_TIMEOUT_EXIT_REASON,
+            "trigger_reason": "TIMEOUT",
+            "stop_breach_ratio": 0.0,
             "mode": str(mode).strip().lower(),
             "exit_now_value_net": exit_now_value_net,
             "continue_value_net": continue_value_net,
@@ -274,6 +282,8 @@ def resolve_v5_exit_decision(
         return {
             "should_exit": True,
             "decision_reason_code": V5_CONTINUATION_EXIT_REASON,
+            "trigger_reason": "PATH_RISK_CONTINUATION",
+            "stop_breach_ratio": 0.0,
             "mode": str(mode).strip().lower(),
             "exit_now_value_net": exit_now_value_net,
             "continue_value_net": continue_value_net,
@@ -284,6 +294,8 @@ def resolve_v5_exit_decision(
     return {
         "should_exit": False,
         "decision_reason_code": "",
+        "trigger_reason": "",
+        "stop_breach_ratio": 0.0,
         "mode": str(mode).strip().lower(),
         "exit_now_value_net": exit_now_value_net,
         "continue_value_net": continue_value_net,
@@ -298,11 +310,69 @@ def build_v5_liquidation_policy(
     exit_decision: dict[str, Any] | None,
     model_exit_plan: dict[str, Any] | None,
     execution_decision: dict[str, Any] | None = None,
+    entry_price: float | None = None,
+    qty: float | None = None,
+    last_price: float | None = None,
+    tick_size: float | None = None,
+    ts_ms: int | None = None,
+    created_ts_ms: int | None = None,
+    trigger_ts_ms: int | None = None,
+    breaker_action: str | None = None,
+    micro_snapshot: Any | None = None,
+    active_order_present: bool = False,
 ) -> dict[str, Any]:
     decision = dict(exit_decision or {})
     plan = dict(model_exit_plan or {})
     execution = dict(execution_decision or {})
     decision_reason_code = str(decision.get("decision_reason_code", "")).strip()
+    resolved_entry_price = _safe_optional_float(entry_price)
+    resolved_qty = _safe_optional_float(qty)
+    resolved_last_price = _safe_optional_float(last_price)
+    resolved_tick_size = _safe_optional_float(tick_size)
+    resolved_ts_ms = _safe_optional_int(ts_ms)
+    resolved_created_ts_ms = _safe_optional_int(created_ts_ms)
+    resolved_trigger_ts_ms = _safe_optional_int(trigger_ts_ms)
+    if (
+        decision_reason_code
+        and resolved_entry_price is not None
+        and resolved_qty is not None
+        and resolved_last_price is not None
+        and resolved_tick_size is not None
+        and resolved_ts_ms is not None
+        and resolved_created_ts_ms is not None
+    ):
+        from autobot.risk.liquidation_policy import (
+            protective_liquidation_policy_to_dict,
+            resolve_protective_liquidation_policy,
+        )
+
+        liquidation_policy = resolve_protective_liquidation_policy(
+            trigger_reason=str(decision.get("trigger_reason") or decision_reason_code).strip(),
+            entry_price=float(resolved_entry_price),
+            qty=float(max(resolved_qty, 0.0)),
+            last_price=float(resolved_last_price),
+            tick_size=float(max(resolved_tick_size, 1e-12)),
+            base_exit_aggress_bps=max(_safe_optional_float(plan.get("expected_immediate_exit_slippage_bps")) or 8.0, 1.0),
+            base_timeout_sec=max(int((_safe_optional_float(plan.get("expected_immediate_exit_time_to_fill_ms")) or 30_000) / 1000.0), 1),
+            base_replace_max=1,
+            ts_ms=int(resolved_ts_ms),
+            created_ts_ms=int(resolved_created_ts_ms),
+            trigger_ts_ms=int(resolved_trigger_ts_ms or resolved_ts_ms),
+            breaker_action=str(breaker_action or "").strip() or None,
+            micro_snapshot=micro_snapshot,
+            active_order_present=bool(active_order_present),
+            stop_breach_ratio=_safe_optional_float(decision.get("stop_breach_ratio")),
+        )
+        payload = protective_liquidation_policy_to_dict(liquidation_policy)
+        payload["owner"] = "liquidation_execution_policy"
+        payload["decision_reason_code"] = decision_reason_code
+        payload["expected_liquidation_cost"] = _safe_optional_float(
+            decision.get("expected_liquidation_cost", plan.get("expected_liquidation_cost"))
+        )
+        payload["exit_now_value_net"] = _safe_optional_float(decision.get("exit_now_value_net"))
+        payload["continue_value_lcb"] = _safe_optional_float(decision.get("continue_value_lcb"))
+        return payload
+
     if decision_reason_code == V5_SAFETY_STOP_EXIT_REASON:
         ord_type = "best"
         time_in_force = "ioc"
@@ -357,5 +427,14 @@ def _safe_optional_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None

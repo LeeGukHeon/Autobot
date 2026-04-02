@@ -41,6 +41,12 @@ def build_paired_paper_report(
         "challenger_fill_only": 0,
         "neither_filled": 0,
     }
+    decision_language_counts: dict[str, int] = {
+        "both_same_primary_decision_reason": 0,
+        "both_different_primary_decision_reason": 0,
+        "champion_safety_veto_only": 0,
+        "challenger_safety_veto_only": 0,
+    }
     disagreement_examples: list[dict[str, Any]] = []
     champion_fill_total = 0
     challenger_fill_total = 0
@@ -83,13 +89,29 @@ def build_paired_paper_report(
                 taxonomy_counts["both_trade_different_action"] += 1
         elif champion_trade and not challenger_trade:
             taxonomy_counts["champion_trade_challenger_no_trade"] += 1
+            if challenger_item.get("primary_decision_family") == "safety_veto":
+                decision_language_counts["challenger_safety_veto_only"] += 1
         elif challenger_trade and not champion_trade:
             taxonomy_counts["challenger_trade_champion_no_trade"] += 1
+            if champion_item.get("primary_decision_family") == "safety_veto":
+                decision_language_counts["champion_safety_veto_only"] += 1
         else:
-            if str(champion_item.get("skip_reason_code") or "").strip() == str(challenger_item.get("skip_reason_code") or "").strip():
+            champion_primary_reason = str(
+                champion_item.get("primary_decision_reason_code") or champion_item.get("skip_reason_code") or ""
+            ).strip()
+            challenger_primary_reason = str(
+                challenger_item.get("primary_decision_reason_code") or challenger_item.get("skip_reason_code") or ""
+            ).strip()
+            if champion_primary_reason == challenger_primary_reason:
                 taxonomy_counts["both_no_trade_same_reason"] += 1
+                decision_language_counts["both_same_primary_decision_reason"] += 1
             else:
                 taxonomy_counts["both_no_trade_different_reason"] += 1
+                decision_language_counts["both_different_primary_decision_reason"] += 1
+            if champion_item.get("primary_decision_family") == "safety_veto" and challenger_item.get("primary_decision_family") != "safety_veto":
+                decision_language_counts["champion_safety_veto_only"] += 1
+            if challenger_item.get("primary_decision_family") == "safety_veto" and champion_item.get("primary_decision_family") != "safety_veto":
+                decision_language_counts["challenger_safety_veto_only"] += 1
 
         if champion_filled and challenger_filled:
             taxonomy_counts["both_filled"] += 1
@@ -179,6 +201,7 @@ def build_paired_paper_report(
         },
         "paired_deltas": paired_deltas,
         "taxonomy_counts": taxonomy_counts,
+        "decision_language_counts": decision_language_counts,
         "opportunity_sets": {
             "matched_ids": matched_ids,
             "champion_only_ids": champion_only_ids,
@@ -224,6 +247,12 @@ def _build_run_index(*, run_dir: Path) -> dict[str, Any]:
             "feature_hash": str(row.get("feature_hash") or "").strip(),
             "chosen_action": str(row.get("chosen_action") or "").strip(),
             "skip_reason_code": _optional_text(row.get("skip_reason_code")),
+            "primary_decision_reason_code": _primary_decision_reason_code(row),
+            "primary_decision_family": _primary_decision_family(row),
+            "entry_decision_reason_codes": _entry_decision_reason_codes(row),
+            "safety_veto_reason_codes": _safety_veto_reason_codes(row),
+            "exit_decision_reason_code": _exit_decision_reason_code(row),
+            "liquidation_policy_tier": _liquidation_policy_tier(row),
             "reason_code": str(row.get("reason_code") or "").strip().upper(),
             "intent_id": intent_id,
             "selection_score": _safe_optional_float(row.get("selection_score")),
@@ -386,6 +415,12 @@ def _example_projection(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "chosen_action": str(item.get("chosen_action") or "").strip(),
         "skip_reason_code": _optional_text(item.get("skip_reason_code")),
+        "primary_decision_reason_code": _optional_text(item.get("primary_decision_reason_code")),
+        "primary_decision_family": _optional_text(item.get("primary_decision_family")),
+        "entry_decision_reason_codes": list(item.get("entry_decision_reason_codes") or []),
+        "safety_veto_reason_codes": list(item.get("safety_veto_reason_codes") or []),
+        "exit_decision_reason_code": _optional_text(item.get("exit_decision_reason_code")),
+        "liquidation_policy_tier": _optional_text(item.get("liquidation_policy_tier")),
         "intent_id": _optional_text(item.get("intent_id")),
         "fill_count": int(item.get("fill_count") or 0),
         "filled_notional_quote": float(item.get("filled_notional_quote") or 0.0),
@@ -393,6 +428,63 @@ def _example_projection(item: dict[str, Any]) -> dict[str, Any]:
         "realized_pnl_quote": _safe_optional_float(item.get("realized_pnl_quote")),
         "closed": bool(item.get("closed", False)),
     }
+
+
+def _strategy_meta_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    meta = dict(row.get("meta") or {}) if isinstance(row.get("meta"), dict) else {}
+    return meta
+
+
+def _entry_decision_reason_codes(row: dict[str, Any]) -> list[str]:
+    strategy_meta = _strategy_meta_from_row(row)
+    entry_decision = dict(strategy_meta.get("entry_decision") or {}) if isinstance(strategy_meta.get("entry_decision"), dict) else {}
+    return [str(item).strip() for item in (entry_decision.get("reason_codes") or []) if str(item).strip()]
+
+
+def _safety_veto_reason_codes(row: dict[str, Any]) -> list[str]:
+    strategy_meta = _strategy_meta_from_row(row)
+    safety_vetoes = dict(strategy_meta.get("safety_vetoes") or {}) if isinstance(strategy_meta.get("safety_vetoes"), dict) else {}
+    codes: list[str] = []
+    for payload in safety_vetoes.values():
+        if not isinstance(payload, dict):
+            continue
+        for item in (payload.get("reason_codes") or []):
+            code = str(item).strip()
+            if code and code not in codes:
+                codes.append(code)
+    return codes
+
+
+def _exit_decision_reason_code(row: dict[str, Any]) -> str | None:
+    strategy_meta = _strategy_meta_from_row(row)
+    exit_decision = dict(strategy_meta.get("exit_decision") or {}) if isinstance(strategy_meta.get("exit_decision"), dict) else {}
+    return _optional_text(exit_decision.get("decision_reason_code"))
+
+
+def _liquidation_policy_tier(row: dict[str, Any]) -> str | None:
+    strategy_meta = _strategy_meta_from_row(row)
+    liquidation_policy = dict(strategy_meta.get("liquidation_policy") or {}) if isinstance(strategy_meta.get("liquidation_policy"), dict) else {}
+    return _optional_text(liquidation_policy.get("tier_name"))
+
+
+def _primary_decision_reason_code(row: dict[str, Any]) -> str | None:
+    safety_codes = _safety_veto_reason_codes(row)
+    if safety_codes:
+        return safety_codes[0]
+    entry_codes = _entry_decision_reason_codes(row)
+    if entry_codes:
+        return entry_codes[0]
+    return _optional_text(row.get("skip_reason_code"))
+
+
+def _primary_decision_family(row: dict[str, Any]) -> str | None:
+    if _safety_veto_reason_codes(row):
+        return "safety_veto"
+    if _entry_decision_reason_codes(row):
+        return "entry_decision"
+    if _optional_text(row.get("skip_reason_code")) is not None:
+        return "skip_reason"
+    return None
 
 
 def _is_trade_selected(row: dict[str, Any]) -> bool:

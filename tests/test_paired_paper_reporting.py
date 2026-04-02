@@ -147,6 +147,7 @@ def _write_opportunity_log(
     opportunity_id: str,
     chosen_action: str,
     skip_reason_code: str | None = None,
+    meta: dict[str, object] | None = None,
 ) -> None:
     rows = [
         {
@@ -159,6 +160,7 @@ def _write_opportunity_log(
             "chosen_action": chosen_action,
             "reason_code": "MODEL_ALPHA_ENTRY_V1",
             "skip_reason_code": skip_reason_code,
+            "meta": dict(meta or {}),
         }
     ]
     (run_dir / "opportunity_log.jsonl").write_text(
@@ -283,6 +285,10 @@ def test_build_paired_paper_report_tracks_trade_and_no_trade_delta(tmp_path: Pat
         opportunity_id="entry:1000:KRW-BTC",
         chosen_action="",
         skip_reason_code="RISK_SKIP",
+        meta={
+            "entry_decision": {"reason_codes": ["ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"]},
+            "safety_vetoes": {"portfolio_budget": {"reason_codes": ["ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"]}},
+        },
     )
     _write_events(champion_run, with_intent=True, intent_id="intent-champion")
     _write_events(challenger_run, with_intent=False, intent_id="intent-challenger")
@@ -316,6 +322,8 @@ def test_build_paired_paper_report_tracks_trade_and_no_trade_delta(tmp_path: Pat
     assert report["paired_deltas"]["matched_pnl_covered_opportunity_count"] == 1
     assert report["paired_deltas"]["matched_fill_delta"] == -1
     assert report["paired_deltas"]["matched_no_trade_delta"] == -1
+    assert report["decision_language_counts"]["challenger_safety_veto_only"] == 1
+    assert report["disagreement_examples"][0]["challenger"]["primary_decision_family"] == "safety_veto"
 
 
 def test_run_paired_paper_harness_writes_report_for_same_feed_and_clock(tmp_path: Path) -> None:

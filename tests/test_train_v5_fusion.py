@@ -44,11 +44,37 @@ def _write_expert_run(
     )
     (run_dir / "runtime_recommendations.json").write_text(
         json.dumps(
-            {
+            (
+                {
+                    "status": f"{trainer}_runtime_ready",
+                    "source_family": family,
+                    "data_platform_ready_snapshot_id": snapshot_id,
+                    "exit": {
+                        "version": 1,
+                        "recommended_exit_mode": "risk",
+                        "recommended_exit_mode_source": "test_panel_runtime",
+                        "recommended_exit_mode_reason_code": "TEST_PANEL_RUNTIME",
+                    },
+                    "execution": {
+                        "recommended_price_mode": "JOIN",
+                        "recommended_timeout_bars": 2,
+                        "recommended_replace_max": 1,
+                        "recommendation_source": "test_panel_runtime",
+                    },
+                    "risk_control": {
+                        "status": "not_required",
+                        "contract_status": "not_required",
+                        "operating_mode": "test_panel_runtime",
+                    },
+                    "trade_action": {"status": "ready", "policy": "test_trade_action"},
+                }
+                if trainer == "v5_panel_ensemble"
+                else {
                 "status": f"{trainer}_runtime_ready",
                 "source_family": family,
                 "data_platform_ready_snapshot_id": snapshot_id,
-            },
+                }
+            ),
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -213,6 +239,11 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert "sequence_support_score" in input_contract["feature_contract"]["feature_columns"]
     assert "sequence_support_level" not in input_contract["feature_contract"]["feature_columns"]
     assert load_json(result.predictor_contract_path)["final_rank_score_field"] == "final_rank_score"
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+    assert runtime_recommendations["decision_contract_version"] == "v5_post_model_contract_v1"
+    assert runtime_recommendations["exit"]["recommended_exit_mode"] == "risk"
+    assert runtime_recommendations["execution"]["recommended_price_mode"] == "JOIN"
+    assert runtime_recommendations["risk_control"]["operating_mode"] in {"test_panel_runtime", "v5_fusion_panel_anchor_inferred"}
     report = load_json(result.train_report_path)
     assert report["data_platform_ready_snapshot_id"] == snapshot_id
     assert report["resumed"] is False

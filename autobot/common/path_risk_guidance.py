@@ -12,6 +12,9 @@ def resolve_path_risk_guidance_from_plan(
     current_return_ratio: float | None = None,
     selection_score: float | None = None,
     risk_feature_value: float | None = None,
+    portfolio_open_positions: int | None = None,
+    same_cluster_open_positions: int | None = None,
+    portfolio_pressure_ratio: float | None = None,
 ) -> dict[str, Any]:
     payload = dict(plan_payload or {}) if isinstance(plan_payload, dict) else {}
     path_risk = dict(payload.get("path_risk") or {}) if isinstance(payload.get("path_risk"), dict) else {}
@@ -129,18 +132,31 @@ def resolve_path_risk_guidance_from_plan(
                 float(immediate_exit_value_ratio) - float(continuation_anchor_for_decay),
                 0.0,
             ) * min(float(remaining_bars) / float(max(hold_bars, 1)), 1.0) * 0.5
+    portfolio_spillover_penalty_ratio = 0.0
+    if portfolio_open_positions is not None and int(portfolio_open_positions) > 1:
+        portfolio_spillover_penalty_ratio += 0.00025 * float(max(int(portfolio_open_positions) - 1, 0))
+    if same_cluster_open_positions is not None and int(same_cluster_open_positions) > 1:
+        portfolio_spillover_penalty_ratio += 0.00050 * float(max(int(same_cluster_open_positions) - 1, 0))
+    if portfolio_pressure_ratio is not None:
+        portfolio_spillover_penalty_ratio += max(float(portfolio_pressure_ratio), 0.0) * 0.001
     exit_now_value_net = (
         (float(immediate_exit_value_ratio) - float(immediate_exit_cost_ratio))
         if immediate_exit_value_ratio is not None
         else None
     )
     continue_value_net = (
-        float(continue_edge_q50) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
+        float(continue_edge_q50)
+        - float(deferred_exit_cost_ratio)
+        - float(alpha_decay_penalty_ratio or 0.0)
+        - float(portfolio_spillover_penalty_ratio)
         if continue_edge_q50 is not None
         else None
     )
     continue_value_lcb = (
-        float(continue_edge_q25) - float(deferred_exit_cost_ratio) - float(alpha_decay_penalty_ratio or 0.0)
+        float(continue_edge_q25)
+        - float(deferred_exit_cost_ratio)
+        - float(alpha_decay_penalty_ratio or 0.0)
+        - float(portfolio_spillover_penalty_ratio)
         if continue_edge_q25 is not None
         else continue_value_net
     )
@@ -284,6 +300,10 @@ def resolve_path_risk_guidance_from_plan(
         "continue_value_lcb": continue_value_lcb,
         "optimistic_continue_value_net": optimistic_continue_value_net,
         "alpha_decay_penalty_ratio": alpha_decay_penalty_ratio,
+        "portfolio_spillover_penalty_ratio": float(portfolio_spillover_penalty_ratio),
+        "portfolio_open_positions": int(portfolio_open_positions) if portfolio_open_positions is not None else None,
+        "same_cluster_open_positions": int(same_cluster_open_positions) if same_cluster_open_positions is not None else None,
+        "portfolio_pressure_ratio": _as_float(portfolio_pressure_ratio),
         "profit_preservation_rate": profit_preservation_rate,
         "profit_preservation_prob": profit_preservation_prob,
         "continuation_gap_ratio": continuation_gap_ratio,

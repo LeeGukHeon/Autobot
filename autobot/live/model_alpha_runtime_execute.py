@@ -13,7 +13,7 @@ from autobot.execution.order_supervisor import (
     normalize_order_exec_profile,
     order_exec_profile_from_dict,
 )
-from autobot.strategy.v5_post_model_contract import finalize_v5_entry_decision
+from autobot.strategy.v5_post_model_contract import build_v5_liquidation_policy, finalize_v5_entry_decision
 from autobot.live.execution_attempts import record_execution_attempt_submission
 from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_decision,
@@ -917,13 +917,6 @@ def resolve_live_strategy_execution(
             execution_trace["strategy_intent_exec_profile"] = dict(strategy_exec_profile)
             exec_profile = order_exec_profile_from_dict(strategy_exec_profile, fallback=exec_profile)
             execution_trace["after_strategy_exec_profile"] = order_exec_profile_to_dict_fn(exec_profile)
-    elif liquidation_policy_payload:
-        execution_trace["liquidation_policy_exec_profile"] = dict(liquidation_policy_payload)
-        exec_profile = _apply_liquidation_policy_to_exec_profile(
-            exec_profile=exec_profile,
-            liquidation_policy=liquidation_policy_payload,
-        )
-        execution_trace["after_liquidation_policy"] = order_exec_profile_to_dict_fn(exec_profile)
     operational_payload: dict[str, Any] = {}
     portfolio_budget_payload: dict[str, Any] = {}
     trade_gate_payload: dict[str, Any] = {"enabled": True}
@@ -1147,8 +1140,33 @@ def resolve_live_strategy_execution(
                     "strategy": {"market": market, "side": side, "meta": strategy_meta},
                     "size_ladder": size_ladder_decision,
                     "portfolio_budget": dict(portfolio_budget_payload),
-                },
+                    },
+                )
+        liquidation_policy_payload = (
+            build_v5_liquidation_policy(
+                exit_decision=(strategy_meta.get("exit_decision") if isinstance(strategy_meta.get("exit_decision"), dict) else {}),
+                model_exit_plan=(strategy_meta.get("model_exit_plan") if isinstance(strategy_meta.get("model_exit_plan"), dict) else {}),
+                execution_decision=(strategy_meta.get("execution_decision") if isinstance(strategy_meta.get("execution_decision"), dict) else {}),
+                entry_price=_safe_optional_float(strategy_meta.get("entry_price")) or _safe_optional_float(local_position.get("avg_entry_price")),
+                qty=_safe_optional_float(strategy_meta.get("qty")) or _safe_optional_float(local_position.get("base_amount")),
+                last_price=float(effective_ref_price),
+                tick_size=float(snapshot.tick_size),
+                ts_ms=int(ts_ms),
+                created_ts_ms=_safe_optional_int(strategy_meta.get("entry_ts_ms")) or int(ts_ms),
+                trigger_ts_ms=int(ts_ms),
+                micro_snapshot=snapshot_for_policy,
+                active_order_present=bool(exchange_view.has_open_order(market, side="ask")),
             )
+            if isinstance(strategy_meta.get("exit_decision"), dict)
+            else liquidation_policy_payload
+        )
+        if liquidation_policy_payload:
+            execution_trace["liquidation_policy_exec_profile"] = dict(liquidation_policy_payload)
+            exec_profile = _apply_liquidation_policy_to_exec_profile(
+                exec_profile=exec_profile,
+                liquidation_policy=liquidation_policy_payload,
+            )
+            execution_trace["after_liquidation_policy"] = order_exec_profile_to_dict_fn(exec_profile)
         live_exit_plan_present = any(
             str(item.get("state", "")).strip().upper() == "EXITING"
             or bool(
