@@ -148,6 +148,35 @@ def _write_runtime_export(*, table_path: Path, rows: list[dict[str, object]]) ->
     return table_path
 
 
+def _write_runtime_export_metadata(path: Path, *, start: str, end: str, coverage_dates: list[str], anchor_export_path: str = "") -> None:
+    metadata_path = path.parent / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "start": start,
+                "end": end,
+                "coverage_dates": coverage_dates,
+                "coverage_start_date": coverage_dates[0] if coverage_dates else "",
+                "coverage_end_date": coverage_dates[-1] if coverage_dates else "",
+                "coverage_start_ts_ms": int(parse_operating_date_to_ts_ms(coverage_dates[0]) or 0) if coverage_dates else 0,
+                "coverage_end_ts_ms": int(parse_operating_date_to_ts_ms(coverage_dates[-1], end_of_day=True) or 0) if coverage_dates else 0,
+                "window_timezone": "Asia/Seoul",
+                "selected_markets": ["KRW-BTC"],
+                "requested_selected_markets": ["KRW-BTC"],
+                "selected_markets_source": "acceptance_common_runtime_universe",
+                "fallback_reason": "",
+                "anchor_alignment_complete": bool(anchor_export_path),
+                "anchor_export_path": anchor_export_path,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     snapshot_id = "snapshot-fusion-001"
@@ -918,7 +947,7 @@ def test_train_v5_fusion_fails_on_runtime_input_window_gap(tmp_path: Path) -> No
         runtime_end="2026-03-28",
         seed=7,
     )
-    with pytest.raises(ValueError, match="PANEL_RUNTIME_WINDOW_GAP"):
+    with pytest.raises(ValueError, match="(PANEL_RUNTIME_WINDOW_GAP|FUSION_RUNTIME_INPUT_WINDOW_EMPTY)"):
         train_and_register_v5_fusion(options)
 
 
@@ -1069,8 +1098,89 @@ def test_train_v5_fusion_fails_on_runtime_sequence_coverage_gap(tmp_path: Path) 
         runtime_end="2026-03-28",
         seed=7,
     )
-    with pytest.raises(ValueError, match="SEQUENCE_RUNTIME_WINDOW_GAP"):
+    with pytest.raises(ValueError, match="(SEQUENCE_RUNTIME_WINDOW_GAP|FUSION_RUNTIME_SEQUENCE_COVERAGE_GAP)"):
         train_and_register_v5_fusion(options)
+
+
+def test_train_v5_fusion_allows_single_trailing_runtime_day_gap(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-runtime-trailing-gap"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-runtime-trailing-gap",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "final_rank_score": 0.4, "final_expected_return": 0.1, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.03} for row in base_rows],
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-runtime-trailing-gap",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.5, "sequence_uncertainty_primary": 0.04} for row in base_rows],
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-runtime-trailing-gap",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
+    )
+    tradability_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_tradability",
+        run_id="tradability-run-runtime-trailing-gap",
+        trainer="v5_tradability",
+        snapshot_id=snapshot_id,
+        rows=_tradability_rows(base_rows),
+    )
+    runtime_rows = _runtime_rows_for("2026-03-28")
+    panel_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_panel_ensemble" / "panel-run-runtime-trailing-gap" / "_runtime_exports" / "2026-03-28__2026-03-29" / "expert_prediction_table.parquet",
+        rows=[{**row, "final_rank_score": 0.41, "final_expected_return": 0.11, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.04} for row in runtime_rows],
+    )
+    _write_runtime_export_metadata(panel_runtime, start="2026-03-28", end="2026-03-29", coverage_dates=["2026-03-28"])
+    sequence_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_sequence" / "sequence-run-runtime-trailing-gap" / "_runtime_exports" / "2026-03-28__2026-03-29" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.51, "sequence_uncertainty_primary": 0.04} for row in runtime_rows],
+    )
+    _write_runtime_export_metadata(sequence_runtime, start="2026-03-28", end="2026-03-29", coverage_dates=["2026-03-28"], anchor_export_path=str(panel_runtime.resolve()))
+    lob_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_lob" / "lob-run-runtime-trailing-gap" / "_runtime_exports" / "2026-03-28__2026-03-29" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.11, "micro_alpha_5s": 0.11, "micro_alpha_30s": 0.11, "micro_uncertainty": 0.03} for row in runtime_rows],
+    )
+    _write_runtime_export_metadata(lob_runtime, start="2026-03-28", end="2026-03-29", coverage_dates=["2026-03-28"], anchor_export_path=str(panel_runtime.resolve()))
+    tradability_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_tradability" / "tradability-run-runtime-trailing-gap" / "_runtime_exports" / "2026-03-28__2026-03-29" / "expert_prediction_table.parquet",
+        rows=_tradability_rows(runtime_rows),
+    )
+    _write_runtime_export_metadata(tradability_runtime, start="2026-03-28", end="2026-03-29", coverage_dates=["2026-03-28"], anchor_export_path=str(panel_runtime.resolve()))
+    options = TrainV5FusionOptions(
+        panel_input_path=panel_path,
+        sequence_input_path=sequence_path,
+        lob_input_path=lob_path,
+        tradability_input_path=tradability_path,
+        panel_runtime_input_path=panel_runtime,
+        sequence_runtime_input_path=sequence_runtime,
+        lob_runtime_input_path=lob_runtime,
+        tradability_runtime_input_path=tradability_runtime,
+        registry_root=registry_root,
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_fusion",
+        quote="KRW",
+        start="2026-03-27",
+        end="2026-03-27",
+        runtime_start="2026-03-28",
+        runtime_end="2026-03-29",
+        seed=7,
+    )
+
+    result = train_and_register_v5_fusion(options)
+    assert result.run_dir.exists()
 
 
 def test_train_v5_fusion_fails_on_runtime_lob_coverage_gap(tmp_path: Path) -> None:
@@ -1145,5 +1255,5 @@ def test_train_v5_fusion_fails_on_runtime_lob_coverage_gap(tmp_path: Path) -> No
         runtime_end="2026-03-28",
         seed=7,
     )
-    with pytest.raises(ValueError, match="LOB_RUNTIME_WINDOW_GAP"):
+    with pytest.raises(ValueError, match="(LOB_RUNTIME_WINDOW_GAP|FUSION_RUNTIME_LOB_COVERAGE_GAP)"):
         train_and_register_v5_fusion(options)

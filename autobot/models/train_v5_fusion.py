@@ -559,6 +559,17 @@ def _runtime_window_gap_error(expert_name: str) -> str:
     return "FUSION_RUNTIME_INPUT_WINDOW_GAP"
 
 
+def _runtime_dates_allow_single_trailing_gap(*, expected_dates: list[str], expert_dates: list[str]) -> bool:
+    expected = [str(item).strip() for item in expected_dates if str(item).strip()]
+    observed = [str(item).strip() for item in expert_dates if str(item).strip()]
+    if not expected or not observed:
+        return False
+    missing = [day for day in expected if day not in set(observed)]
+    if not missing:
+        return True
+    return len(missing) == 1 and missing[0] == expected[-1]
+
+
 def _resolve_fusion_support_weight(merged: pl.DataFrame) -> np.ndarray:
     sequence_support = (
         merged.get_column("sequence_support_score").to_numpy().astype(np.float64, copy=False)
@@ -854,7 +865,7 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
         if explicit_runtime_requested:
             if expert_timezone != OPERATING_WINDOW_TIMEZONE:
                 raise ValueError(_runtime_window_gap_error(expert_name))
-            if not expert_dates or any(day not in set(expert_dates) for day in expected_runtime_dates):
+            if not _runtime_dates_allow_single_trailing_gap(expected_dates=expected_runtime_dates, expert_dates=expert_dates):
                 raise ValueError(_runtime_window_gap_error(expert_name))
             if start_ts_ms is not None and expert_start <= 0:
                 raise ValueError(_runtime_window_gap_error(expert_name))
