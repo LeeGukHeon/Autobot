@@ -434,6 +434,8 @@ def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contrac
     assert "-EndDate" in stdout
     assert "-TopN" in stdout
     assert "-UseTopNUniverse" in stdout
+    assert "-SkipParity" not in stdout
+    assert "-SkipRegistryRefresh" not in stdout
     assert "autobot.ops.data_platform_snapshot" in stdout
     assert "train_snapshot_close_latest.json" in stdout
 

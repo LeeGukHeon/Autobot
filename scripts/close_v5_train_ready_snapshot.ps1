@@ -451,9 +451,7 @@ if (@($failureReasons).Count -eq 0) {
         "-RequireExplicitWindow",
         "-SummaryPath", $resolvedFeatureRefreshSummaryPath,
         "-SkipMicroRefresh",
-        "-SkipMicroValidate",
-        "-SkipParity",
-        "-SkipRegistryRefresh"
+        "-SkipMicroValidate"
     )
     if ($DryRun) {
         $featureRefreshArgs += "-DryRun"
