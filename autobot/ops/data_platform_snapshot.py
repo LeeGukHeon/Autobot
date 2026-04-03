@@ -18,6 +18,7 @@ SNAPSHOT_DATASET_LAYOUT: dict[str, tuple[Path, Path]] = {
     "ws_candle_v1": (Path("data/parquet/ws_candle_v1"), Path("data/parquet/ws_candle_v1")),
     "lob30_v1": (Path("data/parquet/lob30_v1"), Path("data/parquet/lob30_v1")),
     "sequence_v1": (Path("data/parquet/sequence_v1"), Path("data/parquet/sequence_v1")),
+    "private_execution_v1": (Path("data/parquet/private_execution_v1"), Path("data/parquet/private_execution_v1")),
     "candles_api_v1": (Path("data/parquet/candles_api_v1"), Path("data/parquet/candles_api_v1")),
     "features_v4": (Path("data/features/features_v4"), Path("data/features/features_v4")),
 }

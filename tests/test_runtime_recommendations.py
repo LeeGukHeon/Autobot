@@ -459,6 +459,14 @@ def test_resolve_runtime_model_alpha_settings_surfaces_missing_fusion_top_level_
     assert "RUNTIME_RECOMMENDATIONS_EXECUTION_DOC_MISSING" in state["runtime_recommendations_contract_issues"]
     assert "RUNTIME_RECOMMENDATIONS_RISK_CONTROL_DOC_MISSING" in state["runtime_recommendations_contract_issues"]
     assert "RUNTIME_RECOMMENDATIONS_TRADE_ACTION_DOC_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_SEQUENCE_BACKBONE_NAME_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_SEQUENCE_PRETRAIN_METHOD_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_SEQUENCE_PRETRAIN_STATUS_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_SEQUENCE_PRETRAIN_OBJECTIVE_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_LOB_BACKBONE_NAME_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_TRADABILITY_SOURCE_RUN_ID_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_DOMAIN_WEIGHTING_POLICY_MISSING" in state["runtime_recommendations_contract_issues"]
+    assert "RUNTIME_RECOMMENDATIONS_DOMAIN_WEIGHTING_SOURCE_KIND_MISSING" in state["runtime_recommendations_contract_issues"]
 
 
 def test_rank_execution_rows_prefers_pairwise_winner() -> None:

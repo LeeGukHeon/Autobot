@@ -478,6 +478,38 @@ def _make_fake_python_exe(
                         }},
                     )
                 if family == "train_v5_fusion":
+                    sequence_fixture_dir = ROOT / "models" / "registry" / "train_v5_sequence" / "sequence-run-fixture"
+                    sequence_fixture_dir.mkdir(parents=True, exist_ok=True)
+                    write_json(
+                        sequence_fixture_dir / "sequence_pretrain_contract.json",
+                        {{
+                            "policy": "sequence_pretrain_contract_v1",
+                            "backbone_family": "patchtst_v1",
+                            "pretrain_method": "none",
+                            "pretrain_impl_method": "none",
+                            "status": "disabled",
+                            "pretrain_ready": False,
+                            "encoder_artifact_path": "",
+                            "best_epoch": 0,
+                            "encoder_dim": 16,
+                            "mask_ratio_schedule": [],
+                            "augmentation_policy": [],
+                        }},
+                    )
+                    write_json(
+                        sequence_fixture_dir / "sequence_pretrain_report.json",
+                        {{
+                            "policy": "sequence_pretrain_report_v1",
+                            "objective_name": "none",
+                            "status": "disabled",
+                            "best_epoch": 0,
+                            "encoder_dim": 16,
+                            "final_component_values": {{}},
+                            "mask_ratio_schedule": [],
+                            "augmentation_policy": [],
+                            "encoder_norm_summary": {{"module_mean_l2_norms": {{}}, "global_mean_l2_norm": 0.0}},
+                        }},
+                    )
                     runtime_start = execution_eval_start or start_value
                     runtime_end = execution_eval_end or end_value
                     write_json(
@@ -494,6 +526,78 @@ def _make_fake_python_exe(
                             "coverage_end_ts_ms": date_to_ts_ms(runtime_end, end_of_day=True),
                             "runtime_rows_after_date_filter": 12,
                             "runtime_dataset_root": str(candidate_dir / "runtime_feature_dataset"),
+                        }},
+                    )
+                    write_json(
+                        candidate_dir / "runtime_recommendations.json",
+                        {{
+                            "status": "v5_fusion_runtime_ready",
+                            "source_family": "train_v5_fusion",
+                            "decision_contract_version": "v5_post_model_contract_v1",
+                            "sequence_variant_name": "patchtst_v1__none",
+                            "sequence_backbone_name": "patchtst_v1",
+                            "sequence_pretrain_method": "none",
+                            "sequence_pretrain_ready": False,
+                            "sequence_pretrain_status": "disabled",
+                            "sequence_pretrain_objective": "none",
+                            "sequence_pretrain_best_epoch": 0,
+                            "sequence_pretrain_encoder_present": False,
+                            "sequence_pretrain_contract_path": str(sequence_fixture_dir / "sequence_pretrain_contract.json"),
+                            "sequence_pretrain_report_path": str(sequence_fixture_dir / "sequence_pretrain_report.json"),
+                            "lob_variant_name": "deeplob_v1",
+                            "fusion_variant_name": "linear",
+                            "fusion_candidate_default_eligible": True,
+                            "fusion_evidence_winner": "linear",
+                            "fusion_evidence_reason_code": "LINEAR_BASELINE_WINNER",
+                            "lob_backbone_name": "deeplob_v1",
+                            "tradability_source_run_id": "tradability-run-fixture",
+                            "fusion_stacker_family": "linear",
+                            "fusion_gating_policy": "single_expert_v1",
+                            "domain_weighting_policy": "v5_domain_weighting_v1",
+                            "domain_weighting_source_kind": "regime_inverse_frequency_v1",
+                            "domain_weighting_enabled": True,
+                            "exit": {{
+                                "version": 1,
+                                "recommended_exit_mode": "risk",
+                                "recommended_exit_mode_source": "fixture",
+                                "recommended_exit_mode_reason_code": "FIXTURE",
+                            }},
+                            "execution": {{
+                                "recommended_price_mode": "JOIN",
+                                "recommended_timeout_bars": 2,
+                                "recommended_replace_max": 1,
+                                "recommendation_source": "fixture",
+                            }},
+                            "risk_control": {{
+                                "status": "not_required",
+                                "contract_status": "not_required",
+                                "operating_mode": "fixture",
+                            }},
+                            "trade_action": {{"status": "ready", "policy": "fixture"}},
+                        }},
+                    )
+                    write_json(
+                        candidate_dir / "fusion_model_contract.json",
+                        {{
+                            "policy": "v5_fusion_v1",
+                            "input_experts": {{
+                                "panel": {{"run_id": "panel-run-fixture", "trainer": "v5_panel_ensemble"}},
+                                "sequence": {{"run_id": "sequence-run-fixture", "trainer": "v5_sequence"}},
+                                "lob": {{"run_id": "lob-run-fixture", "trainer": "v5_lob"}},
+                                "tradability": {{"run_id": "tradability-run-fixture", "trainer": "v5_tradability", "model_family": "train_v5_tradability"}},
+                            }},
+                            "regime_cluster_count": 1,
+                            "regime_feature_columns": [],
+                        }},
+                    )
+                    write_json(
+                        candidate_dir / "domain_weighting_report.json",
+                        {{
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {{"source_kind": "regime_inverse_frequency_v1"}},
+                            "effective_sample_weight_summary": {{"mean": 1.0}},
+                            "domain_weight_summary": {{"mean": 1.0}},
                         }},
                     )
                 if EMIT_TRAIN_RUN_DIR and EMIT_CLI_PREFIXED_TRAIN_RUN_DIR:
@@ -656,6 +760,34 @@ def _make_fake_python_exe(
                 print(f"[ops][feature-dataset-certification] path={{report_path}}")
                 if (not WRITE_FEATURE_VALIDATE_REPORT) or (not WRITE_LIVE_FEATURE_PARITY_REPORT) or (not LIVE_FEATURE_PARITY_ACCEPTABLE):
                     sys.exit(2)
+                sys.exit(0)
+
+            if tuple(args[:3]) == ("-m", "autobot.ops.private_execution_label_store", "--project-root"):
+                build_path = ROOT / "data" / "parquet" / "private_execution_v1" / "_meta" / "build_report.json"
+                append_log(
+                    {{
+                        "command": "private execution label store",
+                        "project_root": arg_value("--project-root"),
+                    }}
+                )
+                write_json(
+                    build_path,
+                    {{
+                        "policy": "private_execution_label_store_v1",
+                        "rows_written_total": 12,
+                        "status": "PASS",
+                    }},
+                )
+                write_json(
+                    build_path.parent / "validate_report.json",
+                    {{
+                        "policy": "private_execution_validate_v1",
+                        "status": "PASS",
+                        "pass": True,
+                        "reasons": [],
+                    }},
+                )
+                print(str(build_path))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):

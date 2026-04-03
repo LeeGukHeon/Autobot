@@ -69,6 +69,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             PANEL_RUN_ID = "panel-run-002"
             SEQ_RUN_ID = "sequence-run-002"
             LOB_RUN_ID = "lob-run-002"
+            TRAD_RUN_ID = "tradability-run-002"
             FUSION_RUN_ID = "fusion-run-002"
 
             def arg_value(name: str, default: str = "") -> str:
@@ -141,6 +142,89 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 write_json(run_dir / "decision_surface.json", {"status": "ok"})
                 write_json(run_dir / "runtime_recommendations.json", {"status": "ready"})
                 write_json(run_dir / "execution_acceptance_report.json", {"status": "trainer_runtime_contract_ready"})
+                if trainer == "v5_sequence":
+                    encoder_path = run_dir / "sequence_pretrain_encoder.pt"
+                    encoder_path.write_bytes(b"PTSEQ")
+                    write_json(
+                        run_dir / "sequence_pretrain_contract.json",
+                        {
+                            "policy": "sequence_pretrain_contract_v1",
+                            "backbone_family": "patchtst_v1",
+                            "pretrain_method": "none",
+                            "pretrain_impl_method": "none",
+                            "status": "disabled",
+                            "pretrain_ready": False,
+                            "encoder_artifact_path": "",
+                        },
+                    )
+                    write_json(
+                        run_dir / "sequence_pretrain_report.json",
+                        {
+                            "policy": "sequence_pretrain_report_v1",
+                            "objective_name": "none",
+                            "status": "disabled",
+                            "best_epoch": 0,
+                            "encoder_dim": 16,
+                            "final_component_values": {},
+                            "encoder_norm_summary": {"module_mean_l2_norms": {}, "global_mean_l2_norm": 0.0},
+                        },
+                    )
+                    write_json(
+                        run_dir / "domain_weighting_report.json",
+                        {
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+                            "effective_sample_weight_summary": {"mean": 1.0},
+                        },
+                    )
+                if trainer == "v5_lob":
+                    write_json(
+                        run_dir / "lob_backbone_contract.json",
+                        {
+                            "policy": "lob_backbone_contract_v1",
+                            "backbone_family": "deeplob_v1",
+                            "uncertainty_head": "softplus_scalar",
+                        },
+                    )
+                    write_json(
+                        run_dir / "lob_target_contract.json",
+                        {
+                            "policy": "lob_target_contract_v1",
+                            "primary_horizon_seconds": 30,
+                            "auxiliary_targets": ["micro_alpha_60s", "five_min_alpha", "adverse_excursion_30s"],
+                        },
+                    )
+                    write_json(
+                        run_dir / "domain_weighting_report.json",
+                        {
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+                            "effective_sample_weight_summary": {"mean": 1.0},
+                        },
+                    )
+                if trainer == "v5_tradability":
+                    write_json(
+                        run_dir / "tradability_model_contract.json",
+                        {
+                            "policy": "v5_tradability_v1",
+                            "input_experts": {
+                                "panel": {"run_id": "panel-run-002"},
+                                "sequence": {"run_id": "sequence-run-002"},
+                                "lob": {"run_id": "lob-run-002"},
+                            },
+                        },
+                    )
+                    write_json(
+                        run_dir / "domain_weighting_report.json",
+                        {
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+                            "effective_sample_weight_summary": {"mean": 1.0},
+                        },
+                    )
                 table = run_dir / "expert_prediction_table.parquet"
                 table.write_bytes(b"PAR1")
                 return run_dir
@@ -229,6 +313,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(f"[ops][feature-dataset-certification] path={report_path}")
                 sys.exit(0)
 
+            if tuple(args[:2]) == ("-m", "autobot.ops.private_execution_label_store"):
+                build_path = ROOT / "data" / "parquet" / "private_execution_v1" / "_meta" / "build_report.json"
+                write_json(build_path, {"rows_written_total": 12, "status": "PASS"})
+                write_json(build_path.parent / "validate_report.json", {"status": "PASS", "pass": True, "reasons": []})
+                print(str(build_path))
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "train"):
                 trainer = arg_value("--trainer")
                 family = arg_value("--model-family")
@@ -249,6 +340,10 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 if trainer == "v5_lob":
                     run_dir = expert_run(family, trainer, LOB_RUN_ID)
                     print(json.dumps({"run_dir": str(run_dir), "run_id": LOB_RUN_ID}))
+                    sys.exit(0)
+                if trainer == "v5_tradability":
+                    run_dir = expert_run(family, trainer, TRAD_RUN_ID)
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": TRAD_RUN_ID}))
                     sys.exit(0)
                 if trainer == "v5_fusion":
                     runtime_start = arg_value("--fusion-runtime-start")
@@ -399,7 +494,7 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
             + " -BatchDate "
             + json.dumps("2026-03-08")
             + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
-            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\")\n"
+            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\",\"v5_tradability\")\n"
         ),
         encoding="utf-8",
     )
@@ -427,19 +522,21 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
     assert trainer_names.count("v5_panel_ensemble") == 1
     assert trainer_names.count("v5_sequence") == 1
     assert trainer_names.count("v5_lob") == 1
+    assert trainer_names.count("v5_tradability") == 1
     assert trainer_names.count("v5_fusion") == 2
-    assert len(export_calls) == 12
+    assert len(export_calls) == 14
 
     report = json.loads(
         (project_root / "logs" / "test_acceptance_v5_dependency_reuse" / "latest.json").read_text(encoding="utf-8-sig")
     )
     assert report["steps"]["dependency_trainers"]["trained_count"] == 0
-    assert report["steps"]["dependency_trainers"]["reused_count"] == 3
+    assert report["steps"]["dependency_trainers"]["reused_count"] == 4
     results = report["steps"]["dependency_trainers"]["results"]
     assert [item["trainer"] for item in results] == [
         "v5_panel_ensemble",
         "v5_sequence",
         "v5_lob",
+        "v5_tradability",
     ]
     assert all(item["reused"] is True for item in results)
     assert all(item["source_mode"] == "existing_run" for item in results)
@@ -447,5 +544,6 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
     assert results[0]["tail_mode"] == "dependency_expert_only"
     assert results[1]["tail_mode"] == "expert_tail"
     assert results[2]["tail_mode"] == "expert_tail"
+    assert results[3]["tail_mode"] == "expert_tail"
     runtime_exports = report["steps"]["dependency_runtime_exports"]["results"]
     assert all(item["reused"] is True for item in runtime_exports)

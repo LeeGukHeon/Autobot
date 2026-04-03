@@ -2424,6 +2424,10 @@ def _load_model_family_latest_summary(project_root: Path, model_family: str) -> 
     run_id = str(latest_payload.get("run_id") or "").strip()
     run_dir = family_root / run_id if run_id else None
     train_config = _load_json(run_dir / "train_config.yaml") if run_dir and run_dir.exists() else {}
+    runtime_recommendations = _load_json(run_dir / "runtime_recommendations.json") if run_dir and run_dir.exists() else {}
+    domain_weighting_report = _load_json(run_dir / "domain_weighting_report.json") if run_dir and run_dir.exists() else {}
+    sequence_pretrain_contract = _load_json(run_dir / "sequence_pretrain_contract.json") if run_dir and run_dir.exists() else {}
+    sequence_pretrain_report = _load_json(run_dir / "sequence_pretrain_report.json") if run_dir and run_dir.exists() else {}
     return {
         "model_family": model_family,
         "exists": bool(run_id and run_dir and run_dir.exists()),
@@ -2435,6 +2439,31 @@ def _load_model_family_latest_summary(project_root: Path, model_family: str) -> 
         "run_scope": train_config.get("run_scope"),
         "start": train_config.get("start"),
         "end": train_config.get("end"),
+        "sequence_variant_name": runtime_recommendations.get("sequence_variant_name") or train_config.get("sequence_variant_name"),
+        "lob_variant_name": runtime_recommendations.get("lob_variant_name") or train_config.get("lob_variant_name"),
+        "fusion_variant_name": runtime_recommendations.get("fusion_variant_name") or train_config.get("fusion_variant_name"),
+        "sequence_backbone_name": runtime_recommendations.get("sequence_backbone_name") or train_config.get("sequence_backbone_name"),
+        "lob_backbone_name": runtime_recommendations.get("lob_backbone_name") or train_config.get("lob_backbone_name"),
+        "tradability_source_run_id": runtime_recommendations.get("tradability_source_run_id") or train_config.get("tradability_source_run_id"),
+        "fusion_stacker_family": runtime_recommendations.get("fusion_stacker_family"),
+        "fusion_gating_policy": runtime_recommendations.get("fusion_gating_policy"),
+        "fusion_candidate_default_eligible": runtime_recommendations.get("fusion_candidate_default_eligible"),
+        "fusion_evidence_winner": runtime_recommendations.get("fusion_evidence_winner"),
+        "fusion_evidence_reason_code": runtime_recommendations.get("fusion_evidence_reason_code"),
+        "fusion_offline_winner": runtime_recommendations.get("fusion_offline_winner"),
+        "fusion_default_eligible_winner": runtime_recommendations.get("fusion_default_eligible_winner"),
+        "domain_weighting_policy": domain_weighting_report.get("policy"),
+        "domain_weighting_source_kind": _dig(domain_weighting_report, "domain_details", "source_kind"),
+        "domain_weighting_enabled": bool(domain_weighting_report.get("domain_weighting_enabled", False)),
+        "ood_status": runtime_recommendations.get("ood_status"),
+        "ood_source_kind": runtime_recommendations.get("ood_source_kind"),
+        "ood_penalty_enabled": runtime_recommendations.get("ood_penalty_enabled"),
+        "sequence_pretrain_ready": bool(runtime_recommendations.get("sequence_pretrain_ready", False) or sequence_pretrain_contract.get("pretrain_ready", False)),
+        "sequence_pretrain_method": runtime_recommendations.get("sequence_pretrain_method") or train_config.get("pretrain_method"),
+        "sequence_pretrain_status": runtime_recommendations.get("sequence_pretrain_status") or sequence_pretrain_contract.get("status") or sequence_pretrain_report.get("status"),
+        "sequence_pretrain_objective": runtime_recommendations.get("sequence_pretrain_objective") or sequence_pretrain_report.get("objective_name"),
+        "sequence_pretrain_best_epoch": runtime_recommendations.get("sequence_pretrain_best_epoch") or sequence_pretrain_report.get("best_epoch"),
+        "sequence_pretrain_encoder_present": bool(runtime_recommendations.get("sequence_pretrain_encoder_present", False) or bool(sequence_pretrain_contract.get("encoder_artifact_path"))),
     }
 
 
@@ -2777,6 +2806,7 @@ def _summarize_v5_readiness(project_root: Path, *, data_platform: dict[str, Any]
         "train_v5_panel_ensemble": _load_model_family_latest_summary(project_root, "train_v5_panel_ensemble"),
         "train_v5_sequence": _load_model_family_latest_summary(project_root, "train_v5_sequence"),
         "train_v5_lob": _load_model_family_latest_summary(project_root, "train_v5_lob"),
+        "train_v5_tradability": _load_model_family_latest_summary(project_root, "train_v5_tradability"),
         "train_v5_fusion": _load_model_family_latest_summary(project_root, "train_v5_fusion"),
     }
     global_latest = _load_json(project_root / "models" / "registry" / "latest.json")
@@ -2788,10 +2818,10 @@ def _summarize_v5_readiness(project_root: Path, *, data_platform: dict[str, Any]
                 "registry_present": bool((dataset_rows.get(key) or {}).get("registry_present", False)),
                 "status": (dataset_rows.get(key) or {}).get("status"),
             }
-            for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1")
+            for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "private_execution_v1")
         },
-        "core_data_ready": all(bool((dataset_rows.get(key) or {}).get("exists", False)) for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1")),
-        "core_registry_ready": all(bool((dataset_rows.get(key) or {}).get("registry_present", False)) for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1")),
+        "core_data_ready": all(bool((dataset_rows.get(key) or {}).get("exists", False)) for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "private_execution_v1")),
+        "core_registry_ready": all(bool((dataset_rows.get(key) or {}).get("registry_present", False)) for key in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "private_execution_v1")),
         "latest_global_pointer_family": str(global_latest.get("model_family") or "").strip() or None,
         "latest_global_pointer_run_id": str(global_latest.get("run_id") or "").strip() or None,
     }

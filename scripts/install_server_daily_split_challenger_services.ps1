@@ -154,7 +154,7 @@ $resolvedRuntimeInstallScript = if ([string]::IsNullOrWhiteSpace($RuntimeInstall
 $resolvedCandidateAdoptionScript = if ([string]::IsNullOrWhiteSpace($CandidateAdoptionScript)) { "" } else { $CandidateAdoptionScript }
 $resolvedModelFamily = [string]$ModelFamily
 $resolvedModelFamily = $resolvedModelFamily.Trim()
-if ([string]::IsNullOrWhiteSpace($resolvedModelFamily) -or (([string]::Equals($resolvedModelFamily, "train_v5_fusion", [System.StringComparison]::OrdinalIgnoreCase)) -and (-not (Test-Path (Join-Path $resolvedProjectRoot ("models/registry/" + $resolvedModelFamily)))))) {
+if ([string]::IsNullOrWhiteSpace($resolvedModelFamily)) {
     $resolvedModelFamily = Resolve-PreferredModelFamily -Root $resolvedProjectRoot -PreferredFamily "train_v5_fusion"
 }
 $resolvedChampionCompareModelFamily = [string]$ChampionCompareModelFamily

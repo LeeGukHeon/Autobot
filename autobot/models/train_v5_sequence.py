@@ -51,6 +51,12 @@ from .v5_expert_runtime_export import (
     write_expert_runtime_export_metadata,
 )
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
+from .v5_domain_weighting import (
+    build_v5_domain_weighting_report,
+    resolve_v5_domain_weighting_components,
+    write_v5_domain_weighting_report,
+)
+from .ood_generalization import build_ood_generalization_report, write_ood_generalization_report
 from autobot.data.collect.sequence_tensor_store import (
     SUPPORT_LEVEL_REDUCED_CONTEXT,
     SUPPORT_LEVEL_STRICT_FULL,
@@ -61,8 +67,34 @@ from autobot.data.collect.sequence_tensor_store import (
 
 DEFAULT_HORIZONS_MINUTES: tuple[int, ...] = (3, 6, 12, 24)
 DEFAULT_QUANTILES: tuple[float, ...] = (0.1, 0.5, 0.9)
-VALID_BACKBONES = ("patchtst", "timemixer", "tft")
-VALID_PRETRAIN_METHODS = ("ts2vec_like", "timemae_like", "none")
+SEQUENCE_BACKBONE_ALIASES: dict[str, str] = {
+    "patchtst": "patchtst_v1",
+    "patchtst_v1": "patchtst_v1",
+    "timemixer": "timemixer_v1",
+    "timemixer_v1": "timemixer_v1",
+    "tft": "tft_v1",
+    "tft_v1": "tft_v1",
+}
+SEQUENCE_BACKBONE_IMPL_FAMILIES: dict[str, str] = {
+    "patchtst_v1": "patchtst",
+    "timemixer_v1": "timemixer",
+    "tft_v1": "tft",
+}
+VALID_BACKBONES = tuple(SEQUENCE_BACKBONE_ALIASES.keys())
+SEQUENCE_PRETRAIN_METHOD_ALIASES: dict[str, str] = {
+    "ts2vec_like": "ts2vec_v1",
+    "ts2vec_v1": "ts2vec_v1",
+    "timemae_like": "timemae_v1",
+    "timemae_v1": "timemae_v1",
+    "none": "none",
+}
+SEQUENCE_PRETRAIN_IMPL_METHODS: dict[str, str] = {
+    "ts2vec_v1": "ts2vec_like",
+    "timemae_v1": "timemae_like",
+    "none": "none",
+}
+VALID_PRETRAIN_METHODS = tuple(SEQUENCE_PRETRAIN_METHOD_ALIASES.keys())
+LEADER_MARKETS: tuple[str, ...] = ("KRW-BTC", "KRW-ETH")
 
 
 @dataclass(frozen=True)
@@ -76,8 +108,8 @@ class TrainV5SequenceOptions:
     start: str
     end: str
     seed: int
-    backbone_family: str = "patchtst"
-    pretrain_method: str = "ts2vec_like"
+    backbone_family: str = "patchtst_v1"
+    pretrain_method: str = "ts2vec_v1"
     batch_size: int = 16
     pretrain_epochs: int = 1
     finetune_epochs: int = 5
@@ -108,6 +140,10 @@ class TrainV5SequenceResult:
     walk_forward_report_path: Path
     sequence_model_contract_path: Path
     predictor_contract_path: Path
+    sequence_pretrain_contract_path: Path
+    sequence_pretrain_report_path: Path
+    sequence_pretrain_encoder_path: Path
+    domain_weighting_report_path: Path
 
 
 @dataclass
@@ -195,6 +231,36 @@ def _parse_date_to_ts_ms(value: str | None, *, end_of_day: bool = False) -> int 
         end_of_day=end_of_day,
         timezone_name=OPERATING_WINDOW_TIMEZONE,
     )
+
+
+def _normalize_sequence_backbone_family(value: str | None) -> str:
+    resolved = str(value or "").strip().lower() or "patchtst_v1"
+    canonical = SEQUENCE_BACKBONE_ALIASES.get(resolved)
+    if canonical is None:
+        raise ValueError(f"backbone_family must be one of: {', '.join(VALID_BACKBONES)}")
+    return canonical
+
+
+def _sequence_backbone_impl_family(canonical_family: str) -> str:
+    resolved = str(canonical_family or "").strip().lower()
+    if resolved not in SEQUENCE_BACKBONE_IMPL_FAMILIES:
+        raise ValueError(f"unsupported canonical sequence backbone: {canonical_family}")
+    return SEQUENCE_BACKBONE_IMPL_FAMILIES[resolved]
+
+
+def _normalize_sequence_pretrain_method(value: str | None) -> str:
+    resolved = str(value or "").strip().lower() or "ts2vec_v1"
+    canonical = SEQUENCE_PRETRAIN_METHOD_ALIASES.get(resolved)
+    if canonical is None:
+        raise ValueError(f"pretrain_method must be one of: {', '.join(VALID_PRETRAIN_METHODS)}")
+    return canonical
+
+
+def _sequence_pretrain_impl_method(canonical_method: str) -> str:
+    resolved = str(canonical_method or "").strip().lower()
+    if resolved not in SEQUENCE_PRETRAIN_IMPL_METHODS:
+        raise ValueError(f"unsupported canonical sequence pretrain method: {canonical_method}")
+    return SEQUENCE_PRETRAIN_IMPL_METHODS[resolved]
 
 
 def _slice_sequence_samples(samples: _SequenceSamples, mask: np.ndarray) -> _SequenceSamples:
@@ -396,11 +462,39 @@ def _write_sequence_expert_prediction_table(
     return resolved_output_path
 
 
-def _build_sequence_runtime_recommendations(*, options: TrainV5SequenceOptions, runtime_dataset_root: Path) -> dict[str, Any]:
+def _build_sequence_runtime_recommendations(
+    *,
+    options: TrainV5SequenceOptions,
+    runtime_dataset_root: Path,
+    domain_details: dict[str, Any] | None = None,
+    pretrain_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details = dict(domain_details or {})
+    report = dict(pretrain_report or {})
+    canonical_backbone = _normalize_sequence_backbone_family(options.backbone_family)
+    canonical_pretrain = _normalize_sequence_pretrain_method(options.pretrain_method)
     return annotate_v5_runtime_recommendations({
         "status": "sequence_runtime_ready",
         "source_family": options.model_family,
         "runtime_feature_dataset_root": str(runtime_dataset_root),
+        "sequence_variant_name": f"{canonical_backbone}__{canonical_pretrain}",
+        "sequence_backbone_name": canonical_backbone,
+        "sequence_pretrain_method": canonical_pretrain,
+        "sequence_pretrain_ready": bool(report.get("status") == "enabled"),
+        "sequence_pretrain_status": str(report.get("status") or ("disabled" if canonical_pretrain == "none" else "enabled")).strip(),
+        "sequence_pretrain_objective": str(
+            report.get("objective_name")
+            or (
+                "none"
+                if canonical_pretrain == "none"
+                else ("ts2vec_alignment_variance_v1" if canonical_pretrain == "ts2vec_v1" else "timemae_masked_reconstruction_v1")
+            )
+        ).strip(),
+        "sequence_pretrain_best_epoch": int(report.get("best_epoch") or 0),
+        "sequence_pretrain_encoder_present": bool(report.get("status") == "enabled"),
+        "domain_weighting_policy": str(details.get("policy") or "v5_domain_weighting_v1").strip() or "v5_domain_weighting_v1",
+        "domain_weighting_source_kind": str(details.get("source_kind") or "regime_inverse_frequency_v1").strip() or "regime_inverse_frequency_v1",
+        "domain_weighting_enabled": bool(details.get("enabled", False)),
     })
 
 
@@ -439,8 +533,8 @@ def _options_from_v5_sequence_train_config(train_config: dict[str, Any]) -> Trai
         start=str(base["start"]),
         end=str(base["end"]),
         seed=int(base["seed"]),
-        backbone_family=str(base.get("backbone_family", "patchtst")),
-        pretrain_method=str(base.get("pretrain_method", "ts2vec_like")),
+        backbone_family=_normalize_sequence_backbone_family(str(base.get("backbone_family", "patchtst_v1"))),
+        pretrain_method=_normalize_sequence_pretrain_method(str(base.get("pretrain_method", "ts2vec_v1"))),
         batch_size=int(base.get("batch_size", 16)),
         pretrain_epochs=int(base.get("pretrain_epochs", 1)),
         finetune_epochs=int(base.get("finetune_epochs", 5)),
@@ -503,6 +597,7 @@ def _run_sequence_expert_tail(
     runtime_recommendations = _build_sequence_runtime_recommendations(
         options=options,
         runtime_dataset_root=runtime_dataset_written_root,
+        pretrain_report=load_json(run_dir / "sequence_pretrain_report.json"),
     )
     promotion_payload = _build_sequence_promotion_payload(
         run_id=run_id,
@@ -687,6 +782,11 @@ class _V5SequenceModel(nn.Module):
         self.cls_head = nn.Linear(hidden_dim, 1)
         self.quantile_head = nn.Linear(hidden_dim, horizons_count * quantiles_count)
         self.reconstruction_head = nn.Linear(hidden_dim, second_dim + minute_dim + micro_dim + lob_global_dim)
+        self.pretrain_projection_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
         self.horizons_count = int(horizons_count)
         self.quantiles_count = int(quantiles_count)
 
@@ -820,6 +920,95 @@ def _mask_batch(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return masked
 
 
+def _mask_batch_with_ratio(batch: dict[str, torch.Tensor], *, mask_ratio: float) -> dict[str, torch.Tensor]:
+    masked = {key: value.clone() for key, value in batch.items() if key not in {"y_cls", "y_reg_multi", "sample_weight"}}
+    ratio = min(max(float(mask_ratio), 0.0), 0.95)
+    for key in ("second", "minute", "micro", "lob", "lob_global"):
+        keep_mask = (torch.rand_like(masked[key]) > ratio).float()
+        masked[key] = masked[key] * keep_mask
+    return masked
+
+
+def _temporal_crop_tensor(tensor: torch.Tensor, *, crop_ratio: float, start_fraction: float) -> torch.Tensor:
+    if tensor.ndim < 3:
+        return tensor
+    steps = int(tensor.shape[1])
+    if steps <= 1:
+        return tensor
+    bounded_ratio = min(max(float(crop_ratio), 0.25), 1.0)
+    crop_steps = max(1, min(steps, int(round(steps * bounded_ratio))))
+    start_max = max(steps - crop_steps, 0)
+    start_idx = min(start_max, max(0, int(round(start_max * float(start_fraction)))))
+    end_idx = start_idx + crop_steps
+    return tensor[:, start_idx:end_idx, ...]
+
+
+def _temporal_crop_batch(batch: dict[str, torch.Tensor], *, crop_ratio: float, start_fraction: float) -> dict[str, torch.Tensor]:
+    cropped = {key: value.clone() for key, value in batch.items() if key not in {"y_cls", "y_reg_multi", "sample_weight"}}
+    for key in ("second", "minute", "micro", "lob", "lob_global"):
+        cropped[key] = _temporal_crop_tensor(cropped[key], crop_ratio=crop_ratio, start_fraction=start_fraction)
+    return cropped
+
+
+def _build_ts2vec_pretrain_views(batch: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    view_a = _temporal_crop_batch(_augment_batch(batch), crop_ratio=0.75, start_fraction=0.0)
+    view_b = _temporal_crop_batch(_augment_batch(batch), crop_ratio=0.75, start_fraction=1.0)
+    crop_view = _temporal_crop_batch(batch, crop_ratio=0.50, start_fraction=0.5)
+    return view_a, view_b, crop_view
+
+
+def _encoder_dim(model: _V5SequenceModel) -> int:
+    final_layer = model.pretrain_projection_head[-1]
+    if isinstance(final_layer, nn.Linear):
+        return int(final_layer.out_features)
+    return 0
+
+
+def _capture_pretrain_encoder_state(model: _V5SequenceModel) -> dict[str, Any]:
+    return {
+        "second_encoder": model.second_encoder.state_dict(),
+        "minute_encoder": model.minute_encoder.state_dict(),
+        "micro_encoder": model.micro_encoder.state_dict(),
+        "lob_encoder": model.lob_encoder.state_dict(),
+        "pretrain_projection_head": model.pretrain_projection_head.state_dict(),
+    }
+
+
+def _load_pretrain_encoder_state(model: _V5SequenceModel, state: dict[str, Any]) -> None:
+    if not state:
+        return
+    for key, module in {
+        "second_encoder": model.second_encoder,
+        "minute_encoder": model.minute_encoder,
+        "micro_encoder": model.micro_encoder,
+        "lob_encoder": model.lob_encoder,
+        "pretrain_projection_head": model.pretrain_projection_head,
+    }.items():
+        payload = state.get(key)
+        if isinstance(payload, dict) and payload:
+            module.load_state_dict(payload)
+
+
+def _build_encoder_norm_summary(state: dict[str, Any]) -> dict[str, Any]:
+    module_means: dict[str, float] = {}
+    all_norms: list[float] = []
+    for module_name, module_state in dict(state or {}).items():
+        if not isinstance(module_state, dict):
+            continue
+        norms: list[float] = []
+        for tensor in module_state.values():
+            if isinstance(tensor, torch.Tensor):
+                norm_value = float(torch.linalg.vector_norm(tensor.detach().float()).cpu().item())
+                norms.append(norm_value)
+                all_norms.append(norm_value)
+        module_means[module_name] = float(np.mean(norms)) if norms else 0.0
+    return {
+        "module_mean_l2_norms": module_means,
+        "global_mean_l2_norm": float(np.mean(all_norms)) if all_norms else 0.0,
+        "parameter_tensor_count": int(len(all_norms)),
+    }
+
+
 def _pretrain_summary_target(batch: dict[str, torch.Tensor]) -> torch.Tensor:
     return torch.cat(
         [
@@ -832,6 +1021,18 @@ def _pretrain_summary_target(batch: dict[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _off_diagonal_mean_square(matrix: torch.Tensor) -> torch.Tensor:
+    if matrix.ndim != 2 or matrix.shape[0] <= 1:
+        return torch.tensor(0.0, device=matrix.device)
+    centered = matrix - matrix.mean(dim=0, keepdim=True)
+    cov = centered.T @ centered / float(max(matrix.shape[0] - 1, 1))
+    mask = ~torch.eye(cov.shape[0], dtype=torch.bool, device=cov.device)
+    values = cov[mask]
+    if values.numel() <= 0:
+        return torch.tensor(0.0, device=matrix.device)
+    return torch.mean(values ** 2)
+
+
 def _run_pretrain(
     *,
     model: _V5SequenceModel,
@@ -840,23 +1041,110 @@ def _run_pretrain(
     method: str,
     epochs: int,
     device: torch.device,
-) -> None:
+) -> dict[str, Any]:
     if method == "none":
-        return
-    for _ in range(max(int(epochs), 1)):
+        return {
+            "policy": "sequence_pretrain_report_v1",
+            "status": "disabled",
+            "objective_name": "none",
+            "epochs_run": 0,
+            "epoch_losses": [],
+            "final_loss": None,
+            "objective_components": [],
+            "epoch_component_history": [],
+            "final_component_values": {},
+            "best_epoch": 0,
+            "encoder_dim": int(_encoder_dim(model)),
+            "mask_ratio_schedule": [],
+            "augmentation_policy": [],
+        }
+    epoch_losses: list[float] = []
+    epoch_component_history: list[dict[str, float]] = []
+    resolved_epochs = max(int(epochs), 1)
+    mask_ratio_schedule = (
+        np.linspace(0.20, 0.40, resolved_epochs).astype(np.float64).tolist()
+        if method != "ts2vec_like"
+        else []
+    )
+    augmentation_policy = (
+        ["gaussian_noise_v1", "temporal_crop_mismatch_v1"]
+        if method == "ts2vec_like"
+        else ["masked_reconstruction_v1", "mask_ratio_schedule_v1"]
+    )
+    for epoch_index in range(resolved_epochs):
         model.train()
+        batch_losses: list[float] = []
+        batch_components: list[dict[str, float]] = []
         for batch in loader:
             batch = {key: value.to(device) for key, value in batch.items()}
             optimizer.zero_grad(set_to_none=True)
             if method == "ts2vec_like":
-                emb_a = model.encode(_augment_batch(batch))
-                emb_b = model.encode(_augment_batch(batch))
-                loss = 1.0 - torch.nn.functional.cosine_similarity(emb_a, emb_b, dim=-1).mean()
+                view_a, view_b, crop_view = _build_ts2vec_pretrain_views(batch)
+                emb_a = model.pretrain_projection_head(model.encode(view_a))
+                emb_b = model.pretrain_projection_head(model.encode(view_b))
+                emb_crop = model.pretrain_projection_head(model.encode(crop_view))
+                emb_a = torch.nn.functional.normalize(emb_a, dim=-1)
+                emb_b = torch.nn.functional.normalize(emb_b, dim=-1)
+                emb_crop = torch.nn.functional.normalize(emb_crop, dim=-1)
+                alignment_loss = torch.mean((emb_a - emb_b) ** 2)
+                crop_alignment_loss = torch.mean((emb_a - emb_crop) ** 2) + torch.mean((emb_b - emb_crop) ** 2)
+                std_a = torch.sqrt(torch.var(emb_a, dim=0, unbiased=False) + 1e-6)
+                std_b = torch.sqrt(torch.var(emb_b, dim=0, unbiased=False) + 1e-6)
+                variance_loss = torch.mean(torch.relu(1.0 - std_a)) + torch.mean(torch.relu(1.0 - std_b))
+                covariance_loss = _off_diagonal_mean_square(emb_a) + _off_diagonal_mean_square(emb_b)
+                loss = alignment_loss + (0.5 * crop_alignment_loss) + (0.1 * variance_loss) + (0.01 * covariance_loss)
+                batch_components.append(
+                    {
+                        "alignment_loss": float(alignment_loss.detach().cpu().item()),
+                        "crop_alignment_loss": float(crop_alignment_loss.detach().cpu().item()),
+                        "variance_loss": float(variance_loss.detach().cpu().item()),
+                        "covariance_loss": float(covariance_loss.detach().cpu().item()),
+                    }
+                )
             else:
-                outputs = model(_mask_batch(batch))
-                loss = torch.nn.functional.mse_loss(outputs["reconstruction"], _pretrain_summary_target(batch))
+                mask_ratio = float(mask_ratio_schedule[epoch_index])
+                masked_batch = _mask_batch_with_ratio(batch, mask_ratio=mask_ratio)
+                outputs = model(masked_batch)
+                reconstruction_loss = torch.nn.functional.mse_loss(outputs["reconstruction"], _pretrain_summary_target(batch))
+                loss = reconstruction_loss
+                batch_components.append(
+                    {
+                        "reconstruction_loss": float(reconstruction_loss.detach().cpu().item()),
+                        "mask_ratio": mask_ratio,
+                    }
+                )
             loss.backward()
             optimizer.step()
+            batch_losses.append(float(loss.detach().cpu().item()))
+        epoch_losses.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
+        if batch_components:
+            component_summary: dict[str, float] = {}
+            for key in batch_components[0].keys():
+                component_summary[key] = float(
+                    np.mean([float(item.get(key, 0.0)) for item in batch_components])
+                )
+            epoch_component_history.append(component_summary)
+    objective_name = "ts2vec_alignment_variance_v1" if method == "ts2vec_like" else "timemae_masked_reconstruction_v1"
+    best_epoch = int(np.argmin(np.asarray(epoch_losses, dtype=np.float64)) + 1) if epoch_losses else 0
+    return {
+        "policy": "sequence_pretrain_report_v1",
+        "status": "enabled",
+        "objective_name": objective_name,
+        "epochs_run": int(resolved_epochs),
+        "epoch_losses": list(epoch_losses),
+        "final_loss": float(epoch_losses[-1]) if epoch_losses else None,
+        "epoch_component_history": epoch_component_history,
+        "final_component_values": dict(epoch_component_history[-1] if epoch_component_history else {}),
+        "best_epoch": best_epoch,
+        "encoder_dim": int(_encoder_dim(model)),
+        "mask_ratio_schedule": [float(item) for item in mask_ratio_schedule],
+        "augmentation_policy": list(augmentation_policy),
+        "objective_components": (
+            ["alignment_loss", "crop_alignment_loss", "variance_loss", "covariance_loss"]
+            if method == "ts2vec_like"
+            else ["reconstruction_loss", "mask_ratio"]
+        ),
+    }
 
 
 def _supervised_loss(
@@ -1008,7 +1296,8 @@ def _load_sequence_samples(
     candles_api_root = options.dataset_root.parent / "candles_api_v1" / "tf=1m"
     candles_v1_root = options.dataset_root.parent / "candles_v1" / "tf=1m"
     ws_by_market: dict[str, dict[int, float]] = {}
-    for market in selected_markets:
+    source_markets = list(dict.fromkeys([*selected_markets, *LEADER_MARKETS]))
+    for market in source_markets:
         close_map = _load_minute_close_map_sources(
             market=market,
             roots=(second_root, candles_api_root, candles_v1_root, ws_root),
@@ -1044,7 +1333,12 @@ def _load_sequence_samples(
         support_level = resolve_sequence_support_level_from_row(row)
         if support_level == SUPPORT_LEVEL_STRUCTURAL_INVALID:
             continue
-        future_returns = _compute_future_returns(ws_by_market.get(market, {}), anchor_ts_ms=anchor_ts_ms, horizons=options.horizons_minutes)
+        future_returns = _compute_future_residual_returns(
+            ws_by_market=ws_by_market,
+            market=market,
+            anchor_ts_ms=anchor_ts_ms,
+            horizons=options.horizons_minutes,
+        )
         if future_returns is None:
             continue
         payload = np.load(Path(str(row["cache_file"])))
@@ -1406,6 +1700,41 @@ def _compute_future_returns(ws_close_map: dict[int, float], *, anchor_ts_ms: int
     return values
 
 
+def _compute_future_residual_returns(
+    *,
+    ws_by_market: dict[str, dict[int, float]],
+    market: str,
+    anchor_ts_ms: int,
+    horizons: tuple[int, ...],
+) -> list[float] | None:
+    market_key = str(market or "").strip().upper()
+    raw_returns = _compute_future_returns(
+        ws_by_market.get(market_key, {}),
+        anchor_ts_ms=anchor_ts_ms,
+        horizons=horizons,
+    )
+    if raw_returns is None:
+        return None
+    leader_return_sets: list[list[float]] = []
+    for leader_market in LEADER_MARKETS:
+        if leader_market == market_key:
+            continue
+        leader_returns = _compute_future_returns(
+            ws_by_market.get(leader_market, {}),
+            anchor_ts_ms=anchor_ts_ms,
+            horizons=horizons,
+        )
+        if leader_returns is not None:
+            leader_return_sets.append(leader_returns)
+    if not leader_return_sets:
+        return raw_returns
+    leader_mean = np.mean(np.asarray(leader_return_sets, dtype=np.float64), axis=0)
+    return [
+        float(raw - baseline)
+        for raw, baseline in zip(raw_returns, leader_mean.tolist(), strict=False)
+    ]
+
+
 def _build_known_covariates(*, anchor_ts_ms: int, ws_by_market: dict[str, dict[int, float]]) -> np.ndarray:
     dt = datetime.fromtimestamp(anchor_ts_ms / 1000.0, tz=timezone.utc)
     hour = float(dt.hour)
@@ -1581,12 +1910,10 @@ def _build_sequence_data_fingerprint(*, options: TrainV5SequenceOptions, sample_
 
 
 def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5SequenceResult:
-    backbone_family = str(options.backbone_family).strip().lower()
-    if backbone_family not in VALID_BACKBONES:
-        raise ValueError(f"backbone_family must be one of: {', '.join(VALID_BACKBONES)}")
-    pretrain_method = str(options.pretrain_method).strip().lower()
-    if pretrain_method not in VALID_PRETRAIN_METHODS:
-        raise ValueError(f"pretrain_method must be one of: {', '.join(VALID_PRETRAIN_METHODS)}")
+    backbone_family = _normalize_sequence_backbone_family(options.backbone_family)
+    backbone_impl_family = _sequence_backbone_impl_family(backbone_family)
+    pretrain_method = _normalize_sequence_pretrain_method(options.pretrain_method)
+    pretrain_impl_method = _sequence_pretrain_impl_method(pretrain_method)
 
     started_at = time.time()
     run_id = make_run_id(seed=options.seed)
@@ -1600,6 +1927,23 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         interval_ms=60_000,
     )
     masks = split_masks(labels)
+    support_weight = np.asarray([_support_level_weight(level) for level in samples.support_level], dtype=np.float64)
+    data_quality_weight = np.maximum(
+        np.asarray(samples.sample_weight, dtype=np.float64) / np.maximum(support_weight, 1e-12),
+        1e-12,
+    )
+    weight_components = resolve_v5_domain_weighting_components(
+        markets=samples.markets,
+        ts_ms=samples.ts_ms,
+        split_labels=labels,
+        base_sample_weight=np.ones(samples.rows, dtype=np.float64),
+        data_quality_weight=data_quality_weight,
+        support_weight=support_weight,
+    )
+    samples = replace(
+        samples,
+        sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+    )
     train_idx = np.flatnonzero(masks["train"])
     valid_idx = np.flatnonzero(masks["valid"])
     test_idx = np.flatnonzero(masks["test"])
@@ -1611,7 +1955,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
     device = torch.device("cpu")
 
     model = _V5SequenceModel(
-        backbone_family=backbone_family,
+        backbone_family=backbone_impl_family,
         second_dim=samples.second.shape[2],
         minute_dim=samples.minute.shape[2],
         micro_dim=samples.micro.shape[2],
@@ -1630,14 +1974,21 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
     train_loader = DataLoader(_SequenceTorchDataset(samples, train_idx), batch_size=max(int(options.batch_size), 1), shuffle=True)
     valid_loader = DataLoader(_SequenceTorchDataset(samples, valid_idx), batch_size=max(int(options.batch_size), 1), shuffle=False)
 
-    _run_pretrain(
+    pretrain_report = _run_pretrain(
         model=model,
         loader=train_loader,
         optimizer=optimizer,
-        method=pretrain_method,
+        method=pretrain_impl_method,
         epochs=max(int(options.pretrain_epochs), 1),
         device=device,
     )
+    pretrain_encoder_state = _capture_pretrain_encoder_state(model) if pretrain_impl_method != "none" else {}
+    if pretrain_encoder_state:
+        pretrain_report = {
+            **dict(pretrain_report or {}),
+            "encoder_norm_summary": _build_encoder_norm_summary(pretrain_encoder_state),
+        }
+        _load_pretrain_encoder_state(model, pretrain_encoder_state)
 
     best_state: dict[str, torch.Tensor] | None = None
     best_valid_loss: float | None = None
@@ -1748,10 +2099,12 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
                 "valid": SUPPORT_LEVEL_STRICT_FULL if valid_eval_idx.size != valid_idx.size else "mixed_available",
                 "test": SUPPORT_LEVEL_STRICT_FULL if test_eval_idx.size != test_idx.size else "mixed_available",
             },
-            "sequence_model": {
-                "policy": "v5_sequence_v1",
-                "backbone_family": backbone_family,
+        "sequence_model": {
+            "policy": "v5_sequence_v1",
+            "backbone_family": backbone_family,
+            "backbone_impl_family": backbone_impl_family,
             "pretrain_method": pretrain_method,
+            "pretrain_impl_method": pretrain_impl_method,
             "horizons_minutes": list(samples.horizons_minutes),
             "quantile_levels": list(samples.quantile_levels),
             "regime_embedding_dim": int(options.regime_embedding_dim),
@@ -1784,7 +2137,10 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "primary_horizon_minutes": int(samples.horizons_minutes[0]),
         "horizons_minutes": list(samples.horizons_minutes),
         "quantile_levels": list(samples.quantile_levels),
-        "target_definition": "future 1m close return by horizon from ws_candle_v1 with canonical 1m candle fallback",
+        "target_family": "leader_residualized_return_v1",
+        "residualization_policy": "market_return_minus_available_leader_basket_mean",
+        "leader_markets": list(LEADER_MARKETS),
+        "target_definition": "future 1m close leader-residualized return by horizon from ws_candle_v1 with canonical 1m candle fallback",
     }
     data_platform_ready_snapshot_id = resolve_ready_snapshot_id(project_root=Path.cwd())
     train_config = {
@@ -1799,10 +2155,22 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         "support_level_counts": dict(samples.support_level_counts),
         "autobot_version": autobot_version,
         "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+        "backbone_family": backbone_family,
+        "backbone_impl_family": backbone_impl_family,
+        "pretrain_method": pretrain_method,
+        "pretrain_impl_method": pretrain_impl_method,
+        "sequence_variant_name": f"{backbone_family}__{pretrain_method}",
+        "sequence_pretrain_ready": bool(pretrain_encoder_state),
+        "sequence_pretrain_status": str((pretrain_report or {}).get("status") or ("disabled" if pretrain_method == "none" else "enabled")),
+        "sequence_pretrain_objective": str((pretrain_report or {}).get("objective_name") or "none"),
+        "sequence_pretrain_best_epoch": int((pretrain_report or {}).get("best_epoch") or 0),
+        "sequence_pretrain_encoder_present": bool(pretrain_encoder_state),
     }
     runtime_recommendations = _build_sequence_runtime_recommendations(
         options=options,
         runtime_dataset_root=runtime_dataset_root,
+        domain_details=dict(weight_components["domain_details"] or {}),
+        pretrain_report=pretrain_report,
     )
     data_fingerprint = _build_sequence_data_fingerprint(options=options, sample_count=samples.rows)
     data_fingerprint["data_platform_ready_snapshot_id"] = data_platform_ready_snapshot_id
@@ -1843,7 +2211,12 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
             {
                 "policy": "v5_sequence_v1",
                 "backbone_family": backbone_family,
+                "backbone_impl_family": backbone_impl_family,
                 "pretrain_method": pretrain_method,
+                "pretrain_impl_method": pretrain_impl_method,
+                "target_family": "leader_residualized_return_v1",
+                "residualization_policy": "market_return_minus_available_leader_basket_mean",
+                "leader_markets": list(LEADER_MARKETS),
                 "horizons_minutes": list(samples.horizons_minutes),
                 "quantile_levels": list(samples.quantile_levels),
                 "outputs": {
@@ -1859,6 +2232,124 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
             sort_keys=True,
         )
         + "\n",
+        encoding="utf-8",
+    )
+    sequence_pretrain_contract_path = run_dir / "sequence_pretrain_contract.json"
+    sequence_pretrain_report_path = run_dir / "sequence_pretrain_report.json"
+    sequence_pretrain_encoder_path = run_dir / "sequence_pretrain_encoder.pt"
+    if pretrain_encoder_state:
+        torch.save(pretrain_encoder_state, sequence_pretrain_encoder_path)
+    sequence_pretrain_report_path.write_text(
+        json.dumps(
+            {
+                **dict(pretrain_report or {}),
+                "backbone_family": backbone_family,
+                "backbone_impl_family": backbone_impl_family,
+                "pretrain_method": pretrain_method,
+                "pretrain_impl_method": pretrain_impl_method,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    sequence_pretrain_contract_path.write_text(
+        json.dumps(
+            {
+                "policy": "sequence_pretrain_contract_v1",
+                "backbone_family": backbone_family,
+                "backbone_impl_family": backbone_impl_family,
+                "pretrain_method": pretrain_method,
+                "pretrain_impl_method": pretrain_impl_method,
+                "target_family": "leader_residualized_return_v1",
+                "status": "enabled" if pretrain_encoder_state else "disabled",
+                "pretrain_ready": bool(pretrain_encoder_state),
+                "encoder_artifact_path": str(sequence_pretrain_encoder_path) if pretrain_encoder_state else "",
+                "pretrain_report_path": str(sequence_pretrain_report_path),
+                "objective_name": str((pretrain_report or {}).get("objective_name") or "none"),
+                "objective_components": list((pretrain_report or {}).get("objective_components") or []),
+                "final_loss": (pretrain_report or {}).get("final_loss"),
+                "best_epoch": int((pretrain_report or {}).get("best_epoch") or 0),
+                "encoder_dim": int((pretrain_report or {}).get("encoder_dim") or 0),
+                "mask_ratio_schedule": list((pretrain_report or {}).get("mask_ratio_schedule") or []),
+                "augmentation_policy": list((pretrain_report or {}).get("augmentation_policy") or []),
+                "epochs": int(max(int(options.pretrain_epochs), 1)),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    domain_weighting_report_path = write_v5_domain_weighting_report(
+        run_dir=run_dir,
+        payload=build_v5_domain_weighting_report(
+            run_id=run_id,
+            trainer_name="v5_sequence",
+            model_family=options.model_family,
+            component_order=["base_sample_weight", "data_quality_weight", "support_level_weight", "domain_weight"],
+            final_sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+            base_sample_weight=np.asarray(weight_components["base_sample_weight"], dtype=np.float64),
+            data_quality_weight=np.asarray(weight_components["data_quality_weight"], dtype=np.float64),
+            support_weight=np.asarray(weight_components["support_weight"], dtype=np.float64),
+            domain_weight=np.asarray(weight_components["domain_weight"], dtype=np.float64),
+            domain_details=dict(weight_components["domain_details"] or {}),
+        ),
+    )
+    ood_generalization_report_path = write_ood_generalization_report(
+        run_dir=run_dir,
+        payload=build_ood_generalization_report(
+            run_id=run_id,
+            trainer_name="v5_sequence",
+            model_family=options.model_family,
+            source_kind=str((weight_components.get("domain_details") or {}).get("source_kind") or "regime_inverse_frequency_v1"),
+            markets=samples.markets,
+            split_labels=labels,
+            effective_sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+            invariant_penalty_enabled=False,
+            regime_bucket_labels=np.asarray(labels, dtype=object),
+            extra_summary={"target_family": "leader_residualized_return_v1"},
+        ),
+    )
+    runtime_recommendations_path = run_dir / "runtime_recommendations.json"
+    runtime_recommendations_payload = load_json(runtime_recommendations_path)
+    runtime_recommendations_payload.update(
+        {
+            "sequence_pretrain_ready": bool(pretrain_encoder_state),
+            "sequence_pretrain_best_epoch": int((pretrain_report or {}).get("best_epoch") or 0),
+            "sequence_pretrain_encoder_present": bool(pretrain_encoder_state),
+            "sequence_pretrain_contract_path": str(sequence_pretrain_contract_path),
+            "sequence_pretrain_report_path": str(sequence_pretrain_report_path),
+            "sequence_pretrain_encoder_path": str(sequence_pretrain_encoder_path) if pretrain_encoder_state else "",
+            "ood_status": "informative_ready",
+            "ood_source_kind": str((weight_components.get("domain_details") or {}).get("source_kind") or "regime_inverse_frequency_v1"),
+            "ood_penalty_enabled": True,
+            "ood_generalization_report_path": str(ood_generalization_report_path),
+        }
+    )
+    runtime_recommendations_path.write_text(
+        json.dumps(runtime_recommendations_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    train_config_path = run_dir / "train_config.yaml"
+    train_config_payload = load_json(train_config_path)
+    train_config_payload.update(
+        {
+            "sequence_pretrain_ready": bool(pretrain_encoder_state),
+            "sequence_pretrain_best_epoch": int((pretrain_report or {}).get("best_epoch") or 0),
+            "sequence_pretrain_encoder_present": bool(pretrain_encoder_state),
+            "sequence_pretrain_contract_path": str(sequence_pretrain_contract_path),
+            "sequence_pretrain_report_path": str(sequence_pretrain_report_path),
+            "sequence_pretrain_encoder_path": str(sequence_pretrain_encoder_path) if pretrain_encoder_state else "",
+            "ood_status": "informative_ready",
+            "ood_source_kind": str((weight_components.get("domain_details") or {}).get("source_kind") or "regime_inverse_frequency_v1"),
+            "ood_penalty_enabled": True,
+            "ood_generalization_report_path": str(ood_generalization_report_path),
+        }
+    )
+    train_config_path.write_text(
+        json.dumps(train_config_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     predictor_contract_path = run_dir / "predictor_contract.json"
@@ -1951,6 +2442,10 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         walk_forward_report_path=walk_forward_report_path,
         sequence_model_contract_path=sequence_model_contract_path,
         predictor_contract_path=predictor_contract_path,
+        sequence_pretrain_contract_path=sequence_pretrain_contract_path,
+        sequence_pretrain_report_path=sequence_pretrain_report_path,
+        sequence_pretrain_encoder_path=sequence_pretrain_encoder_path,
+        domain_weighting_report_path=domain_weighting_report_path,
     )
 
 
@@ -2055,4 +2550,8 @@ def resume_v5_sequence_tail(*, run_dir: Path) -> TrainV5SequenceResult:
         walk_forward_report_path=walk_forward_report_path,
         sequence_model_contract_path=run_dir / "sequence_model_contract.json",
         predictor_contract_path=run_dir / "predictor_contract.json",
+        sequence_pretrain_contract_path=run_dir / "sequence_pretrain_contract.json",
+        sequence_pretrain_report_path=run_dir / "sequence_pretrain_report.json",
+        sequence_pretrain_encoder_path=run_dir / "sequence_pretrain_encoder.pt",
+        domain_weighting_report_path=run_dir / "domain_weighting_report.json",
     )

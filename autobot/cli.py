@@ -149,6 +149,7 @@ from .models import (
     TrainV5SequenceOptions,
     TrainV5LobOptions,
     TrainV5FusionOptions,
+    TrainV5TradabilityOptions,
     audit_registered_model,
     compare_registered_models,
     evaluate_registered_model_window,
@@ -157,6 +158,10 @@ from .models import (
     materialize_v5_lob_runtime_export,
     materialize_v5_panel_ensemble_runtime_export,
     materialize_v5_sequence_runtime_export,
+    materialize_v5_tradability_runtime_export,
+    run_v5_fusion_variant_matrix,
+    run_v5_lob_variant_matrix,
+    run_v5_sequence_variant_matrix,
     run_ablation,
     run_modelbt_proxy,
     show_registered_model,
@@ -168,6 +173,7 @@ from .models import (
     train_and_register_v5_lob,
     train_and_register_v5_panel_ensemble,
     train_and_register_v5_sequence,
+    train_and_register_v5_tradability,
 )
 from .models.offpolicy_evaluation import write_execution_dr_ope_report
 from .models.registry import load_json, promote_run_to_champion
@@ -831,7 +837,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
-    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_fusion"))
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability", "v5_fusion"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
@@ -920,25 +926,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip heavy panel tail stages and emit lightweight expert artifacts for dependency-only runs.",
     )
     model_train_parser.add_argument("--run-scope", help=argparse.SUPPRESS)
-    model_train_parser.add_argument("--sequence-backbone", choices=("patchtst", "timemixer", "tft"))
-    model_train_parser.add_argument("--sequence-pretrain-method", choices=("ts2vec_like", "timemae_like", "none"))
+    model_train_parser.add_argument("--sequence-backbone", choices=("patchtst_v1", "patchtst", "timemixer_v1", "timemixer", "tft_v1", "tft"))
+    model_train_parser.add_argument("--sequence-pretrain-method", choices=("ts2vec_v1", "ts2vec_like", "timemae_v1", "timemae_like", "none"))
     model_train_parser.add_argument("--sequence-dataset-root", help="Override sequence_v1 dataset root for trainer=v5_sequence.")
     model_train_parser.add_argument("--sequence-batch-size", type=int)
     model_train_parser.add_argument("--sequence-pretrain-epochs", type=int)
     model_train_parser.add_argument("--sequence-finetune-epochs", type=int)
-    model_train_parser.add_argument("--lob-backbone", choices=("deeplob", "bdlob", "hlob"))
+    model_train_parser.add_argument("--lob-backbone", choices=("deeplob_v1", "deeplob", "bdlob_v1", "bdlob", "hlob_v1", "hlob"))
     model_train_parser.add_argument("--lob-dataset-root", help="Override sequence_v1 dataset root for trainer=v5_lob.")
     model_train_parser.add_argument("--lob-batch-size", type=int)
     model_train_parser.add_argument("--lob-epochs", type=int)
     model_train_parser.add_argument("--fusion-panel-input", help="Path to panel fusion input predictions parquet.")
     model_train_parser.add_argument("--fusion-sequence-input", help="Path to sequence fusion input predictions parquet.")
     model_train_parser.add_argument("--fusion-lob-input", help="Path to lob fusion input predictions parquet.")
+    model_train_parser.add_argument("--fusion-tradability-input", help="Path to tradability fusion input predictions parquet.")
     model_train_parser.add_argument("--fusion-panel-runtime-input", help="Path to panel fusion runtime predictions parquet.")
     model_train_parser.add_argument("--fusion-sequence-runtime-input", help="Path to sequence fusion runtime predictions parquet.")
     model_train_parser.add_argument("--fusion-lob-runtime-input", help="Path to lob fusion runtime predictions parquet.")
+    model_train_parser.add_argument("--fusion-tradability-runtime-input", help="Path to tradability fusion runtime predictions parquet.")
     model_train_parser.add_argument("--fusion-runtime-start", help="Runtime/certification start date YYYY-MM-DD for fusion runtime dataset export.")
     model_train_parser.add_argument("--fusion-runtime-end", help="Runtime/certification end date YYYY-MM-DD for fusion runtime dataset export.")
-    model_train_parser.add_argument("--fusion-stacker-family", choices=("linear", "monotone_gbdt"))
+    model_train_parser.add_argument("--fusion-stacker-family", choices=("linear", "monotone_gbdt", "regime_moe"))
+    model_train_parser.add_argument("--tradability-panel-input", help="Path to panel tradability input predictions parquet.")
+    model_train_parser.add_argument("--tradability-sequence-input", help="Path to sequence tradability input predictions parquet.")
+    model_train_parser.add_argument("--tradability-lob-input", help="Path to lob tradability input predictions parquet.")
+    model_train_parser.add_argument("--private-execution-root", help="Override private_execution_v1 dataset root for trainer=v5_tradability.")
+
+    model_train_variant_parser = model_subparsers.add_parser(
+        "train-variant-matrix",
+        help="Run v5 variant matrix training and emit a single chosen winner payload.",
+    )
+    model_train_variant_parser.add_argument("--trainer", required=True, choices=("v5_sequence", "v5_lob", "v5_fusion"))
+    model_train_variant_parser.add_argument("--tf", help="Timeframe, ex: 5m")
+    model_train_variant_parser.add_argument("--quote", help="Quote filter, ex: KRW")
+    model_train_variant_parser.add_argument("--top-n", type=int, help="Universe size")
+    model_train_variant_parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    model_train_variant_parser.add_argument("--end", help="End date YYYY-MM-DD")
+    model_train_variant_parser.add_argument("--feature-set", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--label-set", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--task", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--model-family", help="Registry family, ex: train_v5_sequence")
+    model_train_variant_parser.add_argument("--run-scope", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--booster-sweep-trials", type=int, help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--seed", type=int)
+    model_train_variant_parser.add_argument("--nthread", type=int)
+    model_train_variant_parser.add_argument("--execution-eval-start", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--execution-eval-end", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--sequence-dataset-root", help="Override sequence_v1 dataset root for trainer=v5_sequence.")
+    model_train_variant_parser.add_argument("--sequence-batch-size", type=int)
+    model_train_variant_parser.add_argument("--sequence-pretrain-epochs", type=int)
+    model_train_variant_parser.add_argument("--sequence-finetune-epochs", type=int)
+    model_train_variant_parser.add_argument("--lob-dataset-root", help="Override sequence_v1 dataset root for trainer=v5_lob.")
+    model_train_variant_parser.add_argument("--lob-batch-size", type=int)
+    model_train_variant_parser.add_argument("--lob-epochs", type=int)
+    model_train_variant_parser.add_argument("--fusion-panel-input", help="Path to panel fusion input predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-sequence-input", help="Path to sequence fusion input predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-lob-input", help="Path to lob fusion input predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-tradability-input", help="Path to tradability fusion input predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-panel-runtime-input", help="Path to panel fusion runtime predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-sequence-runtime-input", help="Path to sequence fusion runtime predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-lob-runtime-input", help="Path to lob fusion runtime predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-tradability-runtime-input", help="Path to tradability fusion runtime predictions parquet.")
+    model_train_variant_parser.add_argument("--fusion-runtime-start", help="Runtime/certification start date YYYY-MM-DD for fusion runtime dataset export.")
+    model_train_variant_parser.add_argument("--fusion-runtime-end", help="Runtime/certification end date YYYY-MM-DD for fusion runtime dataset export.")
 
     model_export_expert_parser = model_subparsers.add_parser(
         "export-expert-table",
@@ -947,13 +997,16 @@ def build_parser() -> argparse.ArgumentParser:
     model_export_expert_parser.add_argument(
         "--trainer",
         required=True,
-        choices=("v5_panel_ensemble", "v5_sequence", "v5_lob"),
+        choices=("v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability"),
     )
     model_export_expert_parser.add_argument("--run-dir", required=True, help="Saved trainer run directory.")
     model_export_expert_parser.add_argument("--start", required=True, help="Export window start YYYY-MM-DD.")
     model_export_expert_parser.add_argument("--end", required=True, help="Export window end YYYY-MM-DD.")
     model_export_expert_parser.add_argument("--markets", help="Optional comma-delimited explicit runtime market universe.")
     model_export_expert_parser.add_argument("--anchor-export-path", help="Optional panel runtime export parquet path used to align auxiliary expert rows to panel anchors.")
+    model_export_expert_parser.add_argument("--panel-runtime-input", help="Tradability export: panel runtime export parquet path.")
+    model_export_expert_parser.add_argument("--sequence-runtime-input", help="Tradability export: sequence runtime export parquet path.")
+    model_export_expert_parser.add_argument("--lob-runtime-input", help="Tradability export: lob runtime export parquet path.")
     model_export_expert_parser.add_argument(
         "--resolve-markets-only",
         action="store_true",
@@ -2906,6 +2959,20 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     anchor_export_path=anchor_export_path,
                     resolve_markets_only=resolve_markets_only,
                 )
+            elif trainer == "v5_tradability":
+                panel_runtime_input = Path(str(getattr(args, "panel_runtime_input", "")).strip()).resolve()
+                sequence_runtime_input = Path(str(getattr(args, "sequence_runtime_input", "")).strip()).resolve()
+                lob_runtime_input = Path(str(getattr(args, "lob_runtime_input", "")).strip()).resolve()
+                payload = materialize_v5_tradability_runtime_export(
+                    run_dir=run_dir,
+                    start=start,
+                    end=end,
+                    panel_runtime_input_path=panel_runtime_input,
+                    sequence_runtime_input_path=sequence_runtime_input,
+                    lob_runtime_input_path=lob_runtime_input,
+                    selected_markets_override=selected_markets_override,
+                    resolve_markets_only=resolve_markets_only,
+                )
             else:
                 raise ValueError(f"unsupported export-expert-table trainer: {trainer}")
             print(json.dumps(payload, ensure_ascii=False))
@@ -2917,6 +2984,109 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             print(json.dumps(payload, ensure_ascii=False))
             return 0
 
+        if args.model_command == "train-variant-matrix":
+            trainer = str(getattr(args, "trainer", "")).strip().lower()
+            top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer == "v5_sequence":
+                ready_sequence_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=config_dir.resolve().parent,
+                    dataset_name="sequence_v1",
+                )
+                sequence_dataset_root = (
+                    Path(str(args.sequence_dataset_root))
+                    if getattr(args, "sequence_dataset_root", None)
+                    else (
+                        ready_sequence_root
+                        if ready_sequence_root is not None
+                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                    )
+                )
+                payload = run_v5_sequence_variant_matrix(
+                    TrainV5SequenceOptions(
+                        dataset_root=sequence_dataset_root,
+                        registry_root=registry_root,
+                        logs_root=logs_root,
+                        model_family=str(getattr(args, "model_family", None) or "train_v5_sequence").strip() or "train_v5_sequence",
+                        quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
+                        top_n=top_n,
+                        start=str(args.start or defaults["start"]).strip(),
+                        end=str(args.end or defaults["end"]).strip(),
+                        seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                        run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
+                        batch_size=int(getattr(args, "sequence_batch_size", None) or 16),
+                        pretrain_epochs=int(getattr(args, "sequence_pretrain_epochs", None) or 1),
+                        finetune_epochs=int(getattr(args, "sequence_finetune_epochs", None) or 5),
+                    )
+                )
+                print(json.dumps(payload, ensure_ascii=False))
+                return 0
+            if trainer == "v5_lob":
+                ready_sequence_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=config_dir.resolve().parent,
+                    dataset_name="sequence_v1",
+                )
+                lob_dataset_root = (
+                    Path(str(args.lob_dataset_root))
+                    if getattr(args, "lob_dataset_root", None)
+                    else (
+                        ready_sequence_root
+                        if ready_sequence_root is not None
+                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
+                    )
+                )
+                payload = run_v5_lob_variant_matrix(
+                    TrainV5LobOptions(
+                        dataset_root=lob_dataset_root,
+                        registry_root=registry_root,
+                        logs_root=logs_root,
+                        model_family=str(getattr(args, "model_family", None) or "train_v5_lob").strip() or "train_v5_lob",
+                        quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
+                        top_n=top_n,
+                        start=str(args.start or defaults["start"]).strip(),
+                        end=str(args.end or defaults["end"]).strip(),
+                        seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                        run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
+                        batch_size=int(getattr(args, "lob_batch_size", None) or 16),
+                        epochs=int(getattr(args, "lob_epochs", None) or 5),
+                    )
+                )
+                print(json.dumps(payload, ensure_ascii=False))
+                return 0
+            if trainer == "v5_fusion":
+                panel_input = getattr(args, "fusion_panel_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_panel_ensemble")
+                sequence_input = getattr(args, "fusion_sequence_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_sequence")
+                lob_input = getattr(args, "fusion_lob_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_lob")
+                tradability_input = getattr(args, "fusion_tradability_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_tradability")
+                if not panel_input or not sequence_input or not lob_input or not tradability_input:
+                    raise ValueError(
+                        "v5_fusion variant matrix requires panel/sequence/lob/tradability expert prediction tables."
+                    )
+                payload = run_v5_fusion_variant_matrix(
+                    TrainV5FusionOptions(
+                        panel_input_path=Path(str(panel_input)),
+                        sequence_input_path=Path(str(sequence_input)),
+                        lob_input_path=Path(str(lob_input)),
+                        tradability_input_path=Path(str(tradability_input)),
+                        panel_runtime_input_path=(Path(str(getattr(args, "fusion_panel_runtime_input"))) if getattr(args, "fusion_panel_runtime_input", None) else None),
+                        sequence_runtime_input_path=(Path(str(getattr(args, "fusion_sequence_runtime_input"))) if getattr(args, "fusion_sequence_runtime_input", None) else None),
+                        lob_runtime_input_path=(Path(str(getattr(args, "fusion_lob_runtime_input"))) if getattr(args, "fusion_lob_runtime_input", None) else None),
+                        tradability_runtime_input_path=(Path(str(getattr(args, "fusion_tradability_runtime_input"))) if getattr(args, "fusion_tradability_runtime_input", None) else None),
+                        registry_root=registry_root,
+                        logs_root=logs_root,
+                        model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
+                        quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
+                        start=str(args.start or defaults["start"]).strip(),
+                        end=str(args.end or defaults["end"]).strip(),
+                        runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
+                        runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
+                        seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                        run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
+                    )
+                )
+                print(json.dumps(payload, ensure_ascii=False))
+                return 0
+            raise ValueError(f"unsupported variant matrix trainer: {trainer}")
+
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
@@ -2924,24 +3094,29 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 panel_input = getattr(args, "fusion_panel_input", None)
                 sequence_input = getattr(args, "fusion_sequence_input", None)
                 lob_input = getattr(args, "fusion_lob_input", None)
+                tradability_input = getattr(args, "fusion_tradability_input", None)
                 if not panel_input:
                     panel_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_panel_ensemble")
                 if not sequence_input:
                     sequence_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_sequence")
                 if not lob_input:
                     lob_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_lob")
-                if not panel_input or not sequence_input or not lob_input:
+                if not tradability_input:
+                    tradability_input = _resolve_latest_expert_prediction_table(registry_root, "train_v5_tradability")
+                if not panel_input or not sequence_input or not lob_input or not tradability_input:
                     raise ValueError(
-                        "v5_fusion requires expert prediction tables. Pass --fusion-panel-input/--fusion-sequence-input/--fusion-lob-input "
-                        "or materialize latest expert_prediction_table.parquet artifacts for train_v5_panel_ensemble/train_v5_sequence/train_v5_lob."
+                        "v5_fusion requires expert prediction tables. Pass --fusion-panel-input/--fusion-sequence-input/--fusion-lob-input/--fusion-tradability-input "
+                        "or materialize latest expert_prediction_table.parquet artifacts for train_v5_panel_ensemble/train_v5_sequence/train_v5_lob/train_v5_tradability."
                     )
                 options_v5_fusion = TrainV5FusionOptions(
                     panel_input_path=Path(str(panel_input)),
                     sequence_input_path=Path(str(sequence_input)),
                     lob_input_path=Path(str(lob_input)),
+                    tradability_input_path=Path(str(tradability_input)),
                     panel_runtime_input_path=(Path(str(getattr(args, "fusion_panel_runtime_input"))) if getattr(args, "fusion_panel_runtime_input", None) else None),
                     sequence_runtime_input_path=(Path(str(getattr(args, "fusion_sequence_runtime_input"))) if getattr(args, "fusion_sequence_runtime_input", None) else None),
                     lob_runtime_input_path=(Path(str(getattr(args, "fusion_lob_runtime_input"))) if getattr(args, "fusion_lob_runtime_input", None) else None),
+                    tradability_runtime_input_path=(Path(str(getattr(args, "fusion_tradability_runtime_input"))) if getattr(args, "fusion_tradability_runtime_input", None) else None),
                     registry_root=registry_root,
                     logs_root=logs_root,
                     model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
@@ -2990,7 +3165,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=str(args.start or defaults["start"]).strip(),
                     end=str(args.end or defaults["end"]).strip(),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                    backbone_family=str(getattr(args, "lob_backbone", None) or "deeplob").strip().lower(),
+                    backbone_family=str(getattr(args, "lob_backbone", None) or "deeplob_v1").strip().lower(),
                     batch_size=int(getattr(args, "lob_batch_size", None) or 16),
                     epochs=int(getattr(args, "lob_epochs", None) or 5),
                 )
@@ -3006,6 +3181,55 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                 print(f"[model][train][v5_lob] walk_forward={summary_v5_lob.walk_forward_report_path}")
                 print(f"[model][train][v5_lob] lob_contract={summary_v5_lob.lob_model_contract_path}")
                 print(f"[model][train][v5_lob] predictor_contract={summary_v5_lob.predictor_contract_path}")
+                return 0
+            if trainer == "v5_tradability":
+                project_root = config_dir.resolve().parent
+                ready_private_root = _resolve_data_platform_ready_dataset_root(
+                    project_root=project_root,
+                    dataset_name="private_execution_v1",
+                )
+                panel_input = getattr(args, "tradability_panel_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_panel_ensemble")
+                sequence_input = getattr(args, "tradability_sequence_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_sequence")
+                lob_input = getattr(args, "tradability_lob_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_lob")
+                private_execution_root = (
+                    Path(str(getattr(args, "private_execution_root", None)))
+                    if getattr(args, "private_execution_root", None)
+                    else (
+                        ready_private_root
+                        if ready_private_root is not None
+                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "private_execution_v1")
+                    )
+                )
+                if not panel_input or not sequence_input or not lob_input:
+                    raise ValueError(
+                        "v5_tradability requires panel/sequence/lob expert prediction tables. "
+                        "Pass --tradability-panel-input/--tradability-sequence-input/--tradability-lob-input or materialize latest expert_prediction_table.parquet artifacts."
+                    )
+                options_v5_tradability = TrainV5TradabilityOptions(
+                    panel_input_path=Path(str(panel_input)),
+                    sequence_input_path=Path(str(sequence_input)),
+                    lob_input_path=Path(str(lob_input)),
+                    private_execution_root=Path(str(private_execution_root)),
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=str(getattr(args, "model_family", None) or "train_v5_tradability").strip() or "train_v5_tradability",
+                    quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
+                    start=str(args.start or defaults["start"]).strip(),
+                    end=str(args.end or defaults["end"]).strip(),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                )
+                summary_v5_tradability = train_and_register_v5_tradability(options_v5_tradability)
+                print(
+                    "[model][train][v5_tradability] "
+                    f"run_id={summary_v5_tradability.run_id} status={summary_v5_tradability.status} "
+                    f"test_roc_auc={summary_v5_tradability.leaderboard_row.get('test_roc_auc', 0.0):.6f} "
+                    f"test_pr_auc={summary_v5_tradability.leaderboard_row.get('test_pr_auc', 0.0):.6f}"
+                )
+                print(f"[model][train][v5_tradability] run_dir={summary_v5_tradability.run_dir}")
+                print(f"[model][train][v5_tradability] train_report={summary_v5_tradability.train_report_path}")
+                print(f"[model][train][v5_tradability] walk_forward={summary_v5_tradability.walk_forward_report_path}")
+                print(f"[model][train][v5_tradability] tradability_contract={summary_v5_tradability.tradability_model_contract_path}")
+                print(f"[model][train][v5_tradability] predictor_contract={summary_v5_tradability.predictor_contract_path}")
                 return 0
             if trainer == "v5_sequence":
                 ready_sequence_root = _resolve_data_platform_ready_dataset_root(
@@ -3031,8 +3255,8 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=str(args.start or defaults["start"]).strip(),
                     end=str(args.end or defaults["end"]).strip(),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                    backbone_family=str(getattr(args, "sequence_backbone", None) or "patchtst").strip().lower(),
-                    pretrain_method=str(getattr(args, "sequence_pretrain_method", None) or "ts2vec_like").strip().lower(),
+                    backbone_family=str(getattr(args, "sequence_backbone", None) or "patchtst_v1").strip().lower(),
+                    pretrain_method=str(getattr(args, "sequence_pretrain_method", None) or "ts2vec_v1").strip().lower(),
                     batch_size=int(getattr(args, "sequence_batch_size", None) or 16),
                     pretrain_epochs=int(getattr(args, "sequence_pretrain_epochs", None) or 1),
                     finetune_epochs=int(getattr(args, "sequence_finetune_epochs", None) or 5),

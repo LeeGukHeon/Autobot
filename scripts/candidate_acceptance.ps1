@@ -94,6 +94,7 @@ param(
     [string[]]$RestartUnits = @(),
     [string[]]$KnownRuntimeUnits = @("autobot-paper-v5.service", "autobot-live-alpha.service"),
     [bool]$AutoRestartKnownUnits = $true,
+    [switch]$EnableVariantMatrixSelection,
     [switch]$SkipDailyPipeline,
     [switch]$SkipPaperSoak,
     [switch]$SkipReportRefresh,
@@ -179,9 +180,333 @@ function Resolve-DependencyTrainerModelFamily {
         "v5_panel_ensemble" { return "train_v5_panel_ensemble" }
         "v5_sequence" { return "train_v5_sequence" }
         "v5_lob" { return "train_v5_lob" }
+        "v5_tradability" { return "train_v5_tradability" }
         "v5_fusion" { return "train_v5_fusion" }
         default { return "" }
     }
+}
+
+function Resolve-JsonObjectFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return @{}
+    }
+    $trimmed = $TextValue.Trim()
+    if ($trimmed.StartsWith("{") -and $trimmed.EndsWith("}")) {
+        try {
+            return ($trimmed | ConvertFrom-Json)
+        } catch {
+        }
+    }
+    $jsonMatch = [Regex]::Match($TextValue, '(?ms)\{.*\}')
+    if ($jsonMatch.Success) {
+        try {
+            return ($jsonMatch.Value | ConvertFrom-Json)
+        } catch {
+        }
+    }
+    return @{}
+}
+
+function Get-VariantReportFilenameForTrainer {
+    param([string]$TrainerName)
+    switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_sequence" { return "sequence_variant_report.json" }
+        "v5_lob" { return "lob_variant_report.json" }
+        "v5_fusion" { return "fusion_variant_report.json" }
+        default { return "" }
+    }
+}
+
+function Resolve-RunVariantMetadata {
+    param(
+        [string]$RunDir,
+        [string]$TrainerName
+    )
+    $result = [ordered]@{
+        trainer = [string]$TrainerName
+        run_dir = [string]$RunDir
+        chosen_variant_name = ""
+        variant_report_path = ""
+        evaluated_variant_count = 0
+        chosen_reason_code = ""
+        baseline_kept_reason_code = ""
+        sequence_variant_name = ""
+        lob_variant_name = ""
+        fusion_variant_name = ""
+        fusion_stacker_family = ""
+        fusion_gating_policy = ""
+        source_mode = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($RunDir) -or (-not (Test-Path $RunDir))) {
+        return $result
+    }
+    $trainConfig = Load-JsonOrEmpty -PathValue (Join-Path $RunDir "train_config.yaml")
+    $runtimeRecommendations = Load-JsonOrEmpty -PathValue (Join-Path $RunDir "runtime_recommendations.json")
+    $variantReportFilename = Get-VariantReportFilenameForTrainer -TrainerName $TrainerName
+    $variantReportPath = ""
+    switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_sequence" {
+            $result.chosen_variant_name = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "sequence_variant_name" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "sequence_variant_name" -DefaultValue ""))
+            $variantReportPath = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "sequence_variant_report_path" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "sequence_variant_report_path" -DefaultValue ""))
+            $result.sequence_variant_name = $result.chosen_variant_name
+        }
+        "v5_lob" {
+            $result.chosen_variant_name = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "lob_variant_name" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "lob_variant_name" -DefaultValue ""))
+            $variantReportPath = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "lob_variant_report_path" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "lob_variant_report_path" -DefaultValue ""))
+            $result.lob_variant_name = $result.chosen_variant_name
+        }
+        "v5_fusion" {
+            $result.chosen_variant_name = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_variant_name" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "fusion_variant_name" -DefaultValue (Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_stacker_family" -DefaultValue "")))
+            $variantReportPath = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_variant_report_path" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "fusion_variant_report_path" -DefaultValue ""))
+            $result.sequence_variant_name = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "sequence_variant_name" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "sequence_variant_name" -DefaultValue ""))
+            $result.lob_variant_name = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "lob_variant_name" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "lob_variant_name" -DefaultValue ""))
+            $result.fusion_variant_name = $result.chosen_variant_name
+            $result.fusion_stacker_family = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_stacker_family" -DefaultValue "")
+            $result.fusion_gating_policy = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_gating_policy" -DefaultValue "")
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($variantReportPath) -and (-not [string]::IsNullOrWhiteSpace($variantReportFilename))) {
+        $candidatePath = Join-Path $RunDir $variantReportFilename
+        if (Test-Path $candidatePath) {
+            $variantReportPath = $candidatePath
+        }
+    }
+    $result.variant_report_path = $variantReportPath
+    if (-not [string]::IsNullOrWhiteSpace($variantReportPath) -and (Test-Path $variantReportPath)) {
+        $variantReport = Load-JsonOrEmpty -PathValue $variantReportPath
+        $result.evaluated_variant_count = [int](To-Int64 (Get-PropValue -ObjectValue $variantReport -Name "evaluated_variant_count" -DefaultValue 0) 0)
+        $result.chosen_reason_code = [string](Get-PropValue -ObjectValue $variantReport -Name "chosen_reason_code" -DefaultValue "")
+        $result.baseline_kept_reason_code = [string](Get-PropValue -ObjectValue $variantReport -Name "baseline_kept_reason_code" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($result.chosen_variant_name)) {
+            $result.chosen_variant_name = [string](Get-PropValue -ObjectValue $variantReport -Name "chosen_variant_name" -DefaultValue "")
+        }
+    }
+    return $result
+}
+
+function Test-VariantSelectionStep {
+    param(
+        [string]$TrainerName,
+        [Parameter(Mandatory = $false)]$ResultObject,
+        [string]$FailureCode
+    )
+    $step = [ordered]@{
+        attempted = $true
+        artifact_path = ""
+        evaluated_variant_count = 0
+        chosen_variant_name = ""
+        chosen_reason_code = ""
+        baseline_kept_reason_code = ""
+        pass = $false
+        reasons = @()
+    }
+    $variantMetadata = Get-PropValue -ObjectValue $ResultObject -Name "variant_metadata" -DefaultValue @{}
+    $runDir = [string](Get-PropValue -ObjectValue $ResultObject -Name "run_dir" -DefaultValue "")
+    $step.artifact_path = [string](Get-PropValue -ObjectValue $variantMetadata -Name "variant_report_path" -DefaultValue "")
+    $step.evaluated_variant_count = [int](To-Int64 (Get-PropValue -ObjectValue $variantMetadata -Name "evaluated_variant_count" -DefaultValue 0) 0)
+    $step.chosen_variant_name = [string](Get-PropValue -ObjectValue $variantMetadata -Name "chosen_variant_name" -DefaultValue "")
+    $step.chosen_reason_code = [string](Get-PropValue -ObjectValue $variantMetadata -Name "chosen_reason_code" -DefaultValue "")
+    $step.baseline_kept_reason_code = [string](Get-PropValue -ObjectValue $variantMetadata -Name "baseline_kept_reason_code" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($runDir)) {
+        $step.reasons = @($FailureCode, "RUN_DIR_MISSING")
+        return $step
+    }
+    if ([string]::IsNullOrWhiteSpace($step.artifact_path) -or (-not (Test-Path $step.artifact_path))) {
+        $step.reasons = @($FailureCode, "VARIANT_REPORT_MISSING")
+        return $step
+    }
+    if ([string]::IsNullOrWhiteSpace($step.chosen_variant_name)) {
+        $step.reasons = @($FailureCode, "CHOSEN_VARIANT_MISSING")
+        return $step
+    }
+    $trainConfig = Load-JsonOrEmpty -PathValue (Join-Path $runDir "train_config.yaml")
+    $runtimeRecommendations = Load-JsonOrEmpty -PathValue (Join-Path $runDir "runtime_recommendations.json")
+    $trainVariantName = switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_sequence" { [string](Get-PropValue -ObjectValue $trainConfig -Name "sequence_variant_name" -DefaultValue (Get-PropValue -ObjectValue $runtimeRecommendations -Name "sequence_variant_name" -DefaultValue "")) }
+        "v5_lob" { [string](Get-PropValue -ObjectValue $trainConfig -Name "lob_variant_name" -DefaultValue (Get-PropValue -ObjectValue $runtimeRecommendations -Name "lob_variant_name" -DefaultValue "")) }
+        "v5_fusion" { [string](Get-PropValue -ObjectValue $trainConfig -Name "fusion_variant_name" -DefaultValue (Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_variant_name" -DefaultValue "")) }
+        default { "" }
+    }
+    if ([string]::IsNullOrWhiteSpace($trainVariantName) -or ($trainVariantName -ne $step.chosen_variant_name)) {
+        $step.reasons = @($FailureCode, "CHOSEN_VARIANT_METADATA_MISMATCH")
+        return $step
+    }
+    if (([string]$TrainerName).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        $fusionStacker = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_stacker_family" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($fusionStacker) -or ($fusionStacker -ne $step.chosen_variant_name)) {
+            $step.reasons = @("FUSION_VARIANT_PROVENANCE_MISMATCH")
+            return $step
+        }
+    }
+    $step.pass = $true
+    $step.reasons = @()
+    return $step
+}
+
+function Resolve-DependencyTradabilityInputPaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$DependencyResults
+    )
+    $required = [ordered]@{
+        v5_panel_ensemble = "tradability_panel_input"
+        v5_sequence = "tradability_sequence_input"
+        v5_lob = "tradability_lob_input"
+    }
+    $resolved = [ordered]@{}
+    foreach ($trainerName in $required.Keys) {
+        $match = $null
+        foreach ($item in @($DependencyResults)) {
+            $candidateTrainer = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
+            if ($candidateTrainer -eq $trainerName) {
+                $match = $item
+                break
+            }
+        }
+        if ($null -eq $match) {
+            throw ("missing dependency trainer result: " + $trainerName)
+        }
+        $runDir = [string](Get-PropValue -ObjectValue $match -Name "run_dir" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($runDir)) {
+            throw ("dependency trainer run_dir missing: " + $trainerName)
+        }
+        $expertTablePath = Join-Path $runDir "expert_prediction_table.parquet"
+        if ((-not $DryRun) -and (-not (Test-Path $expertTablePath))) {
+            throw ("dependency expert_prediction_table missing: " + $expertTablePath)
+        }
+        $resolved[$required[$trainerName]] = $expertTablePath
+    }
+    return $resolved
+}
+
+function Resolve-LatestPairedPaperArtifact {
+    param([string]$ProjectRoot)
+    $default = [ordered]@{
+        exists = $false
+        latest_path = ""
+        report_path = ""
+        report = @{}
+    }
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+        return $default
+    }
+    $latestPath = Join-Path $ProjectRoot "logs/paired_paper/latest.json"
+    if (-not (Test-Path $latestPath)) {
+        return $default
+    }
+    $latestPayload = Load-JsonOrEmpty -PathValue $latestPath
+    $reportPath = [string](Get-PropValue -ObjectValue $latestPayload -Name "report_path" -DefaultValue "")
+    $reportPayload = if (-not [string]::IsNullOrWhiteSpace($reportPath) -and (Test-Path $reportPath)) {
+        Load-JsonOrEmpty -PathValue $reportPath
+    } else {
+        @{}
+    }
+    return [ordered]@{
+        exists = $true
+        latest_path = $latestPath
+        report_path = $reportPath
+        report = $reportPayload
+    }
+}
+
+function Resolve-LatestCanaryConfidenceArtifact {
+    param([string]$ProjectRoot)
+    $default = [ordered]@{
+        exists = $false
+        path = ""
+        payload = @{}
+    }
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+        return $default
+    }
+    foreach ($slug in @("autobot_live_alpha_canary_service", "autobot_live_alpha_candidate_service", "canary")) {
+        $candidatePath = Join-Path $ProjectRoot ("logs/canary_confidence_sequence/" + $slug + "/latest.json")
+        if (Test-Path $candidatePath) {
+            return [ordered]@{
+                exists = $true
+                path = $candidatePath
+                payload = (Load-JsonOrEmpty -PathValue $candidatePath)
+            }
+        }
+    }
+    return $default
+}
+
+function Update-FusionVariantEvidenceArtifact {
+    param(
+        [string]$VariantReportPath,
+        [string]$FusionVariantName,
+        [string]$ReasonCode,
+        [bool]$CandidateDefaultEligible,
+        [Parameter(Mandatory = $false)]$BacktestGate = @{},
+        [Parameter(Mandatory = $false)]$PaperGate = @{},
+        [Parameter(Mandatory = $false)]$PairedArtifact = @{},
+        [Parameter(Mandatory = $false)]$CanaryArtifact = @{}
+    )
+    if ([string]::IsNullOrWhiteSpace($VariantReportPath) -or (-not (Test-Path $VariantReportPath))) {
+        return @{}
+    }
+    $payload = Load-JsonOrEmpty -PathValue $VariantReportPath
+    $evaluatedVariants = @((Get-PropValue -ObjectValue $payload -Name "evaluated_variants" -DefaultValue @()))
+    $selectedVariantName = [string](Get-PropValue -ObjectValue $payload -Name "chosen_variant_name" -DefaultValue "")
+    $baselineVariant = $null
+    $selectedVariant = $null
+    foreach ($item in @($evaluatedVariants)) {
+        $variantName = [string](Get-PropValue -ObjectValue $item -Name "variant_name" -DefaultValue "")
+        if ($variantName -eq "linear") {
+            $baselineVariant = $item
+        }
+        if ($variantName -eq $selectedVariantName) {
+            $selectedVariant = $item
+        }
+    }
+    $baselineUtility = To-Double (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $baselineVariant -Name "utility_summary" -DefaultValue @{}) -Name "test_ev_net_top5" -DefaultValue 0.0) 0.0
+    $selectedUtility = To-Double (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $selectedVariant -Name "utility_summary" -DefaultValue @{}) -Name "test_ev_net_top5" -DefaultValue 0.0) 0.0
+    $utilityEdge = $selectedUtility - $baselineUtility
+    $executionNonRegression = if ([string]::Equals($FusionVariantName, "regime_moe", [System.StringComparison]::OrdinalIgnoreCase)) {
+        To-Bool (Get-PropValue -ObjectValue $BacktestGate -Name "candidate_execution_structure_evaluated" -DefaultValue $false) $false -and
+        To-Bool (Get-PropValue -ObjectValue $BacktestGate -Name "pass" -DefaultValue $false) $false
+    } else {
+        $true
+    }
+    $paperNonRegression = if (Test-IsEffectivelyEmptyObject -ObjectValue $PaperGate) {
+        $null
+    } else {
+        To-Bool (Get-PropValue -ObjectValue $PaperGate -Name "pass" -DefaultValue $false) $false
+    }
+    $pairedReport = Get-PropValue -ObjectValue $PairedArtifact -Name "report" -DefaultValue @{}
+    $pairedDeltas = Get-PropValue -ObjectValue $pairedReport -Name "paired_deltas" -DefaultValue @{}
+    $pairedNonRegression = if (Test-IsEffectivelyEmptyObject -ObjectValue $pairedReport) {
+        $null
+    } else {
+        ([int](To-Int64 (Get-PropValue -ObjectValue $pairedDeltas -Name "matched_no_trade_delta" -DefaultValue 0) 0) -ge -1) -and
+        ([double](To-Double (Get-PropValue -ObjectValue $pairedDeltas -Name "matched_slippage_delta_bps" -DefaultValue 0.0) 0.0) -le 2.5)
+    }
+    $canaryPayload = Get-PropValue -ObjectValue $CanaryArtifact -Name "payload" -DefaultValue @{}
+    $canaryDecision = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $canaryPayload -Name "decision" -DefaultValue @{}) -Name "status" -DefaultValue ""
+    $canaryNonRegression = if (Test-IsEffectivelyEmptyObject -ObjectValue $canaryPayload) {
+        $null
+    } else {
+        (-not [string]::Equals([string]$canaryDecision, "abort", [System.StringComparison]::OrdinalIgnoreCase))
+    }
+    $selectionEvidence = [ordered]@{
+        utility_edge_vs_linear = [double]$utilityEdge
+        execution_structure_non_regression = $executionNonRegression
+        paper_non_regression = $paperNonRegression
+        paired_non_regression = $pairedNonRegression
+        canary_non_regression = $canaryNonRegression
+        promotion_safe = [bool]$CandidateDefaultEligible
+    }
+    $payload.selection_evidence = $selectionEvidence
+    $payload.offline_winner_variant_name = $selectedVariantName
+    $payload.default_eligible_variant_name = if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }
+    $payload.default_eligible = [bool]$CandidateDefaultEligible
+    $payload.fusion_candidate_default_eligible = [bool]$CandidateDefaultEligible
+    $payload.fusion_evidence_winner = if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }
+    $payload.fusion_evidence_reason_code = [string]$ReasonCode
+    Write-JsonFile -PathValue $VariantReportPath -Payload $payload
+    return $payload
 }
 
 function Resolve-DateTimeOffsetOrNull {
@@ -317,6 +642,7 @@ function Invoke-DependencyTrainerChain {
         if ([string]::IsNullOrWhiteSpace($trainerName)) {
             continue
         }
+        $useVariantMatrix = $EnableVariantMatrixSelection.IsPresent -and ($trainerName -in @("v5_sequence", "v5_lob"))
         $dependencyModelFamily = Resolve-DependencyTrainerModelFamily -TrainerName $trainerName
         if ([string]::IsNullOrWhiteSpace($dependencyModelFamily)) {
             throw ("unsupported dependency trainer: " + $trainerName)
@@ -331,6 +657,21 @@ function Invoke-DependencyTrainerChain {
             -ExecutionEvalStartDate $ExecutionEvalStartDate `
             -ExecutionEvalEndDate $ExecutionEvalEndDate `
             -ExpectedSnapshotId $script:dataPlatformReadySnapshotId
+        if ($useVariantMatrix -and [bool](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reusable" -DefaultValue $false)) {
+            $reusableVariantMetadata = Resolve-RunVariantMetadata `
+                -RunDir ([string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "run_dir" -DefaultValue "")) `
+                -TrainerName $trainerName
+            if (
+                [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $reusableVariantMetadata -Name "chosen_variant_name" -DefaultValue "")) -or
+                [string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $reusableVariantMetadata -Name "variant_report_path" -DefaultValue "")) -or
+                (-not (Test-Path ([string](Get-PropValue -ObjectValue $reusableVariantMetadata -Name "variant_report_path" -DefaultValue ""))))
+            ) {
+                $reusableDependencyRun.reusable = $false
+                $reusableDependencyRun.reason = "VARIANT_SELECTION_ARTIFACT_MISSING"
+            } else {
+                $reusableDependencyRun | Add-Member -NotePropertyName variant_metadata -NotePropertyValue $reusableVariantMetadata -Force
+            }
+        }
         if ([bool](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reusable" -DefaultValue $false)) {
             $results += [ordered]@{
                 trainer = $trainerName
@@ -347,12 +688,20 @@ function Invoke-DependencyTrainerChain {
                 reuse_reason = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reason" -DefaultValue "")
                 required_artifacts_complete = [bool](Get-PropValue -ObjectValue $reusableDependencyRun -Name "required_artifacts_complete" -DefaultValue $false)
                 tail_mode = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "tail_mode" -DefaultValue "")
+                variant_matrix = $useVariantMatrix
+                variant_metadata = (Get-PropValue -ObjectValue $reusableDependencyRun -Name "variant_metadata" -DefaultValue @{})
+                chosen_variant_name = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $reusableDependencyRun -Name "variant_metadata" -DefaultValue @{}) -Name "chosen_variant_name" -DefaultValue "")
+                variant_report_path = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $reusableDependencyRun -Name "variant_metadata" -DefaultValue @{}) -Name "variant_report_path" -DefaultValue "")
+                evaluated_variant_count = [int](To-Int64 (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $reusableDependencyRun -Name "variant_metadata" -DefaultValue @{}) -Name "evaluated_variant_count" -DefaultValue 0) 0)
+                baseline_kept_reason_code = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $reusableDependencyRun -Name "variant_metadata" -DefaultValue @{}) -Name "baseline_kept_reason_code" -DefaultValue "")
+                chosen_reason_code = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $reusableDependencyRun -Name "variant_metadata" -DefaultValue @{}) -Name "chosen_reason_code" -DefaultValue "")
             }
             continue
         }
+        $trainCommand = if ($useVariantMatrix) { "train-variant-matrix" } else { "train" }
         $trainArgs = @(
             "-m", "autobot.cli",
-            "model", "train",
+            "model", $trainCommand,
             "--trainer", $trainerName,
             "--model-family", $dependencyModelFamily,
             "--feature-set", $FeatureSet,
@@ -374,15 +723,60 @@ function Invoke-DependencyTrainerChain {
                 "--execution-eval-end", $ExecutionEvalEndDate
             )
         }
+        if ([string]::Equals($trainerName, "v5_tradability", [System.StringComparison]::OrdinalIgnoreCase) -and @($results).Count -gt 0) {
+            $tradabilityDependencyInputs = Resolve-DependencyTradabilityInputPaths -DependencyResults @($results)
+            foreach ($entry in $tradabilityDependencyInputs.GetEnumerator()) {
+                $argName = "--" + ([string]$entry.Key).Replace("_", "-")
+                $trainArgs += @($argName, [string]$entry.Value)
+            }
+        }
         if ([string]::Equals($trainerName, "v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) {
             $trainArgs += "--dependency-expert-only"
         }
         $trainExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $trainArgs
-        $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
-        $runId = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Split-Path -Leaf $runDir }
+        $matrixPayload = if ($useVariantMatrix) { Resolve-JsonObjectFromText -TextValue ([string]$trainExec.Output) } else { @{} }
+        $runDir = if ($DryRun) {
+            ""
+        } elseif ($useVariantMatrix) {
+            [string](Get-PropValue -ObjectValue $matrixPayload -Name "run_dir" -DefaultValue "")
+        } else {
+            Resolve-RunDirFromText -TextValue ([string]$trainExec.Output)
+        }
+        $runId = if ($DryRun) {
+            ""
+        } elseif ($useVariantMatrix) {
+            [string](Get-PropValue -ObjectValue $matrixPayload -Name "run_id" -DefaultValue "")
+        } elseif ([string]::IsNullOrWhiteSpace($runDir)) {
+            ""
+        } else {
+            Split-Path -Leaf $runDir
+        }
         $trainConfigPath = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Join-Path $runDir "train_config.yaml" }
         $trainConfig = if ([string]::IsNullOrWhiteSpace($trainConfigPath)) { @{} } else { Load-JsonOrEmpty -PathValue $trainConfigPath }
         $snapshotId = [string](Get-PropValue -ObjectValue $trainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+        $variantMetadata = if ($useVariantMatrix -and (-not [string]::IsNullOrWhiteSpace($runDir))) {
+            $metadata = Resolve-RunVariantMetadata -RunDir $runDir -TrainerName $trainerName
+            if ($matrixPayload) {
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $metadata -Name "chosen_variant_name" -DefaultValue ""))) {
+                    $metadata.chosen_variant_name = [string](Get-PropValue -ObjectValue $matrixPayload -Name "chosen_variant_name" -DefaultValue "")
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $metadata -Name "variant_report_path" -DefaultValue ""))) {
+                    $metadata.variant_report_path = [string](Get-PropValue -ObjectValue $matrixPayload -Name "variant_report_path" -DefaultValue "")
+                }
+                if ([int](To-Int64 (Get-PropValue -ObjectValue $metadata -Name "evaluated_variant_count" -DefaultValue 0) 0) -le 0) {
+                    $metadata.evaluated_variant_count = [int](To-Int64 (Get-PropValue -ObjectValue $matrixPayload -Name "evaluated_variant_count" -DefaultValue 0) 0)
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $metadata -Name "baseline_kept_reason_code" -DefaultValue ""))) {
+                    $metadata.baseline_kept_reason_code = [string](Get-PropValue -ObjectValue $matrixPayload -Name "baseline_kept_reason_code" -DefaultValue "")
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $metadata -Name "chosen_reason_code" -DefaultValue ""))) {
+                    $metadata.chosen_reason_code = [string](Get-PropValue -ObjectValue $matrixPayload -Name "chosen_reason_code" -DefaultValue "")
+                }
+            }
+            $metadata
+        } else {
+            @{}
+        }
         $freshValidation = if ([string]::IsNullOrWhiteSpace($runDir)) {
             [ordered]@{
                 required_artifacts_complete = $false
@@ -420,6 +814,13 @@ function Invoke-DependencyTrainerChain {
             reuse_reason = [string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reason" -DefaultValue "")
             required_artifacts_complete = [bool](Get-PropValue -ObjectValue $freshValidation -Name "required_artifacts_complete" -DefaultValue $false)
             tail_mode = [string](Get-PropValue -ObjectValue $freshValidation -Name "tail_mode" -DefaultValue "")
+            variant_matrix = $useVariantMatrix
+            variant_metadata = $variantMetadata
+            chosen_variant_name = [string](Get-PropValue -ObjectValue $variantMetadata -Name "chosen_variant_name" -DefaultValue "")
+            variant_report_path = [string](Get-PropValue -ObjectValue $variantMetadata -Name "variant_report_path" -DefaultValue "")
+            evaluated_variant_count = [int](To-Int64 (Get-PropValue -ObjectValue $variantMetadata -Name "evaluated_variant_count" -DefaultValue 0) 0)
+            baseline_kept_reason_code = [string](Get-PropValue -ObjectValue $variantMetadata -Name "baseline_kept_reason_code" -DefaultValue "")
+            chosen_reason_code = [string](Get-PropValue -ObjectValue $variantMetadata -Name "chosen_reason_code" -DefaultValue "")
         }
     }
     return @($results)
@@ -434,6 +835,7 @@ function Resolve-DependencyFusionInputPaths {
         v5_panel_ensemble = "fusion_panel_input"
         v5_sequence = "fusion_sequence_input"
         v5_lob = "fusion_lob_input"
+        v5_tradability = "fusion_tradability_input"
     }
     $resolved = [ordered]@{}
     foreach ($trainerName in $required.Keys) {
@@ -535,6 +937,7 @@ function Get-DependencyRuntimeExportGapPrefix {
         "v5_panel_ensemble" { return "PANEL" }
         "v5_sequence" { return "SEQUENCE" }
         "v5_lob" { return "LOB" }
+        "v5_tradability" { return "TRADABILITY" }
         default { return "DEPENDENCY" }
     }
 }
@@ -545,6 +948,7 @@ function Get-DependencyRuntimeExportOrder {
         "v5_panel_ensemble" { return 0 }
         "v5_sequence" { return 1 }
         "v5_lob" { return 2 }
+        "v5_tradability" { return 3 }
         default { return 100 }
     }
 }
@@ -752,6 +1156,8 @@ function Invoke-DependencyRuntimeExportChain {
     )
     $results = @()
     $panelRuntimeExportPath = ""
+    $sequenceRuntimeExportPath = ""
+    $lobRuntimeExportPath = ""
     $orderedDependencyResults = @(
         @($DependencyResults) |
             Sort-Object { Get-DependencyRuntimeExportOrder -TrainerName ([string](Get-PropValue -ObjectValue $_ -Name "trainer" -DefaultValue "")) }
@@ -834,6 +1240,20 @@ function Invoke-DependencyRuntimeExportChain {
             ) {
                 $args += @("--anchor-export-path", $panelRuntimeExportPath)
             }
+            if ([string]$trainerName -eq "v5_tradability") {
+                if (
+                    [string]::IsNullOrWhiteSpace($panelRuntimeExportPath) `
+                    -or [string]::IsNullOrWhiteSpace($sequenceRuntimeExportPath) `
+                    -or [string]::IsNullOrWhiteSpace($lobRuntimeExportPath)
+                ) {
+                    throw "tradability runtime export requires panel/sequence/lob runtime exports"
+                }
+                $args += @(
+                    "--panel-runtime-input", $panelRuntimeExportPath,
+                    "--sequence-runtime-input", $sequenceRuntimeExportPath,
+                    "--lob-runtime-input", $lobRuntimeExportPath
+                )
+            }
             $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
             $payload = @{}
             try {
@@ -876,6 +1296,10 @@ function Invoke-DependencyRuntimeExportChain {
         }
         if ([string]$trainerName -eq "v5_panel_ensemble") {
             $panelRuntimeExportPath = [string](Get-PropValue -ObjectValue $payload -Name "export_path" -DefaultValue "")
+        } elseif ([string]$trainerName -eq "v5_sequence") {
+            $sequenceRuntimeExportPath = [string](Get-PropValue -ObjectValue $payload -Name "export_path" -DefaultValue "")
+        } elseif ([string]$trainerName -eq "v5_lob") {
+            $lobRuntimeExportPath = [string](Get-PropValue -ObjectValue $payload -Name "export_path" -DefaultValue "")
         }
     }
     return @($results)
@@ -891,6 +1315,9 @@ function Resolve-DependencyRuntimeCommonUniverse {
     $results = @()
     foreach ($item in @($DependencyResults)) {
         $trainerName = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
+        if ([string]::Equals($trainerName, "v5_tradability", [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
         $runDir = [string](Get-PropValue -ObjectValue $item -Name "run_dir" -DefaultValue "")
         $runId = [string](Get-PropValue -ObjectValue $item -Name "run_id" -DefaultValue "")
         $modelFamily = [string](Get-PropValue -ObjectValue $item -Name "model_family" -DefaultValue "")
@@ -1005,6 +1432,7 @@ function Resolve-DependencyRuntimeFusionInputPaths {
         v5_panel_ensemble = "fusion_panel_runtime_input"
         v5_sequence = "fusion_sequence_runtime_input"
         v5_lob = "fusion_lob_runtime_input"
+        v5_tradability = "fusion_tradability_runtime_input"
     }
     $resolved = [ordered]@{}
     foreach ($trainerName in $required.Keys) {
@@ -1032,6 +1460,150 @@ function Get-DependencyTrainerRequiredArtifacts {
     )
 }
 
+function Get-DependencyTrainerProvenanceArtifacts {
+    param([string]$TrainerName)
+    switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_sequence" { return @("sequence_pretrain_contract.json", "sequence_pretrain_report.json", "domain_weighting_report.json") }
+        "v5_lob" { return @("lob_backbone_contract.json", "lob_target_contract.json", "domain_weighting_report.json") }
+        "v5_tradability" { return @("tradability_model_contract.json", "domain_weighting_report.json") }
+        default { return @() }
+    }
+}
+
+function Test-DependencyTrainerProvenanceArtifactContent {
+    param(
+        [string]$TrainerName,
+        [string]$ArtifactName,
+        [string]$ArtifactPath
+    )
+    $result = [ordered]@{
+        pass = $true
+        reasons = @()
+        payload = @{}
+    }
+    if ([string]::IsNullOrWhiteSpace($ArtifactPath) -or (-not (Test-Path $ArtifactPath))) {
+        $result.pass = $false
+        $result.reasons = @("ARTIFACT_MISSING")
+        return $result
+    }
+    $payload = Load-JsonOrEmpty -PathValue $ArtifactPath
+    $result.payload = $payload
+    switch (([string]$TrainerName).Trim().ToLowerInvariant()) {
+        "v5_sequence" {
+            if ([string]$ArtifactName -eq "sequence_pretrain_contract.json") {
+                if ([string](Get-PropValue -ObjectValue $payload -Name "policy" -DefaultValue "") -ne "sequence_pretrain_contract_v1") {
+                    $result.reasons += "SEQUENCE_PRETRAIN_POLICY_INVALID"
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $payload -Name "backbone_family" -DefaultValue ""))) {
+                    $result.reasons += "SEQUENCE_PRETRAIN_BACKBONE_MISSING"
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $payload -Name "pretrain_method" -DefaultValue ""))) {
+                    $result.reasons += "SEQUENCE_PRETRAIN_METHOD_MISSING"
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $payload -Name "pretrain_impl_method" -DefaultValue ""))) {
+                    $result.reasons += "SEQUENCE_PRETRAIN_IMPL_METHOD_MISSING"
+                }
+                $pretrainMethod = [string](Get-PropValue -ObjectValue $payload -Name "pretrain_method" -DefaultValue "")
+                $pretrainReady = To-Bool (Get-PropValue -ObjectValue $payload -Name "pretrain_ready" -DefaultValue $false) $false
+                $encoderArtifactPath = [string](Get-PropValue -ObjectValue $payload -Name "encoder_artifact_path" -DefaultValue "")
+                if ([string]::Equals($pretrainMethod, "none", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    if ($pretrainReady) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_READY_INVALID"
+                    }
+                } else {
+                    if (-not $pretrainReady) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_NOT_READY"
+                    }
+                    if ([string]::IsNullOrWhiteSpace($encoderArtifactPath) -or (-not (Test-Path $encoderArtifactPath))) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_ENCODER_ARTIFACT_MISSING"
+                    }
+                }
+            } elseif ([string]$ArtifactName -eq "sequence_pretrain_report.json") {
+                if ([string](Get-PropValue -ObjectValue $payload -Name "policy" -DefaultValue "") -ne "sequence_pretrain_report_v1") {
+                    $result.reasons += "SEQUENCE_PRETRAIN_REPORT_POLICY_INVALID"
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $payload -Name "objective_name" -DefaultValue ""))) {
+                    $result.reasons += "SEQUENCE_PRETRAIN_OBJECTIVE_MISSING"
+                }
+                $status = [string](Get-PropValue -ObjectValue $payload -Name "status" -DefaultValue "")
+                if ([string]::Equals($status, "enabled", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    if ((Get-PropValue -ObjectValue $payload -Name "final_loss" -DefaultValue $null) -eq $null) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_FINAL_LOSS_MISSING"
+                    }
+                    if ([int](To-Int64 (Get-PropValue -ObjectValue $payload -Name "best_epoch" -DefaultValue 0) 0) -le 0) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_BEST_EPOCH_INVALID"
+                    }
+                    if ([int](To-Int64 (Get-PropValue -ObjectValue $payload -Name "encoder_dim" -DefaultValue 0) 0) -le 0) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_ENCODER_DIM_INVALID"
+                    }
+                    if (Test-IsEffectivelyEmptyObject -ObjectValue (Get-PropValue -ObjectValue $payload -Name "final_component_values" -DefaultValue @{})) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_COMPONENT_VALUES_MISSING"
+                    }
+                    if (Test-IsEffectivelyEmptyObject -ObjectValue (Get-PropValue -ObjectValue $payload -Name "encoder_norm_summary" -DefaultValue @{})) {
+                        $result.reasons += "SEQUENCE_PRETRAIN_ENCODER_NORMS_MISSING"
+                    }
+                }
+            }
+        }
+        "v5_lob" {
+            if ([string]$ArtifactName -eq "lob_backbone_contract.json") {
+                if ([string](Get-PropValue -ObjectValue $payload -Name "policy" -DefaultValue "") -ne "lob_backbone_contract_v1") {
+                    $result.reasons += "LOB_BACKBONE_POLICY_INVALID"
+                }
+                if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $payload -Name "backbone_family" -DefaultValue ""))) {
+                    $result.reasons += "LOB_BACKBONE_NAME_MISSING"
+                }
+                if ([string](Get-PropValue -ObjectValue $payload -Name "uncertainty_head" -DefaultValue "") -ne "softplus_scalar") {
+                    $result.reasons += "LOB_UNCERTAINTY_HEAD_INVALID"
+                }
+            } elseif ([string]$ArtifactName -eq "lob_target_contract.json") {
+                if ([string](Get-PropValue -ObjectValue $payload -Name "policy" -DefaultValue "") -ne "lob_target_contract_v1") {
+                    $result.reasons += "LOB_TARGET_POLICY_INVALID"
+                }
+                $primaryHorizon = [int](To-Int64 (Get-PropValue -ObjectValue $payload -Name "primary_horizon_seconds" -DefaultValue 0) 0)
+                if ($primaryHorizon -ne 30) {
+                    $result.reasons += "LOB_PRIMARY_HORIZON_INVALID"
+                }
+                $auxTargets = @((Get-PropValue -ObjectValue $payload -Name "auxiliary_targets" -DefaultValue @()))
+                if (@($auxTargets | Where-Object { [string]$_ -eq "five_min_alpha" }).Count -le 0) {
+                    $result.reasons += "LOB_AUXILIARY_TARGETS_INCOMPLETE"
+                }
+            }
+        }
+        "v5_tradability" {
+            if ([string]$ArtifactName -eq "tradability_model_contract.json") {
+                if ([string](Get-PropValue -ObjectValue $payload -Name "policy" -DefaultValue "") -ne "v5_tradability_v1") {
+                    $result.reasons += "TRADABILITY_MODEL_POLICY_INVALID"
+                }
+                $inputExperts = Get-PropValue -ObjectValue $payload -Name "input_experts" -DefaultValue @{}
+                foreach ($requiredExpert in @("panel", "sequence", "lob")) {
+                    $expertPayload = Get-PropValue -ObjectValue $inputExperts -Name $requiredExpert -DefaultValue @{}
+                    if (Test-IsEffectivelyEmptyObject -ObjectValue $expertPayload) {
+                        $result.reasons += ("TRADABILITY_INPUT_" + $requiredExpert.ToUpperInvariant() + "_MISSING")
+                    }
+                }
+            }
+        }
+    }
+    if ([string]$ArtifactName -eq "domain_weighting_report.json") {
+        if ([string](Get-PropValue -ObjectValue $payload -Name "policy" -DefaultValue "") -ne "v5_domain_weighting_v1") {
+            $result.reasons += "DOMAIN_WEIGHTING_POLICY_INVALID"
+        }
+        $effectiveSummary = Get-PropValue -ObjectValue $payload -Name "effective_sample_weight_summary" -DefaultValue @{}
+        if (Test-IsEffectivelyEmptyObject -ObjectValue $effectiveSummary) {
+            $result.reasons += "DOMAIN_WEIGHTING_SUMMARY_MISSING"
+        }
+        $sourceKind = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $payload -Name "domain_details" -DefaultValue @{}) -Name "source_kind" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($sourceKind)) {
+            $result.reasons += "DOMAIN_WEIGHTING_SOURCE_KIND_MISSING"
+        } elseif (([string]$TrainerName).Trim().ToLowerInvariant() -in @("v5_sequence", "v5_lob", "v5_tradability") -and $sourceKind -ne "regime_inverse_frequency_v1") {
+            $result.reasons += "DOMAIN_WEIGHTING_SOURCE_KIND_INVALID"
+        }
+    }
+    $result.pass = (@($result.reasons).Count -eq 0)
+    return $result
+}
+
 function Resolve-DependencyTrainerTailMode {
     param(
         [string]$TrainerName,
@@ -1045,7 +1617,7 @@ function Resolve-DependencyTrainerTailMode {
         }
         return "full"
     }
-    if ($normalizedTrainer -in @("v5_sequence", "v5_lob", "v5_fusion")) {
+    if ($normalizedTrainer -in @("v5_sequence", "v5_lob", "v5_tradability", "v5_fusion")) {
         return "expert_tail"
     }
     return "standard"
@@ -5312,6 +5884,22 @@ function Resolve-FeatureDatasetCertificationPathFromText {
     return $reportedPath.Trim()
 }
 
+function Resolve-PrivateExecutionLabelStoreBuildPathFromText {
+    param([string]$TextValue)
+    if ([string]::IsNullOrWhiteSpace($TextValue)) {
+        return ""
+    }
+    $match = [Regex]::Match($TextValue, '"build_report_path"\s*:\s*"([^"]+)"')
+    if (-not $match.Success) {
+        return ""
+    }
+    $reportedPath = [string]$match.Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($reportedPath)) {
+        return ""
+    }
+    return $reportedPath.Trim()
+}
+
 function Get-DateRangeAscending {
     param(
         [string]$StartDate,
@@ -5621,6 +6209,52 @@ function Invoke-FeatureDatasetCertificationAndLoadReport {
         Exec = $exec
         ReportPath = $reportPath
         Report = $reportDoc
+        Status = $status
+        Pass = [bool]$pass
+        Reasons = @($reasons)
+        Usable = [bool]$usable
+    }
+}
+
+function Invoke-PrivateExecutionLabelStoreAndLoadReport {
+    param([string]$PythonPath)
+    $args = @(
+        "-m", "autobot.ops.private_execution_label_store",
+        "--project-root", $resolvedProjectRoot
+    )
+    $commandText = ($PythonPath + " " + (($args | ForEach-Object { [string]$_ }) -join " "))
+    $exec = $null
+    try {
+        $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args -AllowFailure
+    } catch {
+        $exec = [PSCustomObject]@{
+            ExitCode = 2
+            Output = [string]$_.Exception.Message
+            Command = $commandText
+        }
+    }
+    $buildReportPath = if ($DryRun) { "" } else { Resolve-PrivateExecutionLabelStoreBuildPathFromText -TextValue ([string]$exec.Output) }
+    if ([string]::IsNullOrWhiteSpace($buildReportPath) -and (-not $DryRun)) {
+        $defaultBuildReportPath = Join-Path $resolvedProjectRoot "data/parquet/private_execution_v1/_meta/build_report.json"
+        if (Test-Path $defaultBuildReportPath) {
+            $buildReportPath = $defaultBuildReportPath
+        }
+    }
+    $buildReport = if ([string]::IsNullOrWhiteSpace($buildReportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $buildReportPath }
+    $validateReportPath = if ([string]::IsNullOrWhiteSpace($buildReportPath)) { "" } else { Join-Path (Split-Path -Parent $buildReportPath) "validate_report.json" }
+    $validateReport = if ([string]::IsNullOrWhiteSpace($validateReportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $validateReportPath }
+    $rowsWrittenTotal = [int](To-Int64 (Get-PropValue -ObjectValue $buildReport -Name "rows_written_total" -DefaultValue 0) 0)
+    $status = [string](Get-PropValue -ObjectValue $validateReport -Name "status" -DefaultValue "")
+    $pass = To-Bool (Get-PropValue -ObjectValue $validateReport -Name "pass" -DefaultValue $false) $false
+    $reasons = @((Get-PropValue -ObjectValue $validateReport -Name "reasons" -DefaultValue @()))
+    $usable = ($exec.ExitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($buildReportPath)) -and ($rowsWrittenTotal -gt 0) -and ($pass) -and ($status -eq "PASS")
+    return [PSCustomObject]@{
+        Exec = $exec
+        BuildReportPath = $buildReportPath
+        BuildReport = $buildReport
+        ValidateReportPath = $validateReportPath
+        ValidateReport = $validateReport
+        RowsWrittenTotal = [int]$rowsWrittenTotal
         Status = $status
         Pass = [bool]$pass
         Reasons = @($reasons)
@@ -6125,6 +6759,46 @@ try {
         }
     }
 
+    $requiresPrivateExecutionDataset = (
+        [string]::Equals(([string]$Trainer).Trim(), "v5_fusion", [System.StringComparison]::OrdinalIgnoreCase) `
+        -or
+        [string]::Equals(([string]$Trainer).Trim(), "v5_tradability", [System.StringComparison]::OrdinalIgnoreCase) `
+        -or @($DependencyTrainers | Where-Object { [string]::Equals(([string]$_).Trim(), "v5_tradability", [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+    )
+    if ($requiresPrivateExecutionDataset) {
+        $privateExecutionAttempt = Invoke-PrivateExecutionLabelStoreAndLoadReport -PythonPath $resolvedPythonExe
+        $report.steps.private_execution_label_store = [ordered]@{
+            attempted = $true
+            exit_code = [int]$privateExecutionAttempt.Exec.ExitCode
+            command = $privateExecutionAttempt.Exec.Command
+            output_preview = (Get-OutputPreview -Text ([string]$privateExecutionAttempt.Exec.Output))
+            build_report_path = [string]$privateExecutionAttempt.BuildReportPath
+            validate_report_path = [string]$privateExecutionAttempt.ValidateReportPath
+            rows_written_total = [int]$privateExecutionAttempt.RowsWrittenTotal
+            status = [string]$privateExecutionAttempt.Status
+            pass = [bool]$privateExecutionAttempt.Pass
+            reasons = @($privateExecutionAttempt.Reasons)
+        }
+        if (-not $privateExecutionAttempt.Usable) {
+            $report.steps.train = [ordered]@{
+                attempted = $false
+                reason = "PRIVATE_EXECUTION_LABEL_STORE_MISSING_OR_FAILED"
+                start = $trainStartDate
+                end = $trainEndDate
+            }
+            $report.reasons = @("PRIVATE_EXECUTION_LABEL_STORE_MISSING_OR_FAILED")
+            $report.gates.overall_pass = $false
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.private_execution_label_store = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_TRAINER"
+        }
+    }
+
     $dependencyTrainerResults = @()
     if (@($DependencyTrainers).Count -gt 0) {
         $dependencyTrainerResults = Invoke-DependencyTrainerChain `
@@ -6161,6 +6835,115 @@ try {
         $report.steps.dependency_trainers = [ordered]@{
             attempted = $false
             reason = "NO_DEPENDENCY_TRAINERS"
+        }
+    }
+    if ($EnableVariantMatrixSelection.IsPresent) {
+        $sequenceVariantResult = @($dependencyTrainerResults | Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "trainer" -DefaultValue "") -eq "v5_sequence" } | Select-Object -First 1)
+        $lobVariantResult = @($dependencyTrainerResults | Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "trainer" -DefaultValue "") -eq "v5_lob" } | Select-Object -First 1)
+        $report.steps.sequence_variant_selection = if ($sequenceVariantResult.Count -gt 0) {
+            Test-VariantSelectionStep -TrainerName "v5_sequence" -ResultObject $sequenceVariantResult[0] -FailureCode "SEQUENCE_VARIANT_SELECTION_INCOMPLETE"
+        } else {
+            [ordered]@{ attempted = $false; reason = "DEPENDENCY_RESULT_MISSING" }
+        }
+        $report.steps.lob_variant_selection = if ($lobVariantResult.Count -gt 0) {
+            Test-VariantSelectionStep -TrainerName "v5_lob" -ResultObject $lobVariantResult[0] -FailureCode "LOB_VARIANT_SELECTION_INCOMPLETE"
+        } else {
+            [ordered]@{ attempted = $false; reason = "DEPENDENCY_RESULT_MISSING" }
+        }
+        foreach ($variantStepName in @("sequence_variant_selection", "lob_variant_selection")) {
+            $variantStep = Get-PropValue -ObjectValue $report.steps -Name $variantStepName -DefaultValue @{}
+            if ([bool](Get-PropValue -ObjectValue $variantStep -Name "attempted" -DefaultValue $false) -and (-not [bool](Get-PropValue -ObjectValue $variantStep -Name "pass" -DefaultValue $false))) {
+                $reasons = @((Get-PropValue -ObjectValue $variantStep -Name "reasons" -DefaultValue @()))
+                $report.reasons = @($reasons)
+                $report.gates.overall_pass = $false
+                $failureCode = if (@($reasons).Count -gt 0) { [string]$reasons[0] } else { "VARIANT_SELECTION_INCOMPLETE" }
+                Set-ReportFailure -Stage "dependency_train" -Code $failureCode
+                $paths = Save-Report
+                Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+                exit 2
+            }
+        }
+    } else {
+        $report.steps.sequence_variant_selection = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+        $report.steps.lob_variant_selection = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+    }
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion" -and @($dependencyTrainerResults).Count -gt 0) {
+        $dependencyProvenanceResults = @()
+        $dependencyProvenanceReasons = New-Object System.Collections.Generic.List[string]
+        foreach ($item in @($dependencyTrainerResults)) {
+            $trainerName = [string](Get-PropValue -ObjectValue $item -Name "trainer" -DefaultValue "")
+            $runDir = [string](Get-PropValue -ObjectValue $item -Name "run_dir" -DefaultValue "")
+            $requiredArtifacts = @(Get-DependencyTrainerProvenanceArtifacts -TrainerName $trainerName)
+            if (@($requiredArtifacts).Count -le 0) {
+                continue
+            }
+            $artifactRows = @()
+            $missingArtifacts = @()
+            foreach ($artifactName in @($requiredArtifacts)) {
+                $artifactPath = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Join-Path $runDir $artifactName }
+                $exists = (-not [string]::IsNullOrWhiteSpace($artifactPath)) -and (Test-Path $artifactPath)
+                $contentCheck = if ($exists) {
+                    Test-DependencyTrainerProvenanceArtifactContent -TrainerName $trainerName -ArtifactName $artifactName -ArtifactPath $artifactPath
+                } else {
+                    [ordered]@{ pass = $false; reasons = @("ARTIFACT_MISSING"); payload = @{} }
+                }
+                if (-not $exists) {
+                    $missingArtifacts += $artifactName
+                } elseif (-not [bool](Get-PropValue -ObjectValue $contentCheck -Name "pass" -DefaultValue $false)) {
+                    $missingArtifacts += ($artifactName + ":" + ([string]::Join(",", @((Get-PropValue -ObjectValue $contentCheck -Name "reasons" -DefaultValue @())))))
+                }
+                $artifactRows += [ordered]@{
+                    name = $artifactName
+                    path = $artifactPath
+                    exists = $exists
+                    content_pass = [bool](Get-PropValue -ObjectValue $contentCheck -Name "pass" -DefaultValue $false)
+                    content_reasons = @((Get-PropValue -ObjectValue $contentCheck -Name "reasons" -DefaultValue @()))
+                }
+            }
+            $oodReportPath = if ([string]::IsNullOrWhiteSpace($runDir)) { "" } else { Join-Path $runDir "ood_generalization_report.json" }
+            $oodSummary = if ((-not [string]::IsNullOrWhiteSpace($oodReportPath)) -and (Test-Path $oodReportPath)) {
+                $oodPayload = Load-JsonOrEmpty -PathValue $oodReportPath
+                [ordered]@{
+                    path = $oodReportPath
+                    status = [string](Get-PropValue -ObjectValue $oodPayload -Name "status" -DefaultValue "")
+                    source_kind = [string](Get-PropValue -ObjectValue $oodPayload -Name "source_kind" -DefaultValue "")
+                    invariant_penalty_enabled = (To-Bool (Get-PropValue -ObjectValue $oodPayload -Name "invariant_penalty_enabled" -DefaultValue $false) $false)
+                    future_to_train_ratio = (To-Double (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $oodPayload -Name "train_vs_future_domain_gap_summary" -DefaultValue @{}) -Name "future_to_train_ratio" -DefaultValue 0.0) 0.0)
+                }
+            } else {
+                [ordered]@{ path = ""; status = ""; source_kind = ""; invariant_penalty_enabled = $false; future_to_train_ratio = $null }
+            }
+            if (@($missingArtifacts).Count -gt 0) {
+                $dependencyProvenanceReasons.Add(($trainerName.ToUpperInvariant() + "_PROVENANCE_MISSING")) | Out-Null
+            }
+            $dependencyProvenanceResults += [ordered]@{
+                trainer = $trainerName
+                run_id = [string](Get-PropValue -ObjectValue $item -Name "run_id" -DefaultValue "")
+                run_dir = $runDir
+                required_artifacts = @($artifactRows)
+                ood_generalization = $oodSummary
+                pass = (@($missingArtifacts).Count -eq 0)
+                reasons = @($missingArtifacts)
+            }
+        }
+        $report.steps.dependency_provenance = [ordered]@{
+            attempted = $true
+            results = @($dependencyProvenanceResults)
+            pass = (@($dependencyProvenanceReasons).Count -eq 0)
+            reasons = @($dependencyProvenanceReasons | Select-Object -Unique)
+        }
+        if (-not [bool](Get-PropValue -ObjectValue $report.steps.dependency_provenance -Name "pass" -DefaultValue $false)) {
+            $report.reasons = @("DEPENDENCY_PROVENANCE_INCOMPLETE")
+            $report.gates.overall_pass = $false
+            Set-ReportFailure -Stage "fusion_train" -Code "DEPENDENCY_PROVENANCE_INCOMPLETE"
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.dependency_provenance = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_TRAINER"
         }
     }
     $dependencyRuntimeExportResults = @()
@@ -6259,9 +7042,11 @@ try {
         }
     }
 
+    $useFusionVariantMatrix = $EnableVariantMatrixSelection.IsPresent -and (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion")
+    $trainCommand = if ($useFusionVariantMatrix) { "train-variant-matrix" } else { "train" }
     $trainArgs = @(
         "-m", "autobot.cli",
-        "model", "train",
+        "model", $trainCommand,
         "--trainer", $Trainer,
         "--model-family", $ModelFamily,
         "--feature-set", $FeatureSet,
@@ -6298,6 +7083,7 @@ try {
         $panelInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_panel_input" -DefaultValue "")
         $sequenceInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_sequence_input" -DefaultValue "")
         $lobInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_lob_input" -DefaultValue "")
+        $tradabilityInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyInputs -Name "fusion_tradability_input" -DefaultValue "")
         if (-not [string]::IsNullOrWhiteSpace($panelInputPath)) {
             $trainArgs += @("--fusion-panel-input", $panelInputPath)
         }
@@ -6307,9 +7093,13 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($lobInputPath)) {
             $trainArgs += @("--fusion-lob-input", $lobInputPath)
         }
+        if (-not [string]::IsNullOrWhiteSpace($tradabilityInputPath)) {
+            $trainArgs += @("--fusion-tradability-input", $tradabilityInputPath)
+        }
         $panelRuntimeInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyRuntimeInputs -Name "fusion_panel_runtime_input" -DefaultValue "")
         $sequenceRuntimeInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyRuntimeInputs -Name "fusion_sequence_runtime_input" -DefaultValue "")
         $lobRuntimeInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyRuntimeInputs -Name "fusion_lob_runtime_input" -DefaultValue "")
+        $tradabilityRuntimeInputPath = [string](Get-PropValue -ObjectValue $fusionDependencyRuntimeInputs -Name "fusion_tradability_runtime_input" -DefaultValue "")
         if (-not [string]::IsNullOrWhiteSpace($panelRuntimeInputPath)) {
             $trainArgs += @("--fusion-panel-runtime-input", $panelRuntimeInputPath)
         }
@@ -6319,13 +7109,31 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($lobRuntimeInputPath)) {
             $trainArgs += @("--fusion-lob-runtime-input", $lobRuntimeInputPath)
         }
+        if (-not [string]::IsNullOrWhiteSpace($tradabilityRuntimeInputPath)) {
+            $trainArgs += @("--fusion-tradability-runtime-input", $tradabilityRuntimeInputPath)
+        }
         if ((-not [string]::IsNullOrWhiteSpace($certificationStartDate)) -and (-not [string]::IsNullOrWhiteSpace($effectiveBatchDate))) {
             $trainArgs += @("--fusion-runtime-start", $certificationStartDate, "--fusion-runtime-end", $effectiveBatchDate)
         }
     }
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
-    $candidateRunDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$trainExec.Output) }
-    $candidateRunId = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Split-Path -Leaf $candidateRunDir }
+    $candidateMatrixPayload = if ($useFusionVariantMatrix) { Resolve-JsonObjectFromText -TextValue ([string]$trainExec.Output) } else { @{} }
+    $candidateRunDir = if ($DryRun) {
+        ""
+    } elseif ($useFusionVariantMatrix) {
+        [string](Get-PropValue -ObjectValue $candidateMatrixPayload -Name "run_dir" -DefaultValue "")
+    } else {
+        Resolve-RunDirFromText -TextValue ([string]$trainExec.Output)
+    }
+    $candidateRunId = if ($DryRun) {
+        ""
+    } elseif ($useFusionVariantMatrix) {
+        [string](Get-PropValue -ObjectValue $candidateMatrixPayload -Name "run_id" -DefaultValue "")
+    } elseif ([string]::IsNullOrWhiteSpace($candidateRunDir)) {
+        ""
+    } else {
+        Split-Path -Leaf $candidateRunDir
+    }
     if ([string]::IsNullOrWhiteSpace($candidateRunDir) -and (-not [string]::IsNullOrWhiteSpace($candidateRunId))) {
         $candidateRunDir = Join-Path (Join-Path $resolvedRegistryRoot $ModelFamily) $candidateRunId
     }
@@ -6340,6 +7148,86 @@ try {
     $candidateTrainConfigPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "train_config.yaml" }
     $candidateTrainConfig = if ([string]::IsNullOrWhiteSpace($candidateTrainConfigPath)) { @{} } else { Load-JsonOrEmpty -PathValue $candidateTrainConfigPath }
     $candidateSnapshotId = [string](Get-PropValue -ObjectValue $candidateTrainConfig -Name "data_platform_ready_snapshot_id" -DefaultValue "")
+    $candidateRuntimeRecommendationsPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "runtime_recommendations.json" }
+    $candidateRuntimeRecommendations = if ([string]::IsNullOrWhiteSpace($candidateRuntimeRecommendationsPath)) { @{} } else { Load-JsonOrEmpty -PathValue $candidateRuntimeRecommendationsPath }
+    $candidateFusionModelContractPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "fusion_model_contract.json" }
+    $candidateFusionModelContract = if ([string]::IsNullOrWhiteSpace($candidateFusionModelContractPath)) { @{} } else { Load-JsonOrEmpty -PathValue $candidateFusionModelContractPath }
+    $candidateDomainWeightingReportPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "domain_weighting_report.json" }
+    $candidateDomainWeightingReport = if ([string]::IsNullOrWhiteSpace($candidateDomainWeightingReportPath)) { @{} } else { Load-JsonOrEmpty -PathValue $candidateDomainWeightingReportPath }
+    $candidateVariantMetadata = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { @{} } else { Resolve-RunVariantMetadata -RunDir $candidateRunDir -TrainerName $Trainer }
+    $sequenceBackboneName = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_backbone_name" -DefaultValue "")
+    $lobBackboneName = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "lob_backbone_name" -DefaultValue "")
+    $tradabilitySourceRunId = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "tradability_source_run_id" -DefaultValue "")
+    $fusionStackerFamily = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_stacker_family" -DefaultValue "")
+    $fusionGatingPolicy = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_gating_policy" -DefaultValue "")
+    $candidateSequenceVariantName = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "sequence_variant_name" -DefaultValue (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_variant_name" -DefaultValue ""))
+    if ([string]::IsNullOrWhiteSpace($candidateSequenceVariantName) -and (-not [string]::IsNullOrWhiteSpace($sequenceBackboneName))) {
+        $candidateSequenceVariantName = $sequenceBackboneName + "__" + ([string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_method" -DefaultValue "none"))
+    }
+    $candidateLobVariantName = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "lob_variant_name" -DefaultValue (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "lob_variant_name" -DefaultValue ""))
+    if ([string]::IsNullOrWhiteSpace($candidateLobVariantName) -and (-not [string]::IsNullOrWhiteSpace($lobBackboneName))) {
+        $candidateLobVariantName = $lobBackboneName
+    }
+    $candidateFusionVariantName = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "fusion_variant_name" -DefaultValue (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_variant_name" -DefaultValue ""))
+    if ([string]::IsNullOrWhiteSpace($candidateFusionVariantName) -and (-not [string]::IsNullOrWhiteSpace($fusionStackerFamily))) {
+        $candidateFusionVariantName = $fusionStackerFamily
+    }
+    $candidateVariantReportPath = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "variant_report_path" -DefaultValue "")
+    $fusionInputExperts = Get-PropValue -ObjectValue $candidateFusionModelContract -Name "input_experts" -DefaultValue @{}
+    $fusionTradabilityInput = Get-PropValue -ObjectValue $fusionInputExperts -Name "tradability" -DefaultValue @{}
+    $sequencePretrainMethod = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_method" -DefaultValue "")
+    $sequencePretrainReady = To-Bool (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_ready" -DefaultValue $false) $false
+    $sequencePretrainStatus = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_status" -DefaultValue "")
+    $sequencePretrainObjective = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_objective" -DefaultValue "")
+    $sequencePretrainBestEpoch = [int](To-Int64 (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_best_epoch" -DefaultValue 0) 0)
+    $sequencePretrainEncoderPresent = To-Bool (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_encoder_present" -DefaultValue $false) $false
+    $sequencePretrainContractPath = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_contract_path" -DefaultValue "")
+    $sequencePretrainReportPath = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_report_path" -DefaultValue "")
+    $fusionRegimeClusterCount = [int](To-Int64 (Get-PropValue -ObjectValue $candidateFusionModelContract -Name "regime_cluster_count" -DefaultValue 0) 0)
+    $fusionRegimeFeatureColumns = @((Get-PropValue -ObjectValue $candidateFusionModelContract -Name "regime_feature_columns" -DefaultValue @()))
+    $domainWeightingPolicy = [string](Get-PropValue -ObjectValue $candidateDomainWeightingReport -Name "policy" -DefaultValue "")
+    $domainWeightingSourceKind = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $candidateDomainWeightingReport -Name "domain_details" -DefaultValue @{}) -Name "source_kind" -DefaultValue "")
+    $domainWeightingEnabled = To-Bool (Get-PropValue -ObjectValue $candidateDomainWeightingReport -Name "domain_weighting_enabled" -DefaultValue $false) $false
+    $oodStatus = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "ood_status" -DefaultValue "")
+    $oodSourceKind = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "ood_source_kind" -DefaultValue "")
+    $oodPenaltyEnabled = To-Bool (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "ood_penalty_enabled" -DefaultValue $false) $false
+    $domainWeightingSummary = [ordered]@{
+        policy = $domainWeightingPolicy
+        source_kind = $domainWeightingSourceKind
+        enabled = $domainWeightingEnabled
+        effective_sample_weight_summary = (Get-PropValue -ObjectValue $candidateDomainWeightingReport -Name "effective_sample_weight_summary" -DefaultValue @{})
+        domain_weight_summary = (Get-PropValue -ObjectValue $candidateDomainWeightingReport -Name "domain_weight_summary" -DefaultValue @{})
+    }
+    $fusionProvenanceSummary = [ordered]@{
+        runtime_recommendations_path = $candidateRuntimeRecommendationsPath
+        fusion_model_contract_path = $candidateFusionModelContractPath
+        domain_weighting_report_path = $candidateDomainWeightingReportPath
+        sequence_backbone_name = $sequenceBackboneName
+        lob_backbone_name = $lobBackboneName
+        tradability_source_run_id = $tradabilitySourceRunId
+        sequence_variant_name = $candidateSequenceVariantName
+        lob_variant_name = $candidateLobVariantName
+        fusion_variant_name = $candidateFusionVariantName
+        fusion_variant_report_path = $candidateVariantReportPath
+        sequence_pretrain_method = $sequencePretrainMethod
+        sequence_pretrain_ready = $sequencePretrainReady
+        sequence_pretrain_status = $sequencePretrainStatus
+        sequence_pretrain_objective = $sequencePretrainObjective
+        sequence_pretrain_best_epoch = $sequencePretrainBestEpoch
+        sequence_pretrain_encoder_present = $sequencePretrainEncoderPresent
+        sequence_pretrain_contract_path = $sequencePretrainContractPath
+        sequence_pretrain_report_path = $sequencePretrainReportPath
+        fusion_stacker_family = $fusionStackerFamily
+        fusion_gating_policy = $fusionGatingPolicy
+        regime_cluster_count = $fusionRegimeClusterCount
+        regime_feature_columns = @($fusionRegimeFeatureColumns)
+        tradability_input_trainer = [string](Get-PropValue -ObjectValue $fusionTradabilityInput -Name "trainer" -DefaultValue "")
+        tradability_input_model_family = [string](Get-PropValue -ObjectValue $fusionTradabilityInput -Name "model_family" -DefaultValue "")
+        domain_weighting = $domainWeightingSummary
+        ood_status = $oodStatus
+        ood_source_kind = $oodSourceKind
+        ood_penalty_enabled = $oodPenaltyEnabled
+    }
     $searchBudgetDecisionPath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "search_budget_decision.json" }
     $searchBudgetDecision = if ([string]::IsNullOrWhiteSpace($searchBudgetDecisionPath)) { @{} } else { Load-JsonOrEmpty -PathValue $searchBudgetDecisionPath }
     $economicObjectiveProfilePath = if ([string]::IsNullOrWhiteSpace($candidateRunDir)) { "" } else { Join-Path $candidateRunDir "economic_objective_profile.json" }
@@ -6461,6 +7349,11 @@ try {
         dependency_runtime_common_markets = @((Get-PropValue -ObjectValue $dependencyRuntimeUniverse -Name "common_markets" -DefaultValue @()))
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
+        fusion_provenance = $fusionProvenanceSummary
+        sequence_variant_name = $candidateSequenceVariantName
+        lob_variant_name = $candidateLobVariantName
+        fusion_variant_name = $candidateFusionVariantName
+        fusion_variant_report_path = $candidateVariantReportPath
         promotion_decision_status = [string](Get-PropValue -ObjectValue $promotionDecision -Name "status" -DefaultValue "")
         trainer_evidence = $trainerEvidence
     }
@@ -6523,6 +7416,11 @@ try {
         fusion_snapshot_id = $candidateSnapshotId
         decision_surface_path = $decisionSurfacePath
         certification_artifact_path = $certificationArtifactPath
+        fusion_provenance = $fusionProvenanceSummary
+        sequence_variant_name = $candidateSequenceVariantName
+        lob_variant_name = $candidateLobVariantName
+        fusion_variant_name = $candidateFusionVariantName
+        fusion_variant_report_path = $candidateVariantReportPath
         promotion_decision = $promotionDecision
         candidate_model_ref_requested = $CandidateModelRef
         candidate_run_id_used_for_backtest = $candidateBacktestModelRef
@@ -6545,6 +7443,17 @@ try {
         common_runtime_universe_id = [string](Get-PropValue -ObjectValue $commonRuntimeUniverseArtifact -Name "common_runtime_universe_id" -DefaultValue "")
         common_runtime_universe_path = $commonRuntimeUniverseArtifactPath
     }
+    if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath))) {
+        $certificationArtifact.sequence_variant_name = $candidateSequenceVariantName
+        $certificationArtifact.lob_variant_name = $candidateLobVariantName
+        $certificationArtifact.fusion_variant_name = $candidateFusionVariantName
+        $certificationArtifact.fusion_variant_report_path = $candidateVariantReportPath
+        $certificationArtifact.provenance.sequence_variant_name = $candidateSequenceVariantName
+        $certificationArtifact.provenance.lob_variant_name = $candidateLobVariantName
+        $certificationArtifact.provenance.fusion_variant_name = $candidateFusionVariantName
+        $certificationArtifact.provenance.fusion_variant_report_path = $candidateVariantReportPath
+        Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+    }
     Sync-SplitPolicyState
     $report.steps.train.fusion_run_id = $candidateRunId
     $report.steps.train.fusion_snapshot_id = $candidateSnapshotId
@@ -6557,8 +7466,32 @@ try {
     $report.steps.train.dependency_trainer_model_families = @((Get-PropValue -ObjectValue $report.candidate -Name "dependency_trainer_model_families" -DefaultValue @()))
     $report.steps.train.dependency_snapshot_id = [string](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id" -DefaultValue "")
     $report.steps.train.snapshot_chain_consistent = [bool](Get-PropValue -ObjectValue $report.candidate -Name "snapshot_chain_consistent" -DefaultValue $true)
+    $report.steps.train.fusion_provenance = $fusionProvenanceSummary
+    $report.steps.train.sequence_variant_name = $candidateSequenceVariantName
+    $report.steps.train.lob_variant_name = $candidateLobVariantName
+    $report.steps.train.fusion_variant_name = $candidateFusionVariantName
+    $report.steps.train.fusion_variant_report_path = $candidateVariantReportPath
     $report.steps.train.duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
     $report.steps.train.duplicate_candidate_artifacts = $duplicateCandidateArtifacts
+
+    if ($useFusionVariantMatrix) {
+        $report.steps.fusion_variant_selection = Test-VariantSelectionStep -TrainerName "v5_fusion" -ResultObject ([ordered]@{
+            run_dir = $candidateRunDir
+            variant_metadata = $candidateVariantMetadata
+        }) -FailureCode "FUSION_VARIANT_SELECTION_INCOMPLETE"
+        if (-not [bool](Get-PropValue -ObjectValue $report.steps.fusion_variant_selection -Name "pass" -DefaultValue $false)) {
+            $variantReasons = @((Get-PropValue -ObjectValue $report.steps.fusion_variant_selection -Name "reasons" -DefaultValue @()))
+            $report.reasons = @($variantReasons)
+            $report.gates.overall_pass = $false
+            $variantFailureCode = if (@($variantReasons).Count -gt 0) { [string]$variantReasons[0] } else { "FUSION_VARIANT_SELECTION_INCOMPLETE" }
+            Set-ReportFailure -Stage "fusion_train" -Code $variantFailureCode -ReportPath $candidateRunDir
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } else {
+        $report.steps.fusion_variant_selection = [ordered]@{ attempted = $false; reason = "SKIPPED_BY_FLAG" }
+    }
 
     if ((@($DependencyTrainers).Count -gt 0) -and (-not [bool](Get-PropValue -ObjectValue $report.candidate -Name "dependency_snapshot_id_consistent" -DefaultValue $false))) {
         $report.reasons = @("DEPENDENCY_TRAINER_SNAPSHOT_CHAIN_INCONSISTENT")
@@ -6591,6 +7524,89 @@ try {
         $paths = Save-Report
         Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
         exit 2
+    }
+
+    $requiresV5FusionProvenance = [string]::Equals(([string]$Trainer).Trim(), "v5_fusion", [System.StringComparison]::OrdinalIgnoreCase)
+    if ($requiresV5FusionProvenance) {
+        $missingFusionProvenanceReasons = New-Object System.Collections.Generic.List[string]
+        if ([string]::IsNullOrWhiteSpace($candidateSequenceVariantName)) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_VARIANT_NAME_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($sequencePretrainMethod)) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_PRETRAIN_METHOD_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($sequencePretrainStatus)) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_PRETRAIN_STATUS_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($sequencePretrainObjective)) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_PRETRAIN_OBJECTIVE_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($sequencePretrainContractPath) -or (-not (Test-Path $sequencePretrainContractPath))) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_PRETRAIN_CONTRACT_PATH_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($sequencePretrainReportPath) -or (-not (Test-Path $sequencePretrainReportPath))) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_PRETRAIN_REPORT_PATH_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($candidateLobVariantName)) {
+            $missingFusionProvenanceReasons.Add("LOB_VARIANT_NAME_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($sequenceBackboneName)) {
+            $missingFusionProvenanceReasons.Add("SEQUENCE_BACKBONE_NAME_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($lobBackboneName)) {
+            $missingFusionProvenanceReasons.Add("LOB_BACKBONE_NAME_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($tradabilitySourceRunId)) {
+            $missingFusionProvenanceReasons.Add("TRADABILITY_SOURCE_RUN_ID_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($fusionStackerFamily)) {
+            $missingFusionProvenanceReasons.Add("FUSION_STACKER_FAMILY_MISSING") | Out-Null
+        }
+        if ([string]::Equals($fusionStackerFamily, "regime_moe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ([string]::IsNullOrWhiteSpace($fusionGatingPolicy)) {
+                $missingFusionProvenanceReasons.Add("FUSION_GATING_POLICY_MISSING") | Out-Null
+            }
+            if ($fusionRegimeClusterCount -le 0) {
+                $missingFusionProvenanceReasons.Add("FUSION_REGIME_CLUSTER_COUNT_INVALID") | Out-Null
+            }
+        }
+        if (Test-IsEffectivelyEmptyObject -ObjectValue $fusionTradabilityInput) {
+            $missingFusionProvenanceReasons.Add("FUSION_TRADABILITY_INPUT_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace([string](Get-PropValue -ObjectValue $fusionTradabilityInput -Name "run_id" -DefaultValue ""))) {
+            $missingFusionProvenanceReasons.Add("FUSION_TRADABILITY_INPUT_RUN_ID_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($domainWeightingPolicy)) {
+            $missingFusionProvenanceReasons.Add("DOMAIN_WEIGHTING_REPORT_MISSING") | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($domainWeightingSourceKind)) {
+            $missingFusionProvenanceReasons.Add("DOMAIN_WEIGHTING_SOURCE_KIND_MISSING") | Out-Null
+        }
+        if ($useFusionVariantMatrix -and ([string]::IsNullOrWhiteSpace($candidateVariantReportPath) -or (-not (Test-Path $candidateVariantReportPath)))) {
+            $missingFusionProvenanceReasons.Add("FUSION_VARIANT_REPORT_MISSING") | Out-Null
+        }
+        if ((@($missingFusionProvenanceReasons)).Count -gt 0) {
+            $report.steps.train.fusion_provenance.required = $true
+            $report.steps.train.fusion_provenance.pass = $false
+            $report.steps.train.fusion_provenance.reasons = @($missingFusionProvenanceReasons)
+            $report.reasons = @("V5_FUSION_PROVENANCE_INCOMPLETE")
+            $report.gates.overall_pass = $false
+            Set-ReportFailure -Stage "fusion_train" -Code "V5_FUSION_PROVENANCE_INCOMPLETE" -ReportPath $candidateRunDir
+            Update-RunArtifactStatus `
+                -RunDir $candidateRunDir `
+                -RunId $candidateRunId `
+                -Status "acceptance_incomplete" `
+                -AcceptanceCompleted $false `
+                -CandidateAdoptable $false `
+                -CandidateAdopted $false `
+                -Promoted $false | Out-Null
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+        $report.steps.train.fusion_provenance.required = $true
+        $report.steps.train.fusion_provenance.pass = $true
+        $report.steps.train.fusion_provenance.reasons = @()
     }
 
     $isDuplicateCandidate = To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false
@@ -7778,6 +8794,103 @@ try {
         }
     }
 
+    $fusionEvidenceReasonCode = ""
+    $fusionCandidateDefaultEligible = $false
+    $fusionEvidenceWinner = ""
+    $fusionOfflineWinner = ""
+    $fusionDefaultEligibleWinner = ""
+    $pairedPaperArtifact = Resolve-LatestPairedPaperArtifact -ProjectRoot $resolvedProjectRoot
+    $canaryConfidenceArtifact = Resolve-LatestCanaryConfidenceArtifact -ProjectRoot $resolvedProjectRoot
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        $paperEvidencePass = if ($SkipPaperSoak) { $true } else { $paperPass }
+        $canaryPass = if (Test-IsEffectivelyEmptyObject -ObjectValue (Get-PropValue -ObjectValue $canaryConfidenceArtifact -Name "payload" -DefaultValue @{})) {
+            $true
+        } else {
+            -not [string]::Equals(
+                [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $canaryConfidenceArtifact -Name "payload" -DefaultValue @{}) -Name "decision" -DefaultValue @{}) -Name "status" -DefaultValue ""),
+                "abort",
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+        $pairedPass = if (Test-IsEffectivelyEmptyObject -ObjectValue (Get-PropValue -ObjectValue $pairedPaperArtifact -Name "report" -DefaultValue @{})) {
+            $true
+        } else {
+            $pairedDeltas = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $pairedPaperArtifact -Name "report" -DefaultValue @{}) -Name "paired_deltas" -DefaultValue @{}
+            ([int](To-Int64 (Get-PropValue -ObjectValue $pairedDeltas -Name "matched_no_trade_delta" -DefaultValue 0) 0) -ge -1) -and
+            ([double](To-Double (Get-PropValue -ObjectValue $pairedDeltas -Name "matched_slippage_delta_bps" -DefaultValue 0.0) 0.0) -le 2.5)
+        }
+        $fusionCandidateDefaultEligible = `
+            (([string]$fusionStackerFamily).Trim().ToLowerInvariant() -ne "regime_moe") -or `
+            (
+                (To-Bool (Get-PropValue -ObjectValue $report.gates.backtest -Name "pass" -DefaultValue $false) $false) -and
+                (To-Bool (Get-PropValue -ObjectValue $report.gates.backtest -Name "candidate_execution_structure_evaluated" -DefaultValue $false) $false) -and
+                $paperEvidencePass -and
+                $pairedPass -and
+                $canaryPass
+            )
+        if ([string]::Equals($fusionStackerFamily, "regime_moe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $fusionEvidenceReasonCode = if ($fusionCandidateDefaultEligible) { "REGIME_MOE_EVIDENCE_STRONG_ENOUGH" } else { "BASELINE_RETAINED_EVIDENCE_NOT_STRONG_ENOUGH" }
+            $fusionEvidenceWinner = if ($fusionCandidateDefaultEligible) { "regime_moe" } else { "linear" }
+        } else {
+            $fusionEvidenceReasonCode = "LINEAR_BASELINE_WINNER"
+            $fusionEvidenceWinner = if ([string]::IsNullOrWhiteSpace($fusionStackerFamily)) { "linear" } else { $fusionStackerFamily }
+        }
+        $fusionEvidencePayload = Update-FusionVariantEvidenceArtifact `
+            -VariantReportPath $candidateVariantReportPath `
+            -FusionVariantName $fusionStackerFamily `
+            -ReasonCode $fusionEvidenceReasonCode `
+            -CandidateDefaultEligible $fusionCandidateDefaultEligible `
+            -BacktestGate $report.gates.backtest `
+            -PaperGate $report.gates.paper `
+            -PairedArtifact $pairedPaperArtifact `
+            -CanaryArtifact $canaryConfidenceArtifact
+        $fusionOfflineWinner = [string](Get-PropValue -ObjectValue $fusionEvidencePayload -Name "offline_winner_variant_name" -DefaultValue $candidateFusionVariantName)
+        $fusionDefaultEligibleWinner = [string](Get-PropValue -ObjectValue $fusionEvidencePayload -Name "default_eligible_variant_name" -DefaultValue $fusionEvidenceWinner)
+        $report.steps.fusion_variant_selection.selection_evidence = Get-PropValue -ObjectValue $fusionEvidencePayload -Name "selection_evidence" -DefaultValue @{}
+        $report.steps.fusion_variant_selection.fusion_candidate_default_eligible = $fusionCandidateDefaultEligible
+        $report.steps.fusion_variant_selection.fusion_evidence_winner = $fusionEvidenceWinner
+        $report.steps.fusion_variant_selection.fusion_evidence_reason_code = $fusionEvidenceReasonCode
+        $report.steps.fusion_variant_selection.fusion_offline_winner = $fusionOfflineWinner
+        $report.steps.fusion_variant_selection.fusion_default_eligible_winner = $fusionDefaultEligibleWinner
+        $report.candidate.fusion_candidate_default_eligible = $fusionCandidateDefaultEligible
+        $report.candidate.fusion_evidence_winner = $fusionEvidenceWinner
+        $report.candidate.fusion_evidence_reason_code = $fusionEvidenceReasonCode
+        $report.candidate.fusion_offline_winner = $fusionOfflineWinner
+        $report.candidate.fusion_default_eligible_winner = $fusionDefaultEligibleWinner
+        $report.candidate.paired_paper_latest_path = [string](Get-PropValue -ObjectValue $pairedPaperArtifact -Name "latest_path" -DefaultValue "")
+        $report.candidate.canary_confidence_latest_path = [string](Get-PropValue -ObjectValue $canaryConfidenceArtifact -Name "path" -DefaultValue "")
+        if ((-not $DryRun) -and (-not [string]::IsNullOrWhiteSpace($candidateRunDir))) {
+            $runtimeRecommendationsPath = Join-Path $candidateRunDir "runtime_recommendations.json"
+            $runtimeRecommendationsPayload = Load-JsonOrEmpty -PathValue $runtimeRecommendationsPath
+            $runtimeRecommendationsPayload | Add-Member -NotePropertyName "fusion_candidate_default_eligible" -NotePropertyValue $fusionCandidateDefaultEligible -Force
+            $runtimeRecommendationsPayload | Add-Member -NotePropertyName "fusion_evidence_winner" -NotePropertyValue $fusionEvidenceWinner -Force
+            $runtimeRecommendationsPayload | Add-Member -NotePropertyName "fusion_evidence_reason_code" -NotePropertyValue $fusionEvidenceReasonCode -Force
+            $runtimeRecommendationsPayload | Add-Member -NotePropertyName "fusion_offline_winner" -NotePropertyValue $fusionOfflineWinner -Force
+            $runtimeRecommendationsPayload | Add-Member -NotePropertyName "fusion_default_eligible_winner" -NotePropertyValue $fusionDefaultEligibleWinner -Force
+            Write-JsonFile -PathValue $runtimeRecommendationsPath -Payload $runtimeRecommendationsPayload
+            $promotionDecisionPayload = Load-JsonOrEmpty -PathValue $promotionDecisionPath
+            $promotionDecisionPayload | Add-Member -NotePropertyName "fusion_candidate_default_eligible" -NotePropertyValue $fusionCandidateDefaultEligible -Force
+            $promotionDecisionPayload | Add-Member -NotePropertyName "fusion_evidence_winner" -NotePropertyValue $fusionEvidenceWinner -Force
+            $promotionDecisionPayload | Add-Member -NotePropertyName "fusion_evidence_reason_code" -NotePropertyValue $fusionEvidenceReasonCode -Force
+            $promotionDecisionPayload | Add-Member -NotePropertyName "fusion_offline_winner" -NotePropertyValue $fusionOfflineWinner -Force
+            $promotionDecisionPayload | Add-Member -NotePropertyName "fusion_default_eligible_winner" -NotePropertyValue $fusionDefaultEligibleWinner -Force
+            Write-JsonFile -PathValue $promotionDecisionPath -Payload $promotionDecisionPayload
+            if (-not [string]::IsNullOrWhiteSpace($certificationArtifactPath)) {
+                $certificationArtifact | Add-Member -NotePropertyName "fusion_candidate_default_eligible" -NotePropertyValue $fusionCandidateDefaultEligible -Force
+                $certificationArtifact | Add-Member -NotePropertyName "fusion_evidence_winner" -NotePropertyValue $fusionEvidenceWinner -Force
+                $certificationArtifact | Add-Member -NotePropertyName "fusion_evidence_reason_code" -NotePropertyValue $fusionEvidenceReasonCode -Force
+                $certificationArtifact | Add-Member -NotePropertyName "fusion_offline_winner" -NotePropertyValue $fusionOfflineWinner -Force
+                $certificationArtifact | Add-Member -NotePropertyName "fusion_default_eligible_winner" -NotePropertyValue $fusionDefaultEligibleWinner -Force
+                $certificationArtifact.provenance | Add-Member -NotePropertyName "fusion_candidate_default_eligible" -NotePropertyValue $fusionCandidateDefaultEligible -Force
+                $certificationArtifact.provenance | Add-Member -NotePropertyName "fusion_evidence_winner" -NotePropertyValue $fusionEvidenceWinner -Force
+                $certificationArtifact.provenance | Add-Member -NotePropertyName "fusion_evidence_reason_code" -NotePropertyValue $fusionEvidenceReasonCode -Force
+                $certificationArtifact.provenance | Add-Member -NotePropertyName "fusion_offline_winner" -NotePropertyValue $fusionOfflineWinner -Force
+                $certificationArtifact.provenance | Add-Member -NotePropertyName "fusion_default_eligible_winner" -NotePropertyValue $fusionDefaultEligibleWinner -Force
+                Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+            }
+        }
+    }
+
     $overallPass = if ($SkipPaperSoak) { $backtestPass -and $runtimeParityPass } else { $backtestPass -and $runtimeParityPass -and $paperPass }
     $reasons = @()
     $notes = @()
@@ -7801,6 +8914,9 @@ try {
     }
     if (-not $budgetContractGatePass) {
         $reasons += "SCOUT_ONLY_BUDGET_EVIDENCE"
+    }
+    if ((-not [string]::IsNullOrWhiteSpace($oodStatus)) -and (-not [string]::Equals($oodStatus, "informative_ready", [System.StringComparison]::OrdinalIgnoreCase))) {
+        $notes += "OOD_GENERALIZATION_REPORT_NOT_READY"
     }
     if ($laneShadowOnly -or (-not $lanePromotionAllowed)) {
         $notes += "SHADOW_LANE_ONLY"

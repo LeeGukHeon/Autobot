@@ -74,6 +74,7 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
             PANEL_RUN_ID = "panel-run-001"
             SEQ_RUN_ID = "sequence-run-001"
             LOB_RUN_ID = "lob-run-001"
+            TRAD_RUN_ID = "tradability-run-001"
             FUSION_RUN_ID = "fusion-run-001"
 
             def arg_value(name: str, default: str = "") -> str:
@@ -105,6 +106,9 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 run_dir = ROOT / "models" / "registry" / family / run_id
                 run_dir.mkdir(parents=True, exist_ok=True)
                 dependency_expert_only = "--dependency-expert-only" in sys.argv
+                sequence_variant_name = "patchtst_v1__none"
+                lob_variant_name = "deeplob_v1"
+                fusion_variant_name = "linear"
                 write_json(run_dir / "train_config.yaml", {
                     "trainer": trainer,
                     "model_family": family,
@@ -122,6 +126,9 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     "execution_acceptance_eval_end": arg_value("--execution-eval-end"),
                     "seed": int(arg_value("--seed", "0") or 0),
                     "dependency_expert_only": dependency_expert_only,
+                    "sequence_variant_name": sequence_variant_name if trainer in {"v5_sequence", "v5_fusion"} else "",
+                    "lob_variant_name": lob_variant_name if trainer in {"v5_lob", "v5_fusion"} else "",
+                    "fusion_variant_name": fusion_variant_name if trainer == "v5_fusion" else "",
                 })
                 write_json(run_dir / "artifact_status.json", {
                     "run_id": run_id,
@@ -136,6 +143,140 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 write_json(run_dir / "economic_objective_profile.json", {"profile_id": "test"})
                 write_json(run_dir / "lane_governance.json", {"lane_id": "cls_primary"})
                 write_json(run_dir / "decision_surface.json", {"status": "ok"})
+                if trainer == "v5_sequence":
+                    write_json(
+                        run_dir / "runtime_recommendations.json",
+                        {
+                            "source_family": family,
+                            "sequence_variant_name": sequence_variant_name,
+                            "sequence_backbone_name": "patchtst_v1",
+                            "sequence_pretrain_method": "none",
+                            "sequence_pretrain_status": "disabled",
+                            "sequence_pretrain_objective": "none",
+                            "sequence_pretrain_ready": False,
+                            "sequence_pretrain_best_epoch": 0,
+                            "sequence_pretrain_encoder_present": False,
+                        },
+                    )
+                if trainer == "v5_sequence":
+                    write_json(
+                        run_dir / "sequence_pretrain_contract.json",
+                        {
+                            "policy": "sequence_pretrain_contract_v1",
+                            "backbone_family": "patchtst_v1",
+                            "pretrain_method": "none",
+                            "pretrain_impl_method": "none",
+                            "status": "disabled",
+                            "pretrain_ready": False,
+                            "encoder_artifact_path": "",
+                        },
+                    )
+                    write_json(
+                        run_dir / "sequence_pretrain_report.json",
+                        {
+                            "policy": "sequence_pretrain_report_v1",
+                            "objective_name": "none",
+                            "status": "disabled",
+                            "best_epoch": 0,
+                            "encoder_dim": 16,
+                            "final_component_values": {},
+                            "encoder_norm_summary": {"module_mean_l2_norms": {}, "global_mean_l2_norm": 0.0},
+                        },
+                    )
+                    write_json(
+                        run_dir / "domain_weighting_report.json",
+                        {
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+                            "effective_sample_weight_summary": {"mean": 1.0},
+                        },
+                    )
+                if trainer == "v5_lob":
+                    write_json(
+                        run_dir / "runtime_recommendations.json",
+                        {
+                            "source_family": family,
+                            "lob_variant_name": lob_variant_name,
+                            "lob_backbone_name": "deeplob_v1",
+                        },
+                    )
+                if trainer == "v5_lob":
+                    write_json(
+                        run_dir / "lob_backbone_contract.json",
+                        {
+                            "policy": "lob_backbone_contract_v1",
+                            "backbone_family": "deeplob_v1",
+                            "uncertainty_head": "softplus_scalar",
+                        },
+                    )
+                    write_json(
+                        run_dir / "lob_target_contract.json",
+                        {
+                            "policy": "lob_target_contract_v1",
+                            "primary_horizon_seconds": 30,
+                            "auxiliary_targets": ["micro_alpha_60s", "five_min_alpha", "adverse_excursion_30s"],
+                        },
+                    )
+                    write_json(
+                        run_dir / "domain_weighting_report.json",
+                        {
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+                            "effective_sample_weight_summary": {"mean": 1.0},
+                        },
+                    )
+                if trainer == "v5_tradability":
+                    write_json(run_dir / "runtime_recommendations.json", {"source_family": family})
+                if trainer == "v5_tradability":
+                    write_json(
+                        run_dir / "tradability_model_contract.json",
+                        {
+                            "policy": "v5_tradability_v1",
+                            "input_experts": {
+                                "panel": {"run_id": "panel-run-001"},
+                                "sequence": {"run_id": "sequence-run-001"},
+                                "lob": {"run_id": "lob-run-001"},
+                            },
+                        },
+                    )
+                    write_json(
+                        run_dir / "domain_weighting_report.json",
+                        {
+                            "policy": "v5_domain_weighting_v1",
+                            "domain_weighting_enabled": True,
+                            "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+                            "effective_sample_weight_summary": {"mean": 1.0},
+                        },
+                    )
+                if trainer == "v5_fusion":
+                    write_json(
+                        run_dir / "runtime_recommendations.json",
+                        {
+                            "source_family": family,
+                            "sequence_variant_name": sequence_variant_name,
+                            "lob_variant_name": lob_variant_name,
+                            "fusion_variant_name": fusion_variant_name,
+                            "sequence_backbone_name": "patchtst_v1",
+                            "sequence_pretrain_method": "none",
+                            "sequence_pretrain_ready": False,
+                            "sequence_pretrain_status": "disabled",
+                            "sequence_pretrain_objective": "none",
+                            "sequence_pretrain_best_epoch": 0,
+                            "sequence_pretrain_encoder_present": False,
+                            "sequence_pretrain_contract_path": str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "sequence_pretrain_contract.json"),
+                            "sequence_pretrain_report_path": str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "sequence_pretrain_report.json"),
+                            "lob_backbone_name": "deeplob_v1",
+                            "tradability_source_run_id": TRAD_RUN_ID,
+                            "fusion_stacker_family": "linear",
+                            "fusion_gating_policy": "single_expert_v1",
+                            "domain_weighting_policy": "v5_domain_weighting_v1",
+                            "domain_weighting_source_kind": "regime_inverse_frequency_v1",
+                        },
+                    )
+                    write_json(run_dir / "fusion_model_contract.json", {"policy": "v5_fusion_v1", "input_experts": {"tradability": {"run_id": TRAD_RUN_ID}}})
+                    write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "effective_sample_weight_summary": {"mean": 1.0}, "domain_details": {"source_kind": "regime_inverse_frequency_v1"}, "domain_weighting_enabled": True})
                 table = run_dir / "expert_prediction_table.parquet"
                 table.write_bytes(b"PAR1")
                 return run_dir
@@ -235,6 +376,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(f"[ops][feature-dataset-certification] path={report_path}")
                 sys.exit(0)
 
+            if tuple(args[:2]) == ("-m", "autobot.ops.private_execution_label_store"):
+                build_path = ROOT / "data" / "parquet" / "private_execution_v1" / "_meta" / "build_report.json"
+                write_json(build_path, {"rows_written_total": 12, "status": "PASS"})
+                write_json(build_path.parent / "validate_report.json", {"status": "PASS", "pass": True, "reasons": []})
+                print(str(build_path))
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "train"):
                 trainer = arg_value("--trainer")
                 family = arg_value("--model-family")
@@ -256,36 +404,48 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                     run_dir = expert_run(family, trainer, LOB_RUN_ID)
                     print(json.dumps({"run_dir": str(run_dir), "run_id": LOB_RUN_ID}))
                     sys.exit(0)
+                if trainer == "v5_tradability":
+                    run_dir = expert_run(family, trainer, TRAD_RUN_ID)
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": TRAD_RUN_ID}))
+                    sys.exit(0)
                 if trainer == "v5_fusion":
                     panel_input = arg_value("--fusion-panel-input")
                     sequence_input = arg_value("--fusion-sequence-input")
                     lob_input = arg_value("--fusion-lob-input")
+                    tradability_input = arg_value("--fusion-tradability-input")
                     panel_runtime_input = arg_value("--fusion-panel-runtime-input")
                     sequence_runtime_input = arg_value("--fusion-sequence-runtime-input")
                     lob_runtime_input = arg_value("--fusion-lob-runtime-input")
+                    tradability_runtime_input = arg_value("--fusion-tradability-runtime-input")
                     runtime_start = arg_value("--fusion-runtime-start")
                     runtime_end = arg_value("--fusion-runtime-end")
                     expected_panel = str(ROOT / "models" / "registry" / "train_v5_panel_ensemble" / PANEL_RUN_ID / "expert_prediction_table.parquet")
                     expected_sequence = str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "expert_prediction_table.parquet")
                     expected_lob = str(ROOT / "models" / "registry" / "train_v5_lob" / LOB_RUN_ID / "expert_prediction_table.parquet")
+                    expected_tradability = str(ROOT / "models" / "registry" / "train_v5_tradability" / TRAD_RUN_ID / "expert_prediction_table.parquet")
                     expected_panel_runtime = str(ROOT / "models" / "registry" / "train_v5_panel_ensemble" / PANEL_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
                     expected_sequence_runtime = str(ROOT / "models" / "registry" / "train_v5_sequence" / SEQ_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
                     expected_lob_runtime = str(ROOT / "models" / "registry" / "train_v5_lob" / LOB_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
-                    if panel_input != expected_panel or sequence_input != expected_sequence or lob_input != expected_lob or panel_runtime_input != expected_panel_runtime or sequence_runtime_input != expected_sequence_runtime or lob_runtime_input != expected_lob_runtime:
+                    expected_tradability_runtime = str(ROOT / "models" / "registry" / "train_v5_tradability" / TRAD_RUN_ID / "_runtime_exports" / f"{runtime_start}__{runtime_end}" / "expert_prediction_table.parquet")
+                    if panel_input != expected_panel or sequence_input != expected_sequence or lob_input != expected_lob or tradability_input != expected_tradability or panel_runtime_input != expected_panel_runtime or sequence_runtime_input != expected_sequence_runtime or lob_runtime_input != expected_lob_runtime or tradability_runtime_input != expected_tradability_runtime:
                         print("fusion input mismatch", file=sys.stderr)
                         print(json.dumps({
                             "panel_input": panel_input,
                             "sequence_input": sequence_input,
                             "lob_input": lob_input,
+                            "tradability_input": tradability_input,
                             "panel_runtime_input": panel_runtime_input,
                             "sequence_runtime_input": sequence_runtime_input,
                             "lob_runtime_input": lob_runtime_input,
+                            "tradability_runtime_input": tradability_runtime_input,
                             "expected_panel": expected_panel,
                             "expected_sequence": expected_sequence,
                             "expected_lob": expected_lob,
+                            "expected_tradability": expected_tradability,
                             "expected_panel_runtime": expected_panel_runtime,
                             "expected_sequence_runtime": expected_sequence_runtime,
                             "expected_lob_runtime": expected_lob_runtime,
+                            "expected_tradability_runtime": expected_tradability_runtime,
                         }), file=sys.stderr)
                         sys.exit(2)
                     run_dir = expert_run(family, trainer, FUSION_RUN_ID)
@@ -303,6 +463,61 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                         "runtime_dataset_root": str(run_dir / "runtime_feature_dataset"),
                     })
                     print(json.dumps({"run_dir": str(run_dir), "run_id": FUSION_RUN_ID}))
+                    sys.exit(0)
+
+            if command_key == ("-m", "autobot.cli", "model", "train-variant-matrix"):
+                trainer = arg_value("--trainer")
+                family = arg_value("--model-family")
+                append_log({
+                    "command": "model train-variant-matrix",
+                    "trainer": trainer,
+                    "family": family,
+                    "args": args,
+                })
+                if trainer == "v5_sequence":
+                    run_dir = expert_run(family, trainer, SEQ_RUN_ID)
+                    write_json(
+                        run_dir / "sequence_variant_report.json",
+                        {
+                            "policy": "v5_sequence_variant_report_v1",
+                            "chosen_variant_name": "patchtst_v1__none",
+                            "evaluated_variant_count": 4,
+                            "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE",
+                            "baseline_kept_reason_code": "NO_CLEAR_EDGE",
+                        },
+                    )
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": SEQ_RUN_ID, "chosen_variant_name": "patchtst_v1__none", "variant_report_path": str(run_dir / "sequence_variant_report.json"), "evaluated_variant_count": 4, "source_mode": "fresh_train", "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE", "baseline_kept_reason_code": "NO_CLEAR_EDGE"}))
+                    sys.exit(0)
+                if trainer == "v5_lob":
+                    run_dir = expert_run(family, trainer, LOB_RUN_ID)
+                    write_json(
+                        run_dir / "lob_variant_report.json",
+                        {
+                            "policy": "v5_lob_variant_report_v1",
+                            "chosen_variant_name": "deeplob_v1",
+                            "evaluated_variant_count": 3,
+                            "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE",
+                            "baseline_kept_reason_code": "NO_CLEAR_EDGE",
+                        },
+                    )
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": LOB_RUN_ID, "chosen_variant_name": "deeplob_v1", "variant_report_path": str(run_dir / "lob_variant_report.json"), "evaluated_variant_count": 3, "source_mode": "fresh_train", "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE", "baseline_kept_reason_code": "NO_CLEAR_EDGE"}))
+                    sys.exit(0)
+                if trainer == "v5_fusion":
+                    run_dir = expert_run(family, trainer, FUSION_RUN_ID)
+                    write_json(
+                        run_dir / "fusion_variant_report.json",
+                        {
+                            "policy": "v5_fusion_variant_report_v1",
+                            "chosen_variant_name": "linear",
+                            "selected_sequence_variant_name": "patchtst_v1__none",
+                            "selected_lob_variant_name": "deeplob_v1",
+                            "selected_fusion_stacker": "linear",
+                            "evaluated_variant_count": 3,
+                            "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE",
+                            "baseline_kept_reason_code": "NO_CLEAR_EDGE",
+                        },
+                    )
+                    print(json.dumps({"run_dir": str(run_dir), "run_id": FUSION_RUN_ID, "chosen_variant_name": "linear", "variant_report_path": str(run_dir / "fusion_variant_report.json"), "evaluated_variant_count": 3, "source_mode": "fresh_train", "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE", "baseline_kept_reason_code": "NO_CLEAR_EDGE", "input_provenance": {"sequence_variant_name": "patchtst_v1__none", "lob_variant_name": "deeplob_v1"}}))
                     sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "model", "export-expert-table"):
@@ -432,7 +647,7 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
             + " -BatchDate "
             + json.dumps("2026-03-08")
             + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
-            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\")\n"
+            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\",\"v5_tradability\")\n"
         ),
         encoding="utf-8",
     )
@@ -457,6 +672,7 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "v5_panel_ensemble",
         "v5_sequence",
         "v5_lob",
+        "v5_tradability",
         "v5_fusion",
     ]
     assert [row for row in invocations if row.get("command") == "features build"] == []
@@ -471,11 +687,12 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "v5_panel_ensemble",
         "v5_sequence",
         "v5_lob",
+        "v5_tradability",
     ]
     resolve_calls = [row for row in export_calls if row.get("resolve_markets_only")]
     materialize_calls = [row for row in export_calls if not row.get("resolve_markets_only")]
     assert len(resolve_calls) == 3
-    assert len(materialize_calls) == 3
+    assert len(materialize_calls) == 4
     assert all(row["markets"] == [] for row in resolve_calls)
     assert all(row["markets"] == ["KRW-ETH"] for row in materialize_calls)
     fusion_call = train_calls[-1]
@@ -483,9 +700,11 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert "--fusion-panel-input" in args
     assert "--fusion-sequence-input" in args
     assert "--fusion-lob-input" in args
+    assert "--fusion-tradability-input" in args
     assert "--fusion-panel-runtime-input" in args
     assert "--fusion-sequence-runtime-input" in args
     assert "--fusion-lob-runtime-input" in args
+    assert "--fusion-tradability-runtime-input" in args
 
     report = json.loads(
         (project_root / "logs" / "test_acceptance_v5_dependency" / "latest.json").read_text(encoding="utf-8-sig")
@@ -495,14 +714,15 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "panel-run-001",
         "sequence-run-001",
         "lob-run-001",
+        "tradability-run-001",
     ]
     assert report["candidate"]["snapshot_chain_consistent"] is True
-    assert report["steps"]["dependency_trainers"]["trained_count"] == 3
+    assert report["steps"]["dependency_trainers"]["trained_count"] == 4
     assert report["steps"]["dependency_trainers"]["reused_count"] == 0
     assert report["steps"]["dependency_runtime_universe"]["common_markets"] == ["KRW-ETH"]
     assert report["steps"]["common_runtime_universe"]["common_markets"] == ["KRW-ETH"]
     assert report["steps"]["dependency_runtime_export_contract"]["pass"] is True
-    assert report["steps"]["dependency_runtime_exports"]["count"] == 3
+    assert report["steps"]["dependency_runtime_exports"]["count"] == 4
     export_results = report["steps"]["dependency_runtime_exports"]["results"]
     assert export_results[0]["requested_selected_markets"] == ["KRW-ETH"]
     assert export_results[0]["selected_markets"] == ["KRW-ETH"]
@@ -517,6 +737,80 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
     assert inputs["fusion_panel_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/expert_prediction_table.parquet")
     assert inputs["fusion_sequence_input"].replace("\\", "/").endswith("/train_v5_sequence/sequence-run-001/expert_prediction_table.parquet")
     assert inputs["fusion_lob_input"].replace("\\", "/").endswith("/train_v5_lob/lob-run-001/expert_prediction_table.parquet")
+    assert inputs["fusion_tradability_input"].replace("\\", "/").endswith("/train_v5_tradability/tradability-run-001/expert_prediction_table.parquet")
     assert runtime_inputs["fusion_panel_runtime_input"].replace("\\", "/").endswith("/train_v5_panel_ensemble/panel-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")
     assert runtime_inputs["fusion_sequence_runtime_input"].replace("\\", "/").endswith("/train_v5_sequence/sequence-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")
     assert runtime_inputs["fusion_lob_runtime_input"].replace("\\", "/").endswith("/train_v5_lob/lob-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")
+    assert runtime_inputs["fusion_tradability_runtime_input"].replace("\\", "/").endswith("/train_v5_tradability/tradability-run-001/_runtime_exports/2026-03-07__2026-03-08/expert_prediction_table.parquet")
+
+
+def test_candidate_acceptance_variant_matrix_selection_routes_chosen_variants(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _seed_train_snapshot_close_contract(project_root, batch_date="2026-03-08", snapshot_id="snapshot-dependency-001")
+    python_exe = _make_fake_python_exe(tmp_path)
+    wrapper_script = tmp_path / "run_acceptance_matrix.ps1"
+    wrapper_script.write_text(
+        (
+            "& "
+            + json.dumps(str(ACCEPTANCE_SCRIPT))
+            + " -ProjectRoot "
+            + json.dumps(str(project_root))
+            + " -PythonExe "
+            + json.dumps(str(python_exe))
+            + " -OutDir "
+            + json.dumps("logs/test_acceptance_v5_variant_matrix")
+            + " -BatchDate "
+            + json.dumps("2026-03-08")
+            + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote -EnableVariantMatrixSelection "
+            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\",\"v5_tradability\")\n"
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper_script),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["trainer"] for row in invocations if row.get("command") == "model train-variant-matrix"] == [
+        "v5_sequence",
+        "v5_lob",
+        "v5_fusion",
+    ]
+    tradability_calls = [row for row in invocations if row.get("command") == "model train" and row.get("trainer") == "v5_tradability"]
+    assert len(tradability_calls) == 1
+    tradability_args = tradability_calls[0]["args"]
+    assert "--tradability-sequence-input" in tradability_args
+    assert "--tradability-lob-input" in tradability_args
+
+    report = json.loads(
+        (project_root / "logs" / "test_acceptance_v5_variant_matrix" / "latest.json").read_text(encoding="utf-8-sig")
+    )
+    assert report["steps"]["sequence_variant_selection"]["pass"] is True
+    assert report["steps"]["lob_variant_selection"]["pass"] is True
+    assert report["steps"]["fusion_variant_selection"]["pass"] is True
+    assert report["steps"]["sequence_variant_selection"]["chosen_variant_name"] == "patchtst_v1__none"
+    assert report["steps"]["lob_variant_selection"]["chosen_variant_name"] == "deeplob_v1"
+    assert report["steps"]["fusion_variant_selection"]["chosen_variant_name"] == "linear"
+    assert report["candidate"]["sequence_variant_name"] == "patchtst_v1__none"
+    assert report["candidate"]["lob_variant_name"] == "deeplob_v1"
+    assert report["candidate"]["fusion_variant_name"] == "linear"

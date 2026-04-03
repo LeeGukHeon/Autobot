@@ -115,7 +115,7 @@ if ($DryRun) {
     Write-Host ("[data-platform-install][dry-run] publish_lock_file={0}" -f $PublishLockFile)
     Write-Host ("[data-platform-install][dry-run] mode={0}" -f $Mode)
     Write-Host ("[data-platform-install][dry-run] skip_publish_ready_snapshot={0}" -f [bool]$SkipPublishReadySnapshot)
-    Write-Host "[data-platform-install][dry-run] datasets=candles_second_v1,ws_candle_v1,lob30_v1,sequence_v1"
+    Write-Host "[data-platform-install][dry-run] datasets=candles_second_v1,ws_candle_v1,lob30_v1,sequence_v1,private_execution_v1"
     Write-Host ("[data-platform-install][dry-run] tensor_recent_dates={0}" -f ([Math]::Max([int]$TensorRecentDates, 1)))
     Write-Host $serviceContent
     Write-Host ("[data-platform-install][dry-run] timer={0}" -f $TimerUnitName)

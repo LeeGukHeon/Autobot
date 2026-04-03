@@ -13,6 +13,15 @@ from autobot.common.execution_structure import build_intent_outcomes_from_trade_
 PAIRED_PAPER_REPORT_VERSION = 1
 
 
+def _dig(payload: dict[str, Any] | None, *path: str, default: Any = None) -> Any:
+    current: Any = payload or {}
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
+
+
 def build_paired_paper_report(
     *,
     champion_run_dir: Path,
@@ -396,6 +405,11 @@ def _load_trade_metrics_by_intent(*, run_dir: Path) -> dict[str, dict[str, Any]]
 
 
 def _run_header(*, summary: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    train_config = _load_json(run_dir / "train_config.yaml")
+    runtime_recommendations = _load_json(run_dir / "runtime_recommendations.json")
+    domain_weighting_report = _load_json(run_dir / "domain_weighting_report.json")
+    sequence_pretrain_contract = _load_json(run_dir / "sequence_pretrain_contract.json")
+    sequence_pretrain_report = _load_json(run_dir / "sequence_pretrain_report.json")
     return {
         "run_dir": str(run_dir),
         "run_id": str(summary.get("run_id") or run_dir.name).strip(),
@@ -408,6 +422,31 @@ def _run_header(*, summary: dict[str, Any], run_dir: Path) -> dict[str, Any]:
         "run_completed_ts_ms": _safe_int(summary.get("run_completed_ts_ms")),
         "realized_pnl_quote": _safe_float(summary.get("realized_pnl_quote")),
         "orders_filled": _safe_int(summary.get("orders_filled")),
+        "sequence_variant_name": runtime_recommendations.get("sequence_variant_name") or train_config.get("sequence_variant_name"),
+        "lob_variant_name": runtime_recommendations.get("lob_variant_name") or train_config.get("lob_variant_name"),
+        "fusion_variant_name": runtime_recommendations.get("fusion_variant_name") or train_config.get("fusion_variant_name"),
+        "sequence_backbone_name": runtime_recommendations.get("sequence_backbone_name") or train_config.get("sequence_backbone_name"),
+        "lob_backbone_name": runtime_recommendations.get("lob_backbone_name") or train_config.get("lob_backbone_name"),
+        "tradability_source_run_id": runtime_recommendations.get("tradability_source_run_id") or train_config.get("tradability_source_run_id"),
+        "fusion_stacker_family": runtime_recommendations.get("fusion_stacker_family"),
+        "fusion_gating_policy": runtime_recommendations.get("fusion_gating_policy"),
+        "fusion_candidate_default_eligible": runtime_recommendations.get("fusion_candidate_default_eligible"),
+        "fusion_evidence_winner": runtime_recommendations.get("fusion_evidence_winner"),
+        "fusion_evidence_reason_code": runtime_recommendations.get("fusion_evidence_reason_code"),
+        "fusion_offline_winner": runtime_recommendations.get("fusion_offline_winner"),
+        "fusion_default_eligible_winner": runtime_recommendations.get("fusion_default_eligible_winner"),
+        "domain_weighting_policy": domain_weighting_report.get("policy"),
+        "domain_weighting_source_kind": _dig(domain_weighting_report, "domain_details", "source_kind"),
+        "domain_weighting_enabled": bool(domain_weighting_report.get("domain_weighting_enabled", False)),
+        "ood_status": runtime_recommendations.get("ood_status"),
+        "ood_source_kind": runtime_recommendations.get("ood_source_kind"),
+        "ood_penalty_enabled": runtime_recommendations.get("ood_penalty_enabled"),
+        "sequence_pretrain_ready": bool(runtime_recommendations.get("sequence_pretrain_ready", False) or sequence_pretrain_contract.get("pretrain_ready", False)),
+        "sequence_pretrain_method": runtime_recommendations.get("sequence_pretrain_method") or train_config.get("pretrain_method"),
+        "sequence_pretrain_status": runtime_recommendations.get("sequence_pretrain_status") or sequence_pretrain_contract.get("status") or sequence_pretrain_report.get("status"),
+        "sequence_pretrain_objective": runtime_recommendations.get("sequence_pretrain_objective") or sequence_pretrain_report.get("objective_name"),
+        "sequence_pretrain_best_epoch": runtime_recommendations.get("sequence_pretrain_best_epoch") or sequence_pretrain_report.get("best_epoch"),
+        "sequence_pretrain_encoder_present": bool(runtime_recommendations.get("sequence_pretrain_encoder_present", False) or bool(sequence_pretrain_contract.get("encoder_artifact_path"))),
     }
 
 

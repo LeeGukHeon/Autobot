@@ -34,10 +34,16 @@ from .v5_expert_tail import (
     resolve_existing_v5_expert_tail_artifacts,
     run_or_reuse_v5_runtime_governance_artifacts,
 )
+from .v5_domain_weighting import (
+    build_v5_domain_weighting_report,
+    resolve_v5_domain_weighting_components,
+    write_v5_domain_weighting_report,
+)
+from .ood_generalization import build_ood_generalization_report, write_ood_generalization_report
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 
 
-VALID_FUSION_STACKERS = ("linear", "monotone_gbdt")
+VALID_FUSION_STACKERS = ("linear", "monotone_gbdt", "regime_moe")
 _FUSION_INPUT_CONTRACT_FILENAME = "fusion_input_contract.json"
 _FUSION_RUNTIME_INPUT_CONTRACT_FILENAME = "fusion_runtime_input_contract.json"
 _FUSION_ENTRY_BOUNDARY_STATUS_KEY = "entry_boundary_complete"
@@ -55,9 +61,11 @@ class TrainV5FusionOptions:
     start: str
     end: str
     seed: int
+    tradability_input_path: Path | None = None
     panel_runtime_input_path: Path | None = None
     sequence_runtime_input_path: Path | None = None
     lob_runtime_input_path: Path | None = None
+    tradability_runtime_input_path: Path | None = None
     runtime_start: str | None = None
     runtime_end: str | None = None
     stacker_family: str = "linear"
@@ -97,6 +105,9 @@ class V5FusionEstimator:
     uncertainty_model: Any
     stacker_family: str
     feature_names: tuple[str, ...]
+    regime_feature_columns: tuple[str, ...] = ()
+    regime_cluster_count: int = 1
+    gating_policy: str = "single_expert_v1"
 
     def _predict_score(self, x: np.ndarray) -> np.ndarray:
         if hasattr(self.score_model, "predict_proba"):
@@ -126,6 +137,65 @@ class V5FusionEstimator:
             "final_tradability": tradability,
             "final_alpha_lcb": expected_return - expected_es - uncertainty,
         }
+
+
+@dataclass
+class _RegimeMoEBinaryHead:
+    centroids: np.ndarray
+    feature_indices: tuple[int, ...]
+    models: tuple[Any, ...]
+
+    def _assign(self, x: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(x, dtype=np.float64)
+        if len(self.models) <= 1 or len(self.feature_indices) <= 0:
+            return np.zeros(matrix.shape[0], dtype=np.int64)
+        regime = matrix[:, list(self.feature_indices)]
+        distance = np.sum((regime[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
+        return np.argmin(distance, axis=1).astype(np.int64, copy=False)
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(x, dtype=np.float64)
+        assignments = self._assign(matrix)
+        payload = np.zeros((matrix.shape[0], 2), dtype=np.float64)
+        for cluster_idx, model in enumerate(self.models):
+            mask = assignments == int(cluster_idx)
+            if not np.any(mask):
+                continue
+            if hasattr(model, "predict_proba"):
+                payload[mask] = np.asarray(model.predict_proba(matrix[mask]), dtype=np.float64)
+            else:
+                prob = np.clip(np.asarray(model.predict(matrix[mask]), dtype=np.float64), 0.0, 1.0)
+                payload[mask] = np.column_stack([1.0 - prob, prob])
+        return payload
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        return self.predict_proba(x)[:, 1]
+
+
+@dataclass
+class _RegimeMoERegressionHead:
+    centroids: np.ndarray
+    feature_indices: tuple[int, ...]
+    models: tuple[Any, ...]
+
+    def _assign(self, x: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(x, dtype=np.float64)
+        if len(self.models) <= 1 or len(self.feature_indices) <= 0:
+            return np.zeros(matrix.shape[0], dtype=np.int64)
+        regime = matrix[:, list(self.feature_indices)]
+        distance = np.sum((regime[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
+        return np.argmin(distance, axis=1).astype(np.int64, copy=False)
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(x, dtype=np.float64)
+        assignments = self._assign(matrix)
+        payload = np.zeros(matrix.shape[0], dtype=np.float64)
+        for cluster_idx, model in enumerate(self.models):
+            mask = assignments == int(cluster_idx)
+            if not np.any(mask):
+                continue
+            payload[mask] = np.asarray(model.predict(matrix[mask]), dtype=np.float64)
+        return payload
 
 
 def _fusion_input_contract_path(run_dir: Path) -> Path:
@@ -166,6 +236,10 @@ def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
     if not train_config:
         raise FileNotFoundError(f"{prefix} input missing train_config.yaml: {run_dir}")
     runtime_recommendations = load_json(run_dir / "runtime_recommendations.json")
+    sequence_pretrain_contract_path = run_dir / "sequence_pretrain_contract.json"
+    sequence_pretrain_report_path = run_dir / "sequence_pretrain_report.json"
+    sequence_pretrain_contract = load_json(sequence_pretrain_contract_path) if sequence_pretrain_contract_path.exists() else {}
+    sequence_pretrain_report = load_json(sequence_pretrain_report_path) if sequence_pretrain_report_path.exists() else {}
     export_metadata_path = resolved_path.parent / "metadata.json"
     export_metadata = load_json(export_metadata_path) if export_metadata_path.exists() else {}
     return {
@@ -175,8 +249,56 @@ def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
         "run_id": run_dir.name,
         "model_family": str(train_config.get("model_family") or "").strip() or run_dir.parent.name,
         "trainer": str(train_config.get("trainer") or "").strip(),
+        "backbone_family": str(train_config.get("backbone_family") or "").strip(),
+        "pretrain_method": str(train_config.get("pretrain_method") or "").strip(),
+        "sequence_variant_name": str(
+            train_config.get("sequence_variant_name")
+            or runtime_recommendations.get("sequence_variant_name")
+            or ""
+        ).strip(),
+        "lob_variant_name": str(
+            train_config.get("lob_variant_name")
+            or runtime_recommendations.get("lob_variant_name")
+            or ""
+        ).strip(),
         "data_platform_ready_snapshot_id": str(train_config.get("data_platform_ready_snapshot_id") or "").strip(),
         "runtime_recommendations": dict(runtime_recommendations or {}),
+        "sequence_pretrain_contract_path": str(sequence_pretrain_contract_path) if sequence_pretrain_contract_path.exists() else "",
+        "sequence_pretrain_report_path": str(sequence_pretrain_report_path) if sequence_pretrain_report_path.exists() else "",
+        "sequence_pretrain_method": str(
+            runtime_recommendations.get("sequence_pretrain_method")
+            or train_config.get("pretrain_method")
+            or ""
+        ).strip(),
+        "sequence_pretrain_status": str(
+            runtime_recommendations.get("sequence_pretrain_status")
+            or sequence_pretrain_report.get("status")
+            or sequence_pretrain_contract.get("status")
+            or ""
+        ).strip(),
+        "sequence_pretrain_objective": str(
+            runtime_recommendations.get("sequence_pretrain_objective")
+            or sequence_pretrain_report.get("objective_name")
+            or sequence_pretrain_contract.get("objective_name")
+            or ""
+        ).strip(),
+        "sequence_pretrain_ready": bool(
+            runtime_recommendations.get("sequence_pretrain_ready", sequence_pretrain_contract.get("pretrain_ready", False))
+        ),
+        "sequence_pretrain_best_epoch": int(
+            runtime_recommendations.get("sequence_pretrain_best_epoch")
+            or sequence_pretrain_report.get("best_epoch")
+            or sequence_pretrain_contract.get("best_epoch")
+            or 0
+        ),
+        "sequence_pretrain_encoder_present": bool(
+            runtime_recommendations.get("sequence_pretrain_encoder_present", False)
+            or (
+                sequence_pretrain_contract_path.exists()
+                and bool(str(sequence_pretrain_contract.get("encoder_artifact_path") or "").strip())
+                and Path(str(sequence_pretrain_contract.get("encoder_artifact_path") or "")).exists()
+            )
+        ),
         "requested_selected_markets": list(export_metadata.get("requested_selected_markets") or []),
         "selected_markets": list(export_metadata.get("selected_markets") or list(train_config.get("selected_markets") or [])),
         "selected_markets_source": str(export_metadata.get("selected_markets_source") or "").strip(),
@@ -225,6 +347,16 @@ def _required_input_columns(prefix: str) -> tuple[str, ...]:
             "micro_alpha_5s",
             "micro_alpha_30s",
             "micro_uncertainty",
+        )
+    if prefix == "tradability":
+        return (
+            "market",
+            "ts_ms",
+            "tradability_prob",
+            "fill_within_deadline_prob",
+            "expected_shortfall_bps",
+            "adverse_tolerance_prob",
+            "tradability_uncertainty",
         )
     raise ValueError(f"unsupported fusion input prefix: {prefix}")
 
@@ -366,7 +498,7 @@ def _build_fusion_numeric_feature_contract(merged: pl.DataFrame) -> tuple[tuple[
 def _build_runtime_coverage_summary(merged: pl.DataFrame) -> dict[str, Any]:
     total_rows = int(merged.height)
     experts: dict[str, Any] = {}
-    for expert_name in ("panel", "sequence", "lob"):
+    for expert_name in ("panel", "sequence", "lob", "tradability"):
         present_column = f"{expert_name}_present"
         present_rows = total_rows
         if present_column in merged.columns:
@@ -378,7 +510,7 @@ def _build_runtime_coverage_summary(merged: pl.DataFrame) -> dict[str, Any]:
             "present_rows": present_rows,
             "missing_rows": missing_rows,
             "coverage_ratio": float(present_rows / total_rows) if total_rows > 0 else 0.0,
-            "required_full_window": expert_name in {"sequence", "lob"},
+            "required_full_window": expert_name in {"sequence", "lob", "tradability"},
         }
     return {
         "policy": "auxiliary_experts_full_window_required",
@@ -422,33 +554,164 @@ def _runtime_window_gap_error(expert_name: str) -> str:
         return "FUSION_RUNTIME_INPUT_WINDOW_GAP:SEQUENCE_RUNTIME_WINDOW_GAP"
     if expert == "lob":
         return "FUSION_RUNTIME_INPUT_WINDOW_GAP:LOB_RUNTIME_WINDOW_GAP"
+    if expert == "tradability":
+        return "FUSION_RUNTIME_INPUT_WINDOW_GAP:TRADABILITY_RUNTIME_WINDOW_GAP"
     return "FUSION_RUNTIME_INPUT_WINDOW_GAP"
+
+
+def _resolve_fusion_support_weight(merged: pl.DataFrame) -> np.ndarray:
+    sequence_support = (
+        merged.get_column("sequence_support_score").to_numpy().astype(np.float64, copy=False)
+        if "sequence_support_score" in merged.columns
+        else np.full(merged.height, 2.0, dtype=np.float64)
+    )
+    lob_support = (
+        merged.get_column("lob_support_score").to_numpy().astype(np.float64, copy=False)
+        if "lob_support_score" in merged.columns
+        else np.full(merged.height, 2.0, dtype=np.float64)
+    )
+    support_score = np.minimum(sequence_support, lob_support)
+    return np.clip(np.maximum(support_score, 1.0) / 2.0, 0.5, 1.0)
+
+
+def _resolve_regime_feature_indices(feature_names: tuple[str, ...]) -> tuple[int, ...]:
+    indices = [
+        idx
+        for idx, name in enumerate(feature_names)
+        if str(name).startswith("sequence_regime_embedding_")
+    ]
+    if indices:
+        return tuple(indices)
+    return tuple(
+        idx for idx, name in enumerate(feature_names) if "regime_embedding" in str(name)
+    )
+
+
+def _fit_regime_centroids(
+    *,
+    x_train: np.ndarray,
+    regime_feature_indices: tuple[int, ...],
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if x_train.shape[0] <= 0:
+        raise ValueError("regime_moe requires non-empty training rows")
+    if len(regime_feature_indices) <= 0:
+        return np.zeros(x_train.shape[0], dtype=np.int64), np.zeros((1, 0), dtype=np.float64)
+    regime = np.asarray(x_train[:, list(regime_feature_indices)], dtype=np.float64)
+    if regime.shape[0] < 24 or np.allclose(regime, regime[0]):
+        return np.zeros(regime.shape[0], dtype=np.int64), np.mean(regime, axis=0, keepdims=True)
+    from sklearn.cluster import KMeans
+
+    cluster_count = min(3, max(2, min(regime.shape[0], 3)))
+    kmeans = KMeans(n_clusters=cluster_count, n_init=10, random_state=int(seed))
+    assignments = np.asarray(kmeans.fit_predict(regime), dtype=np.int64)
+    return assignments, np.asarray(kmeans.cluster_centers_, dtype=np.float64)
+
+
+def _fit_regime_moe_binary_head(
+    *,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    sample_weight: np.ndarray,
+    seed: int,
+    regime_feature_indices: tuple[int, ...],
+) -> _RegimeMoEBinaryHead:
+    assignments, centroids = _fit_regime_centroids(
+        x_train=x_train,
+        regime_feature_indices=regime_feature_indices,
+        seed=seed,
+    )
+    cluster_count = int(max(assignments.max(initial=0) + 1, 1))
+    models: list[Any] = []
+    for cluster_idx in range(cluster_count):
+        mask = assignments == int(cluster_idx)
+        local_x = x_train[mask] if int(np.sum(mask)) >= 8 else x_train
+        local_y = y_train[mask] if int(np.sum(mask)) >= 8 else y_train
+        local_w = sample_weight[mask] if int(np.sum(mask)) >= 8 else sample_weight
+        models.append(
+            _fit_binary_head(
+                local_x,
+                local_y,
+                stacker_family="linear",
+                seed=seed + cluster_idx,
+                monotone_signs=tuple(0 for _ in range(x_train.shape[1])),
+                sample_weight=local_w,
+            )
+        )
+    return _RegimeMoEBinaryHead(
+        centroids=np.asarray(centroids, dtype=np.float64),
+        feature_indices=tuple(regime_feature_indices),
+        models=tuple(models),
+    )
+
+
+def _fit_regime_moe_reg_head(
+    *,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    sample_weight: np.ndarray,
+    seed: int,
+    regime_feature_indices: tuple[int, ...],
+) -> _RegimeMoERegressionHead:
+    assignments, centroids = _fit_regime_centroids(
+        x_train=x_train,
+        regime_feature_indices=regime_feature_indices,
+        seed=seed,
+    )
+    cluster_count = int(max(assignments.max(initial=0) + 1, 1))
+    models: list[Any] = []
+    for cluster_idx in range(cluster_count):
+        mask = assignments == int(cluster_idx)
+        local_x = x_train[mask] if int(np.sum(mask)) >= 8 else x_train
+        local_y = y_train[mask] if int(np.sum(mask)) >= 8 else y_train
+        local_w = sample_weight[mask] if int(np.sum(mask)) >= 8 else sample_weight
+        models.append(
+            _fit_reg_head(
+                local_x,
+                local_y,
+                stacker_family="linear",
+                seed=seed + cluster_idx,
+                monotone_signs=tuple(0 for _ in range(x_train.shape[1])),
+                sample_weight=local_w,
+            )
+        )
+    return _RegimeMoERegressionHead(
+        centroids=np.asarray(centroids, dtype=np.float64),
+        feature_indices=tuple(regime_feature_indices),
+        models=tuple(models),
+    )
 
 
 def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInputBundle:
     panel, panel_meta = _load_expert_table(options.panel_input_path, prefix="panel")
     sequence, sequence_meta = _load_expert_table(options.sequence_input_path, prefix="sequence")
     lob, lob_meta = _load_expert_table(options.lob_input_path, prefix="lob")
+    if options.tradability_input_path is None:
+        raise ValueError("v5_fusion requires explicit tradability expert input")
+    tradability, tradability_meta = _load_expert_table(options.tradability_input_path, prefix="tradability")
     if panel.height <= 0:
         raise ValueError("fusion panel anchor has no rows")
     snapshot_ids = {
         str(panel_meta.get("data_platform_ready_snapshot_id") or "").strip(),
         str(sequence_meta.get("data_platform_ready_snapshot_id") or "").strip(),
         str(lob_meta.get("data_platform_ready_snapshot_id") or "").strip(),
+        str(tradability_meta.get("data_platform_ready_snapshot_id") or "").strip(),
     }
     if "" in snapshot_ids or len(snapshot_ids) != 1:
         raise ValueError("fusion inputs must come from the same non-empty data_platform_ready_snapshot_id")
     merged = panel.join(sequence, on=["market", "ts_ms"], how="left", coalesce=True)
     merged = merged.join(lob, on=["market", "ts_ms"], how="left", coalesce=True)
+    merged = merged.join(tradability, on=["market", "ts_ms"], how="left", coalesce=True)
     merged = merged.with_columns(
         pl.col("panel_final_rank_score").is_not_null().cast(pl.Float64).alias("panel_present"),
         pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Float64).alias("sequence_present"),
         pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Float64).alias("lob_present"),
+        pl.col("tradability_tradability_prob").is_not_null().cast(pl.Float64).alias("tradability_present"),
     )
     expert_value_columns = [
         name
         for name, dtype in merged.schema.items()
-        if (name.startswith("panel_") or name.startswith("sequence_") or name.startswith("lob_"))
+        if (name.startswith("panel_") or name.startswith("sequence_") or name.startswith("lob_") or name.startswith("tradability_"))
         and dtype.is_numeric()
     ]
     if expert_value_columns:
@@ -474,7 +737,7 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
         "label_anchor": "panel",
         "label_contract_source": "train_v5_panel_ensemble",
         "panel_label_columns": dict(panel_meta.get("label_columns") or {}),
-        "auxiliary_experts": ["sequence", "lob"],
+        "auxiliary_experts": ["sequence", "lob", "tradability"],
         "target_alignment_policy": "panel_anchor_only",
         "runtime_coverage_policy": "auxiliary_experts_full_window_required",
         "runtime_coverage_summary": {},
@@ -482,6 +745,7 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
             "panel": panel_meta,
             "sequence": sequence_meta,
             "lob": lob_meta,
+            "tradability": tradability_meta,
         },
         "feature_contract": feature_contract,
         "rows_after_merge": int(merged.height),
@@ -498,9 +762,15 @@ def _runtime_fusion_input_options(options: TrainV5FusionOptions) -> TrainV5Fusio
         panel_input_path=Path(str(options.panel_runtime_input_path or options.panel_input_path)),
         sequence_input_path=Path(str(options.sequence_runtime_input_path or options.sequence_input_path)),
         lob_input_path=Path(str(options.lob_runtime_input_path or options.lob_input_path)),
+        tradability_input_path=(
+            Path(str(options.tradability_runtime_input_path or options.tradability_input_path))
+            if (options.tradability_runtime_input_path is not None or options.tradability_input_path is not None)
+            else None
+        ),
         panel_runtime_input_path=options.panel_runtime_input_path,
         sequence_runtime_input_path=options.sequence_runtime_input_path,
         lob_runtime_input_path=options.lob_runtime_input_path,
+        tradability_runtime_input_path=options.tradability_runtime_input_path,
         registry_root=options.registry_root,
         logs_root=options.logs_root,
         model_family=options.model_family,
@@ -548,6 +818,7 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
             options.panel_runtime_input_path,
             options.sequence_runtime_input_path,
             options.lob_runtime_input_path,
+            options.tradability_runtime_input_path,
         )
     ) or (
         (options.runtime_start is not None and str(options.runtime_start).strip() != str(options.start).strip())
@@ -574,7 +845,7 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     if explicit_runtime_requested and not common_runtime_markets:
         raise ValueError("COMMON_RUNTIME_UNIVERSE_EMPTY")
     expected_runtime_dates = operating_date_range(str(runtime_options.start), str(runtime_options.end))
-    for expert_name in ("panel", "sequence", "lob"):
+    for expert_name in ("panel", "sequence", "lob", "tradability"):
         payload = dict(input_metadata.get(expert_name) or {})
         expert_start = int(payload.get("coverage_start_ts_ms", 0) or 0)
         expert_end = int(payload.get("coverage_end_ts_ms", 0) or 0)
@@ -623,6 +894,8 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
             raise ValueError("FUSION_RUNTIME_SEQUENCE_COVERAGE_GAP")
         if int(((expert_coverage.get("lob") or {}).get("missing_rows") or 0)) > 0:
             raise ValueError("FUSION_RUNTIME_LOB_COVERAGE_GAP")
+        if int(((expert_coverage.get("tradability") or {}).get("missing_rows") or 0)) > 0:
+            raise ValueError("FUSION_RUNTIME_TRADABILITY_COVERAGE_GAP")
     return _FusionInputBundle(
         merged=merged,
         input_contract=input_contract,
@@ -634,10 +907,12 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
 def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, input_contract: dict[str, Any]) -> dict[str, Any]:
     upstream_inputs = dict(input_contract.get("inputs") or {})
     upstream_runtime_context: dict[str, Any] = {}
-    for key in ("panel", "sequence", "lob"):
+    for key in ("panel", "sequence", "lob", "tradability"):
         payload = dict(upstream_inputs.get(key) or {})
         upstream_runtime_context[key] = dict(payload.get("runtime_recommendations") or {})
     panel_runtime_context = dict(upstream_runtime_context.get("panel") or {})
+    sequence_runtime_context = dict(upstream_runtime_context.get("sequence") or {})
+    lob_runtime_context = dict(upstream_runtime_context.get("lob") or {})
     inherited_exit = dict(panel_runtime_context.get("exit") or {})
     inherited_execution = dict(panel_runtime_context.get("execution") or {})
     inherited_risk_control = dict(panel_runtime_context.get("risk_control") or {})
@@ -701,6 +976,45 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
             for key in ("panel", "sequence", "lob")
         },
         "upstream_runtime_context": upstream_runtime_context,
+        "sequence_variant_name": str(
+            (upstream_inputs.get("sequence") or {}).get("sequence_variant_name")
+            or sequence_runtime_context.get("sequence_variant_name")
+            or ""
+        ).strip(),
+        "lob_variant_name": str(
+            (upstream_inputs.get("lob") or {}).get("lob_variant_name")
+            or lob_runtime_context.get("lob_variant_name")
+            or ""
+        ).strip(),
+        "fusion_variant_name": str(options.stacker_family or "").strip(),
+        "sequence_pretrain_method": str(
+            (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_method")
+            or sequence_runtime_context.get("sequence_pretrain_method")
+            or ""
+        ).strip(),
+        "sequence_pretrain_ready": bool(
+            (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_ready")
+            or sequence_runtime_context.get("sequence_pretrain_ready", False)
+        ),
+        "sequence_pretrain_status": str(sequence_runtime_context.get("sequence_pretrain_status") or "").strip(),
+        "sequence_pretrain_objective": str(sequence_runtime_context.get("sequence_pretrain_objective") or "").strip(),
+        "sequence_pretrain_best_epoch": int(
+            (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_best_epoch")
+            or sequence_runtime_context.get("sequence_pretrain_best_epoch")
+            or 0
+        ),
+        "sequence_pretrain_encoder_present": bool(
+            (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_encoder_present")
+            or sequence_runtime_context.get("sequence_pretrain_encoder_present", False)
+        ),
+        "sequence_pretrain_contract_path": str(
+            (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_contract_path")
+            or ""
+        ).strip(),
+        "sequence_pretrain_report_path": str(
+            (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_report_path")
+            or ""
+        ).strip(),
     })
 
 
@@ -729,12 +1043,15 @@ def _build_v5_fusion_tail_context(
         "panel_run_id": str(((input_contract.get("inputs") or {}).get("panel") or {}).get("run_id") or "").strip(),
         "sequence_run_id": str(((input_contract.get("inputs") or {}).get("sequence") or {}).get("run_id") or "").strip(),
         "lob_run_id": str(((input_contract.get("inputs") or {}).get("lob") or {}).get("run_id") or "").strip(),
+        "tradability_run_id": str(((input_contract.get("inputs") or {}).get("tradability") or {}).get("run_id") or "").strip(),
         "panel_input_path": str(options.panel_input_path),
         "sequence_input_path": str(options.sequence_input_path),
         "lob_input_path": str(options.lob_input_path),
+        "tradability_input_path": str(options.tradability_input_path),
         "panel_runtime_input_path": str(options.panel_runtime_input_path or options.panel_input_path),
         "sequence_runtime_input_path": str(options.sequence_runtime_input_path or options.sequence_input_path),
         "lob_runtime_input_path": str(options.lob_runtime_input_path or options.lob_input_path),
+        "tradability_runtime_input_path": str(options.tradability_runtime_input_path or options.tradability_input_path),
         "runtime_start": runtime_start,
         "runtime_end": runtime_end,
         "runtime_window_id": f"{runtime_start}__{runtime_end}",
@@ -905,35 +1222,81 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     test_mask = masks["test"]
     if not np.any(train_mask) or not np.any(valid_mask) or not np.any(test_mask):
         raise ValueError("fusion trainer requires non-empty train/valid/test rows")
+    weight_components = resolve_v5_domain_weighting_components(
+        markets=markets,
+        ts_ms=ts_ms,
+        split_labels=labels,
+        base_sample_weight=np.ones(merged.height, dtype=np.float64),
+        data_quality_weight=np.ones(merged.height, dtype=np.float64),
+        support_weight=_resolve_fusion_support_weight(merged),
+    )
+    sample_weight = np.asarray(weight_components["final_sample_weight"], dtype=np.float64)
+    regime_feature_indices = _resolve_regime_feature_indices(feature_names)
+    if stacker_family == "regime_moe" and len(regime_feature_indices) <= 0:
+        raise ValueError("regime_moe requires sequence regime embedding features")
 
-    score_model = _fit_binary_head(
-        x[train_mask],
-        y_cls[train_mask],
-        stacker_family=stacker_family,
-        seed=options.seed,
-        monotone_signs=monotone_signs,
-    )
-    return_model = _fit_reg_head(
-        x[train_mask],
-        y_reg[train_mask],
-        stacker_family=stacker_family,
-        seed=options.seed + 1,
-        monotone_signs=monotone_signs,
-    )
-    es_model = _fit_reg_head(
-        x[train_mask],
-        y_es[train_mask],
-        stacker_family=stacker_family,
-        seed=options.seed + 2,
-        monotone_signs=tuple(-1 if sign == 1 else (1 if sign == -1 else 0) for sign in monotone_signs),
-    )
-    tradability_model = _fit_binary_head(
-        x[train_mask],
-        y_tradability[train_mask],
-        stacker_family=stacker_family,
-        seed=options.seed + 3,
-        monotone_signs=monotone_signs,
-    )
+    if stacker_family == "regime_moe":
+        score_model = _fit_regime_moe_binary_head(
+            x_train=x[train_mask],
+            y_train=y_cls[train_mask],
+            sample_weight=sample_weight[train_mask],
+            seed=options.seed,
+            regime_feature_indices=regime_feature_indices,
+        )
+        return_model = _fit_regime_moe_reg_head(
+            x_train=x[train_mask],
+            y_train=y_reg[train_mask],
+            sample_weight=sample_weight[train_mask],
+            seed=options.seed + 1,
+            regime_feature_indices=regime_feature_indices,
+        )
+        es_model = _fit_regime_moe_reg_head(
+            x_train=x[train_mask],
+            y_train=y_es[train_mask],
+            sample_weight=sample_weight[train_mask],
+            seed=options.seed + 2,
+            regime_feature_indices=regime_feature_indices,
+        )
+        tradability_model = _fit_regime_moe_binary_head(
+            x_train=x[train_mask],
+            y_train=y_tradability[train_mask],
+            sample_weight=sample_weight[train_mask],
+            seed=options.seed + 3,
+            regime_feature_indices=regime_feature_indices,
+        )
+    else:
+        score_model = _fit_binary_head(
+            x[train_mask],
+            y_cls[train_mask],
+            stacker_family=stacker_family,
+            seed=options.seed,
+            monotone_signs=monotone_signs,
+            sample_weight=sample_weight[train_mask],
+        )
+        return_model = _fit_reg_head(
+            x[train_mask],
+            y_reg[train_mask],
+            stacker_family=stacker_family,
+            seed=options.seed + 1,
+            monotone_signs=monotone_signs,
+            sample_weight=sample_weight[train_mask],
+        )
+        es_model = _fit_reg_head(
+            x[train_mask],
+            y_es[train_mask],
+            stacker_family=stacker_family,
+            seed=options.seed + 2,
+            monotone_signs=tuple(-1 if sign == 1 else (1 if sign == -1 else 0) for sign in monotone_signs),
+            sample_weight=sample_weight[train_mask],
+        )
+        tradability_model = _fit_binary_head(
+            x[train_mask],
+            y_tradability[train_mask],
+            stacker_family=stacker_family,
+            seed=options.seed + 3,
+            monotone_signs=monotone_signs,
+            sample_weight=sample_weight[train_mask],
+        )
 
     valid_return_pred = np.asarray(return_model.predict(x[valid_mask]), dtype=np.float64)
     uncertainty_target = np.abs(y_reg[valid_mask] - valid_return_pred)
@@ -943,6 +1306,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         stacker_family="linear",
         seed=options.seed + 4,
         monotone_signs=tuple(0 for _ in feature_names),
+        sample_weight=sample_weight[valid_mask],
     )
 
     estimator = V5FusionEstimator(
@@ -953,12 +1317,43 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         uncertainty_model=uncertainty_model,
         stacker_family=stacker_family,
         feature_names=feature_names,
+        regime_feature_columns=tuple(feature_names[idx] for idx in regime_feature_indices),
+        regime_cluster_count=(
+            int(len(getattr(score_model, "models", ()) or ()))
+            if stacker_family == "regime_moe"
+            else 1
+        ),
+        gating_policy=(
+            "sequence_regime_embedding_nearest_centroid_v1"
+            if stacker_family == "regime_moe"
+            else "single_expert_v1"
+        ),
     )
     valid_contract = estimator.predict_panel_contract(x[valid_mask])
     test_contract = estimator.predict_panel_contract(x[test_mask])
-    valid_metrics = _evaluate_fusion_split(y_cls=y_cls[valid_mask], y_reg=y_reg[valid_mask], scores=valid_contract["final_rank_score"], markets=markets[valid_mask])
-    test_metrics = _evaluate_fusion_split(y_cls=y_cls[test_mask], y_reg=y_reg[test_mask], scores=test_contract["final_rank_score"], markets=markets[test_mask])
-    thresholds = _build_thresholds(valid_scores=valid_contract["final_rank_score"], y_reg_valid=y_reg[valid_mask], fee_bps_est=0.0, safety_bps=0.0, ev_scan_steps=10, ev_min_selected=1)
+    valid_metrics = _evaluate_fusion_split(
+        y_cls=y_cls[valid_mask],
+        y_reg=y_reg[valid_mask],
+        scores=valid_contract["final_rank_score"],
+        markets=markets[valid_mask],
+        sample_weight=sample_weight[valid_mask],
+    )
+    test_metrics = _evaluate_fusion_split(
+        y_cls=y_cls[test_mask],
+        y_reg=y_reg[test_mask],
+        scores=test_contract["final_rank_score"],
+        markets=markets[test_mask],
+        sample_weight=sample_weight[test_mask],
+    )
+    thresholds = _build_thresholds(
+        valid_scores=valid_contract["final_rank_score"],
+        y_reg_valid=y_reg[valid_mask],
+        fee_bps_est=0.0,
+        safety_bps=0.0,
+        ev_scan_steps=10,
+        ev_min_selected=1,
+        sample_weight=sample_weight[valid_mask],
+    )
     selection_recommendations = build_selection_recommendations(valid_scores=valid_contract["final_rank_score"], valid_ts_ms=ts_ms[valid_mask], thresholds=thresholds)
     selection_policy = build_selection_policy_from_recommendations(selection_recommendations=selection_recommendations, fallback_threshold_key="top_5pct", score_source="score_mean")
     selection_calibration = _identity_calibration(reason="FUSION_IDENTITY_CALIBRATION")
@@ -984,7 +1379,10 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "fusion_model": {
             "policy": "v5_fusion_v1",
             "stacker_family": stacker_family,
-            "input_experts": ["panel", "sequence", "lob"],
+            "gating_policy": estimator.gating_policy,
+            "regime_feature_columns": list(estimator.regime_feature_columns),
+            "regime_cluster_count": int(estimator.regime_cluster_count),
+            "input_experts": ["panel", "sequence", "lob", "tradability"],
             "outputs": ["final_rank_score", "final_expected_return", "final_expected_es", "final_tradability", "final_uncertainty", "final_alpha_lcb"],
             "feature_columns": list(feature_names),
         },
@@ -1035,6 +1433,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "panel_input_path": str(options.panel_input_path),
         "sequence_input_path": str(options.sequence_input_path),
         "lob_input_path": str(options.lob_input_path),
+        "tradability_input_path": str(options.tradability_input_path) if options.tradability_input_path is not None else "",
         "dataset_root": str(runtime_dataset_root),
         "source_dataset_root": "fusion_oof_tables",
         "registry_root": str(options.registry_root),
@@ -1048,13 +1447,75 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "panel_runtime_input_path": str(options.panel_runtime_input_path) if options.panel_runtime_input_path is not None else "",
         "sequence_runtime_input_path": str(options.sequence_runtime_input_path) if options.sequence_runtime_input_path is not None else "",
         "lob_runtime_input_path": str(options.lob_runtime_input_path) if options.lob_runtime_input_path is not None else "",
+        "tradability_runtime_input_path": str(options.tradability_runtime_input_path) if options.tradability_runtime_input_path is not None else "",
         "runtime_start": str(options.runtime_start or options.start),
         "runtime_end": str(options.runtime_end or options.end),
+        "sequence_backbone_name": str(((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("backbone_family") or ""),
+        "lob_backbone_name": str(((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}).get("backbone_family") or ""),
+        "tradability_source_run_id": str(((train_input_bundle.input_contract.get("inputs") or {}).get("tradability") or {}).get("run_id") or ""),
     }
     runtime_recommendations = _build_fusion_runtime_recommendations(
         options=options,
         input_contract=train_input_bundle.input_contract,
     )
+    runtime_recommendations["sequence_backbone_name"] = str(((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("backbone_family") or "")
+    runtime_recommendations["lob_backbone_name"] = str(((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}).get("backbone_family") or "")
+    runtime_recommendations["tradability_source_run_id"] = str(((train_input_bundle.input_contract.get("inputs") or {}).get("tradability") or {}).get("run_id") or "")
+    runtime_recommendations["sequence_variant_name"] = str(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_variant_name")
+        or (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_variant_name")
+        or ""
+    )
+    runtime_recommendations["lob_variant_name"] = str(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}).get("lob_variant_name")
+        or (((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}).get("runtime_recommendations") or {}).get("lob_variant_name")
+        or ""
+    )
+    runtime_recommendations["fusion_variant_name"] = stacker_family
+    runtime_recommendations["fusion_offline_winner"] = stacker_family
+    runtime_recommendations["fusion_default_eligible_winner"] = stacker_family
+    runtime_recommendations["fusion_candidate_default_eligible"] = True
+    runtime_recommendations["fusion_evidence_winner"] = stacker_family
+    runtime_recommendations["fusion_evidence_reason_code"] = "OFFLINE_SELECTION_ONLY"
+    runtime_recommendations["sequence_pretrain_method"] = str(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_pretrain_method")
+        or (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_pretrain_method")
+        or ""
+    )
+    runtime_recommendations["sequence_pretrain_ready"] = bool(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_pretrain_ready")
+        or (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_pretrain_ready", False)
+    )
+    runtime_recommendations["sequence_pretrain_status"] = str(
+        (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_pretrain_status")
+        or ""
+    )
+    runtime_recommendations["sequence_pretrain_objective"] = str(
+        (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_pretrain_objective")
+        or ""
+    )
+    runtime_recommendations["sequence_pretrain_best_epoch"] = int(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_pretrain_best_epoch")
+        or (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_pretrain_best_epoch")
+        or 0
+    )
+    runtime_recommendations["sequence_pretrain_encoder_present"] = bool(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_pretrain_encoder_present")
+        or (((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("runtime_recommendations") or {}).get("sequence_pretrain_encoder_present", False)
+    )
+    runtime_recommendations["sequence_pretrain_contract_path"] = str(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_pretrain_contract_path")
+        or ""
+    )
+    runtime_recommendations["sequence_pretrain_report_path"] = str(
+        ((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("sequence_pretrain_report_path")
+        or ""
+    )
+    runtime_recommendations["domain_weighting_policy"] = str((weight_components.get("domain_details") or {}).get("policy") or "v5_domain_weighting_v1")
+    runtime_recommendations["domain_weighting_source_kind"] = str((weight_components.get("domain_details") or {}).get("source_kind") or "regime_inverse_frequency_v1")
+    runtime_recommendations["domain_weighting_enabled"] = bool((weight_components.get("domain_details") or {}).get("enabled", False))
+    runtime_recommendations["fusion_stacker_family"] = stacker_family
+    runtime_recommendations["fusion_gating_policy"] = estimator.gating_policy
     run_dir = save_run(
         RegistrySavePayload(
             registry_root=options.registry_root,
@@ -1084,11 +1545,18 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
             {
                 "policy": "v5_fusion_v1",
                 "stacker_family": stacker_family,
+                "gating_policy": estimator.gating_policy,
+                "regime_feature_columns": list(estimator.regime_feature_columns),
+                "regime_cluster_count": int(estimator.regime_cluster_count),
                 "input_experts": {
                     "panel": dict((train_input_bundle.input_contract.get("inputs") or {}).get("panel") or {}),
                     "sequence": dict((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}),
                     "lob": dict((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}),
+                    "tradability": dict((train_input_bundle.input_contract.get("inputs") or {}).get("tradability") or {}),
                 },
+                "sequence_backbone_name": str(((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("backbone_family") or ""),
+                "lob_backbone_name": str(((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}).get("backbone_family") or ""),
+                "tradability_source_run_id": str(((train_input_bundle.input_contract.get("inputs") or {}).get("tradability") or {}).get("run_id") or ""),
                 "feature_columns": list(feature_names),
                 "monotone_sign_map": dict(train_input_bundle.input_contract.get("feature_contract", {}).get("monotone_sign_map") or {}),
                 "outputs": {
@@ -1159,6 +1627,19 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     runtime_y_reg = runtime_merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False)
     runtime_markets = runtime_merged.get_column("market").to_numpy()
     runtime_ts_ms = runtime_merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
+    runtime_split_labels = (
+        runtime_merged.get_column("split").to_numpy()
+        if "split" in runtime_merged.columns
+        else np.full(runtime_merged.height, "runtime", dtype=object)
+    )
+    runtime_weight_components = resolve_v5_domain_weighting_components(
+        markets=runtime_markets,
+        ts_ms=runtime_ts_ms,
+        split_labels=runtime_split_labels,
+        base_sample_weight=np.ones(runtime_merged.height, dtype=np.float64),
+        data_quality_weight=np.ones(runtime_merged.height, dtype=np.float64),
+        support_weight=_resolve_fusion_support_weight(runtime_merged),
+    )
 
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
@@ -1170,10 +1651,48 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         y_cls=runtime_y_cls,
         y_reg=runtime_y_reg,
         y_rank=runtime_y_reg,
-        sample_weight=np.ones(runtime_merged.height, dtype=np.float64),
+        sample_weight=np.asarray(runtime_weight_components["final_sample_weight"], dtype=np.float64),
     )
+    domain_weighting_report_path = write_v5_domain_weighting_report(
+        run_dir=run_dir,
+        payload=build_v5_domain_weighting_report(
+            run_id=run_id,
+            trainer_name="v5_fusion",
+            model_family=options.model_family,
+            component_order=["base_sample_weight", "data_quality_weight", "support_level_weight", "domain_weight"],
+            final_sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+            base_sample_weight=np.asarray(weight_components["base_sample_weight"], dtype=np.float64),
+            data_quality_weight=np.asarray(weight_components["data_quality_weight"], dtype=np.float64),
+            support_weight=np.asarray(weight_components["support_weight"], dtype=np.float64),
+            domain_weight=np.asarray(weight_components["domain_weight"], dtype=np.float64),
+            domain_details=dict(weight_components["domain_details"] or {}),
+        ),
+    )
+    ood_generalization_report_path = write_ood_generalization_report(
+        run_dir=run_dir,
+        payload=build_ood_generalization_report(
+            run_id=run_id,
+            trainer_name="v5_fusion",
+            model_family=options.model_family,
+            source_kind=str((weight_components.get("domain_details") or {}).get("source_kind") or "regime_inverse_frequency_v1"),
+            markets=markets,
+            split_labels=labels,
+            effective_sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+            invariant_penalty_enabled=False,
+            regime_bucket_labels=np.asarray(merged.get_column("market").to_numpy(), dtype=object),
+            extra_summary={
+                "gating_policy": estimator.gating_policy,
+                "regime_cluster_count": int(estimator.regime_cluster_count),
+            },
+        ),
+    )
+    runtime_recommendations["ood_status"] = "informative_ready"
+    runtime_recommendations["ood_source_kind"] = str((weight_components.get("domain_details") or {}).get("source_kind") or "regime_inverse_frequency_v1")
+    runtime_recommendations["ood_penalty_enabled"] = True
+    runtime_recommendations["ood_generalization_report_path"] = str(ood_generalization_report_path)
     runtime_input_contract = dict(runtime_input_bundle.input_contract)
     runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
+    runtime_input_contract["domain_weighting_report_path"] = str(domain_weighting_report_path)
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_id,
@@ -1208,13 +1727,17 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
 
 def _options_from_v5_fusion_train_config(train_config: dict[str, Any]) -> TrainV5FusionOptions:
     base = dict(train_config or {})
+    tradability_input_raw = str(base.get("tradability_input_path", "")).strip()
+    tradability_runtime_raw = str(base.get("tradability_runtime_input_path", "")).strip()
     return TrainV5FusionOptions(
         panel_input_path=Path(str(base["panel_input_path"])),
         sequence_input_path=Path(str(base["sequence_input_path"])),
         lob_input_path=Path(str(base["lob_input_path"])),
+        tradability_input_path=Path(tradability_input_raw) if tradability_input_raw and tradability_input_raw.lower() != "none" else None,
         panel_runtime_input_path=Path(str(base["panel_runtime_input_path"])) if str(base.get("panel_runtime_input_path", "")).strip() else None,
         sequence_runtime_input_path=Path(str(base["sequence_runtime_input_path"])) if str(base.get("sequence_runtime_input_path", "")).strip() else None,
         lob_runtime_input_path=Path(str(base["lob_runtime_input_path"])) if str(base.get("lob_runtime_input_path", "")).strip() else None,
+        tradability_runtime_input_path=Path(tradability_runtime_raw) if tradability_runtime_raw and tradability_runtime_raw.lower() != "none" else None,
         registry_root=Path(str(base["registry_root"])),
         logs_root=Path(str(base["logs_root"])),
         model_family=str(base["model_family"]),
@@ -1284,6 +1807,18 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     runtime_dataset_root = Path(str(train_config.get("dataset_root") or run_dir / "runtime_feature_dataset"))
     runtime_merged = runtime_input_bundle.merged
     runtime_x = runtime_merged.select(list(runtime_input_bundle.feature_names)).to_numpy().astype(np.float64, copy=False)
+    runtime_weight_components = resolve_v5_domain_weighting_components(
+        markets=runtime_merged.get_column("market").to_numpy(),
+        ts_ms=runtime_merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False),
+        split_labels=(
+            runtime_merged.get_column("split").to_numpy()
+            if "split" in runtime_merged.columns
+            else np.full(runtime_merged.height, "runtime", dtype=object)
+        ),
+        base_sample_weight=np.ones(runtime_merged.height, dtype=np.float64),
+        data_quality_weight=np.ones(runtime_merged.height, dtype=np.float64),
+        support_weight=_resolve_fusion_support_weight(runtime_merged),
+    )
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
         tf="5m",
@@ -1294,7 +1829,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         y_cls=runtime_merged.get_column("y_cls").to_numpy().astype(np.int64, copy=False),
         y_reg=runtime_merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False),
         y_rank=runtime_merged.get_column("y_reg").to_numpy().astype(np.float64, copy=False),
-        sample_weight=np.ones(runtime_merged.height, dtype=np.float64),
+        sample_weight=np.asarray(runtime_weight_components["final_sample_weight"], dtype=np.float64),
     )
     runtime_recommendations = _build_fusion_runtime_recommendations(
         options=options,
@@ -1308,6 +1843,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     }
     runtime_input_contract = dict(runtime_input_bundle.input_contract)
     runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
+    runtime_input_contract["domain_weighting_report_path"] = str(run_dir / "domain_weighting_report.json")
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -1340,12 +1876,20 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     )
 
 
-def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int, monotone_signs: tuple[int, ...]) -> Any:
+def _fit_binary_head(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    stacker_family: str,
+    seed: int,
+    monotone_signs: tuple[int, ...],
+    sample_weight: np.ndarray | None = None,
+) -> Any:
     if stacker_family == "linear":
         from sklearn.linear_model import LogisticRegression
 
         model = LogisticRegression(max_iter=1000, random_state=int(seed))
-        model.fit(x, y)
+        model.fit(x, y, sample_weight=np.asarray(sample_weight, dtype=np.float64) if sample_weight is not None else None)
         return model
     import xgboost as xgb
 
@@ -1361,16 +1905,24 @@ def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed:
         nthread=1,
         eval_metric="logloss",
     )
-    model.fit(x, y)
+    model.fit(x, y, sample_weight=np.asarray(sample_weight, dtype=np.float64) if sample_weight is not None else None)
     return model
 
 
-def _fit_reg_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: int, monotone_signs: tuple[int, ...]) -> Any:
+def _fit_reg_head(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    stacker_family: str,
+    seed: int,
+    monotone_signs: tuple[int, ...],
+    sample_weight: np.ndarray | None = None,
+) -> Any:
     if stacker_family == "linear":
         from sklearn.linear_model import Ridge
 
         model = Ridge(alpha=1.0, random_state=int(seed))
-        model.fit(x, y)
+        model.fit(x, y, sample_weight=np.asarray(sample_weight, dtype=np.float64) if sample_weight is not None else None)
         return model
     import xgboost as xgb
 
@@ -1385,14 +1937,30 @@ def _fit_reg_head(x: np.ndarray, y: np.ndarray, *, stacker_family: str, seed: in
         random_state=int(seed),
         nthread=1,
     )
-    model.fit(x, y)
+    model.fit(x, y, sample_weight=np.asarray(sample_weight, dtype=np.float64) if sample_weight is not None else None)
     return model
 
 
-def _evaluate_fusion_split(*, y_cls: np.ndarray, y_reg: np.ndarray, scores: np.ndarray, markets: np.ndarray) -> dict[str, Any]:
-    cls = classification_metrics(y_cls, scores)
-    trading = trading_metrics(y_cls, y_reg, scores, fee_bps_est=0.0, safety_bps=0.0)
-    per_market = grouped_trading_metrics(markets=markets, y_true=y_cls, y_reg=y_reg, scores=scores, fee_bps_est=0.0, safety_bps=0.0)
+def _evaluate_fusion_split(
+    *,
+    y_cls: np.ndarray,
+    y_reg: np.ndarray,
+    scores: np.ndarray,
+    markets: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+) -> dict[str, Any]:
+    resolved_weight = np.asarray(sample_weight, dtype=np.float64) if sample_weight is not None else None
+    cls = classification_metrics(y_cls, scores, sample_weight=resolved_weight)
+    trading = trading_metrics(y_cls, y_reg, scores, fee_bps_est=0.0, safety_bps=0.0, sample_weight=resolved_weight)
+    per_market = grouped_trading_metrics(
+        markets=markets,
+        y_true=y_cls,
+        y_reg=y_reg,
+        scores=scores,
+        fee_bps_est=0.0,
+        safety_bps=0.0,
+        sample_weight=resolved_weight,
+    )
     return {
         "rows": int(y_cls.size),
         "classification": cls,

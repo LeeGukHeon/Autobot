@@ -141,6 +141,7 @@ def test_t23_2_data_platform_refresh_installer_dry_run_keeps_new_dataset_contrac
     assert "ws_candle_v1" in stdout
     assert "lob30_v1" in stdout
     assert "sequence_v1" in stdout
+    assert "private_execution_v1" in stdout
     assert "tensor_recent_dates=2" in stdout
 
 
@@ -157,11 +158,13 @@ def test_t23_2_data_platform_refresh_wrapper_dry_run_emits_all_step_commands() -
     assert "[data-platform-refresh] step=validate_micro_current_window" in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors" in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors_prev1" in stdout
+    assert "[data-platform-refresh] step=refresh_private_execution_label_store" in stdout
     assert "[data-platform-refresh] step=refresh_data_contract_registry" in stdout
     assert "candles_second_v1" in stdout
     assert "ws_candle_v1" in stdout
     assert "lob30_v1" in stdout
     assert "sequence_v1" in stdout
+    assert "private_execution_v1" in stdout
 
 
 def test_t23_2_data_platform_refresh_wrapper_runtime_rich_dry_run_excludes_training_steps() -> None:
@@ -175,9 +178,19 @@ def test_t23_2_data_platform_refresh_wrapper_runtime_rich_dry_run_excludes_train
     assert "mode=runtime_rich" in stdout
     assert "[data-platform-refresh] step=plan_ws_candles" in stdout
     assert "[data-platform-refresh] step=collect_ws_candles" in stdout
+    assert "[data-platform-refresh] step=refresh_private_execution_label_store" in stdout
     assert "[data-platform-refresh] step=aggregate_micro_current_window" not in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors" not in stdout
     assert "[data-platform-refresh] step=publish_data_platform_snapshot" not in stdout
+
+
+def test_t23_2_v5_lane_migration_dry_run_surfaces_v5_split_contract() -> None:
+    stdout = _run_script_dry_run("migrate_v5_candidate_lane_contract.ps1")
+
+    assert "[v5-lane-migrate][dry-run] stop_disable=autobot-v4-challenger-spawn.timer" in stdout
+    assert "[daily-split-install][dry-run] promote_service=autobot-v5-challenger-promote.service" in stdout
+    assert "[daily-split-install][dry-run] spawn_service=autobot-v5-challenger-spawn.service" in stdout
+    assert "model_family=train_v5_fusion" in stdout
 
 
 def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_excludes_ws_candles() -> None:

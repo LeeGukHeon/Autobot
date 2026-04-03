@@ -358,16 +358,16 @@ def test_build_parser_supports_v5_sequence_trainer_choice() -> None:
             "--trainer",
             "v5_sequence",
             "--sequence-backbone",
-            "patchtst",
+            "patchtst_v1",
             "--sequence-pretrain-method",
-            "ts2vec_like",
+            "ts2vec_v1",
         ]
     )
 
     assert args.command == "model"
     assert args.model_command == "train"
     assert args.trainer == "v5_sequence"
-    assert args.sequence_backbone == "patchtst"
+    assert args.sequence_backbone == "patchtst_v1"
 
 
 def test_build_parser_supports_v5_lob_trainer_choice() -> None:
@@ -379,14 +379,14 @@ def test_build_parser_supports_v5_lob_trainer_choice() -> None:
             "--trainer",
             "v5_lob",
             "--lob-backbone",
-            "deeplob",
+            "deeplob_v1",
         ]
     )
 
     assert args.command == "model"
     assert args.model_command == "train"
     assert args.trainer == "v5_lob"
-    assert args.lob_backbone == "deeplob"
+    assert args.lob_backbone == "deeplob_v1"
 
 
 def test_build_parser_supports_v5_fusion_trainer_choice() -> None:

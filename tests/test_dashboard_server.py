@@ -1770,7 +1770,23 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
     _write_json(project_root / "logs" / "model_v4_challenger" / "step_06_promote.json", {"policy": "promote_abort_continue_state_machine_v1", "state": "continue", "reason": "CANARY_CONTINUE", "next_action": "keep_collecting_evidence"})
     family_root = project_root / "models" / "registry" / "train_v5_sequence"
     _write_json(family_root / "latest.json", {"run_id": "v5-seq-001", "updated_at_utc": "2026-03-27T00:31:00Z"})
-    _write_json(family_root / "v5-seq-001" / "train_config.yaml", {"trainer": "v5_sequence", "run_scope": "scheduled_daily", "task": "multitask"})
+    _write_json(family_root / "v5-seq-001" / "train_config.yaml", {"trainer": "v5_sequence", "run_scope": "scheduled_daily", "task": "multitask", "pretrain_method": "none"})
+    _write_json(
+        family_root / "v5-seq-001" / "runtime_recommendations.json",
+        {
+            "fusion_offline_winner": "linear",
+            "fusion_default_eligible_winner": "linear",
+            "ood_status": "informative_ready",
+            "ood_source_kind": "regime_inverse_frequency_v1",
+            "ood_penalty_enabled": True,
+            "sequence_pretrain_ready": False,
+            "sequence_pretrain_method": "none",
+            "sequence_pretrain_status": "disabled",
+            "sequence_pretrain_objective": "none",
+            "sequence_pretrain_best_epoch": 0,
+            "sequence_pretrain_encoder_present": False,
+        },
+    )
 
     snapshot = build_dashboard_snapshot(project_root)
 
@@ -1779,6 +1795,8 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
     assert snapshot["data_platform"]["datasets"]["sequence_v1"]["current_window_support"]["support_level_counts"]["strict_full"] == 1
     assert snapshot["data_platform"]["datasets"]["sequence_v1"]["legacy_window_support"]["support_level_counts"]["reduced_context"] == 1
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["run_id"] == "v5-seq-001"
+    assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["sequence_pretrain_method"] == "none"
+    assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["ood_status"] == "informative_ready"
     assert snapshot["challenger"]["promotion_state_machine"]["state"] == "continue"
     assert "start_data_platform_refresh" in [item["id"] for item in snapshot["operations"]["actions"]]
 

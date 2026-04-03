@@ -55,7 +55,19 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
                     "y_reg_resid_leader_h6",
                     "y_reg_resid_leader_h12",
                     "y_reg_resid_leader_h24",
-                ]
+                ],
+                "y_rank_resid_leader": [
+                    "y_rank_resid_leader_h3",
+                    "y_rank_resid_leader_h6",
+                    "y_rank_resid_leader_h12",
+                    "y_rank_resid_leader_h24",
+                ],
+                "y_cls_resid_leader": [
+                    "y_cls_resid_leader_topq_h3",
+                    "y_cls_resid_leader_topq_h6",
+                    "y_cls_resid_leader_topq_h12",
+                    "y_cls_resid_leader_topq_h24",
+                ],
             }
         },
         "label_contract": {
@@ -106,6 +118,23 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
         },
     )
     monkeypatch.setattr(
+        "autobot.models.train_v5_panel_ensemble._load_v5_auxiliary_panel_targets",
+        lambda **kwargs: {
+            "cls": {
+                "h3": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h6": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h12": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h24": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+            },
+            "rank": {
+                "h3": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h6": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h12": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h24": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+            },
+        },
+    )
+    monkeypatch.setattr(
         "autobot.models.train_v5_panel_ensemble.v4._fit_booster_sweep_weighted",
         lambda **kwargs: {"bundle": {"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()}, "best_params": {"max_depth": 2}},
     )
@@ -125,10 +154,10 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     monkeypatch.setattr(
         "autobot.models.train_v5_panel_ensemble._build_v5_oof_windows",
         lambda **kwargs: {
-            "windows": [
-                {
-                    "window_index": 0,
-                    "time_window": {"valid_start_ts": 3_000, "test_start_ts": 4_000, "test_end_ts": 4_000},
+                "windows": [
+                    {
+                        "window_index": 0,
+                        "time_window": {"valid_start_ts": 3_000, "test_start_ts": 4_000, "test_end_ts": 4_000},
                     "counts": {"train": 2, "valid": 1, "test": 1, "drop": 0},
                     "metrics": {"classification": {"roc_auc": 0.7}, "ranking": {}, "trading": {}},
                     "oos_periods": [],
@@ -136,14 +165,14 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
                     "selection_optimization": {"comparable": False, "by_threshold_key": {}},
                     "trial_records": [],
                 }
-            ],
-            "skipped_windows": [],
-            "_selection_calibration_rows": [{"scores": [0.2, 0.8], "y_cls": [0, 1]}],
-            "_trade_action_oos_rows": [],
-            "meta_rows": [{"x": np.asarray([[0.2, 0.3, 0.5, 0.6, 0.7, 0.8], [0.8, 0.7, 0.6, 0.5, 0.4, 0.3]], dtype=np.float64), "y": np.asarray([0, 1], dtype=np.int64)}],
-            "sample_weight": np.asarray([1.0, 1.0], dtype=np.float64),
-        },
-    )
+                ],
+                "skipped_windows": [],
+                "_selection_calibration_rows": [{"scores": [0.2, 0.8], "y_cls": [0, 1]}],
+                "_trade_action_oos_rows": [],
+                "meta_rows": [{"x": np.asarray([[0.2, 0.3, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.6, 0.62, 0.64, 0.66], [0.8, 0.7, 0.6, 0.58, 0.5, 0.48, 0.4, 0.38, 0.3, 0.28, 0.26, 0.24]], dtype=np.float64), "y": np.asarray([0, 1], dtype=np.int64)}],
+                "sample_weight": np.asarray([1.0, 1.0], dtype=np.float64),
+            },
+        )
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.build_data_fingerprint", lambda **kwargs: {"manifest_sha256": "abc"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.render_model_card", lambda **kwargs: "# card")
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.resolve_ready_snapshot_id", lambda **kwargs: "snapshot-main")
@@ -223,6 +252,8 @@ def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkey
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_panel_ensemble"
     assert load_json(result.run_dir / "train_config.yaml")["data_platform_ready_snapshot_id"] == "snapshot-main"
     assert load_json(result.run_dir / "panel_ensemble_contract.json")["policy"] == "v5_panel_ensemble_v1"
+    assert load_json(result.run_dir / "panel_ensemble_contract.json")["auxiliary_classifier_horizons"] == [3, 6, 24]
+    assert load_json(result.run_dir / "panel_ensemble_contract.json")["auxiliary_rank_horizons"] == [3, 6, 24]
     assert load_json(result.run_dir / "predictor_contract.json")["score_lcb_field"] == "score_lcb"
     assert load_json(result.run_dir / "predictor_contract.json")["final_rank_score_field"] == "final_rank_score"
     assert load_json(result.run_dir / "predictor_contract.json")["final_expected_return_field"] == "final_expected_return"
@@ -269,7 +300,19 @@ def test_train_v5_panel_ensemble_dependency_expert_only_skips_heavy_tail(tmp_pat
                     "y_reg_resid_leader_h6",
                     "y_reg_resid_leader_h12",
                     "y_reg_resid_leader_h24",
-                ]
+                ],
+                "y_rank_resid_leader": [
+                    "y_rank_resid_leader_h3",
+                    "y_rank_resid_leader_h6",
+                    "y_rank_resid_leader_h12",
+                    "y_rank_resid_leader_h24",
+                ],
+                "y_cls_resid_leader": [
+                    "y_cls_resid_leader_topq_h3",
+                    "y_cls_resid_leader_topq_h6",
+                    "y_cls_resid_leader_topq_h12",
+                    "y_cls_resid_leader_topq_h24",
+                ],
             }
         },
         "label_contract": {
@@ -320,6 +363,23 @@ def test_train_v5_panel_ensemble_dependency_expert_only_skips_heavy_tail(tmp_pat
         },
     )
     monkeypatch.setattr(
+        "autobot.models.train_v5_panel_ensemble._load_v5_auxiliary_panel_targets",
+        lambda **kwargs: {
+            "cls": {
+                "h3": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h6": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h12": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h24": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+            },
+            "rank": {
+                "h3": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h6": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h12": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+                "h24": np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64),
+            },
+        },
+    )
+    monkeypatch.setattr(
         "autobot.models.train_v5_panel_ensemble.v4._fit_booster_sweep_weighted",
         lambda **kwargs: {"bundle": {"model_type": "xgboost", "scaler": None, "estimator": DummyClassifier()}, "best_params": {"max_depth": 2}},
     )
@@ -339,10 +399,10 @@ def test_train_v5_panel_ensemble_dependency_expert_only_skips_heavy_tail(tmp_pat
     monkeypatch.setattr(
         "autobot.models.train_v5_panel_ensemble._build_v5_oof_windows",
         lambda **kwargs: {
-            "windows": [
-                {
-                    "window_index": 0,
-                    "time_window": {"valid_start_ts": 3_000, "test_start_ts": 4_000, "test_end_ts": 4_000},
+                "windows": [
+                    {
+                        "window_index": 0,
+                        "time_window": {"valid_start_ts": 3_000, "test_start_ts": 4_000, "test_end_ts": 4_000},
                     "counts": {"train": 2, "valid": 1, "test": 1, "drop": 0},
                     "metrics": {"classification": {"roc_auc": 0.7}, "ranking": {}, "trading": {}},
                     "oos_periods": [],
@@ -350,14 +410,14 @@ def test_train_v5_panel_ensemble_dependency_expert_only_skips_heavy_tail(tmp_pat
                     "selection_optimization": {"comparable": False, "by_threshold_key": {}},
                     "trial_records": [],
                 }
-            ],
-            "skipped_windows": [],
-            "_selection_calibration_rows": [{"scores": [0.2, 0.8], "y_cls": [0, 1]}],
-            "_trade_action_oos_rows": [],
-            "meta_rows": [{"x": np.asarray([[0.2, 0.3, 0.5, 0.6, 0.7, 0.8], [0.8, 0.7, 0.6, 0.5, 0.4, 0.3]], dtype=np.float64), "y": np.asarray([0, 1], dtype=np.int64)}],
-            "sample_weight": np.asarray([1.0, 1.0], dtype=np.float64),
-        },
-    )
+                ],
+                "skipped_windows": [],
+                "_selection_calibration_rows": [{"scores": [0.2, 0.8], "y_cls": [0, 1]}],
+                "_trade_action_oos_rows": [],
+                "meta_rows": [{"x": np.asarray([[0.2, 0.3, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.6, 0.62, 0.64, 0.66], [0.8, 0.7, 0.6, 0.58, 0.5, 0.48, 0.4, 0.38, 0.3, 0.28, 0.26, 0.24]], dtype=np.float64), "y": np.asarray([0, 1], dtype=np.int64)}],
+                "sample_weight": np.asarray([1.0, 1.0], dtype=np.float64),
+            },
+        )
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.build_data_fingerprint", lambda **kwargs: {"manifest_sha256": "abc"})
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.render_model_card", lambda **kwargs: "# card")
     monkeypatch.setattr("autobot.models.train_v5_panel_ensemble.resolve_ready_snapshot_id", lambda **kwargs: "snapshot-dependency")

@@ -386,22 +386,31 @@ $retentionRegistryStep = New-RefreshStep `
     -LockFile $PublishLockFile `
     -BlockingLock
 
+$privateExecutionStep = New-RefreshStep `
+    -Name "refresh_private_execution_label_store" `
+    -StepArgs @(
+        "-m", "autobot.ops.private_execution_label_store",
+        "--project-root", $resolvedProjectRoot
+    ) `
+    -LockFile $PublishLockFile `
+    -BlockingLock
+
 $steps = @()
 switch ($Mode) {
     "training_critical" {
-        $steps = @($trainingCriticalSteps + $microSteps + $tensorSteps + @($registryStep, $retentionRegistryStep))
+        $steps = @($trainingCriticalSteps + $microSteps + $tensorSteps + @($privateExecutionStep, $registryStep, $retentionRegistryStep))
         if (-not $SkipPublishReadySnapshot) {
             $steps += ,$publishStep
         }
     }
     "runtime_rich" {
-        $steps = @($runtimeRichSteps + @($registryStep, $retentionRegistryStep))
+        $steps = @($runtimeRichSteps + @($privateExecutionStep, $registryStep, $retentionRegistryStep))
         if (-not $SkipPublishReadySnapshot) {
             $steps += ,$publishStep
         }
     }
     default {
-        $steps = @($trainingCriticalSteps + $runtimeRichSteps + $microSteps + $tensorSteps + @($registryStep))
+        $steps = @($trainingCriticalSteps + $runtimeRichSteps + $microSteps + $tensorSteps + @($privateExecutionStep, $registryStep, $retentionRegistryStep))
         if (-not $SkipPublishReadySnapshot) {
             $steps += ,$publishStep
         }
@@ -424,8 +433,8 @@ if ($DryRun) {
     Write-Host ("[data-platform-refresh][dry-run] summary_path={0}" -f $resolvedSummaryPath)
     Write-Host ("[data-platform-refresh][dry-run] publish_lock_file={0}" -f $PublishLockFile)
     Write-Host ("[data-platform-refresh][dry-run] skip_publish_ready_snapshot={0}" -f [bool]$SkipPublishReadySnapshot)
-    Write-Host "[data-platform-refresh][dry-run] training_critical_datasets=candles_second_v1,lob30_v1,micro_v1,sequence_v1"
-    Write-Host "[data-platform-refresh][dry-run] runtime_rich_datasets=ws_candle_v1"
+    Write-Host "[data-platform-refresh][dry-run] training_critical_datasets=candles_second_v1,lob30_v1,micro_v1,sequence_v1,private_execution_v1"
+    Write-Host "[data-platform-refresh][dry-run] runtime_rich_datasets=ws_candle_v1,private_execution_v1"
 }
 
 $stepResults = @()

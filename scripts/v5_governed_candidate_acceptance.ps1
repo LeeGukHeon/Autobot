@@ -7,7 +7,7 @@ param(
 )
 
 # V5 governed acceptance now executes the full blueprint-aligned expert chain:
-# data refresh -> v5_panel_ensemble -> v5_sequence -> v5_lob -> v5_fusion.
+# data refresh -> v5_panel_ensemble -> v5_sequence -> v5_lob -> v5_tradability -> v5_fusion.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -23,7 +23,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PythonExe $resolvedPythonExe `
     -ModelFamily "train_v5_fusion" `
     -Trainer "v5_fusion" `
-    -DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob") `
+    -DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability") `
     -FeatureSet "v4" `
     -LabelSet "v3" `
     -Task "cls" `
@@ -46,6 +46,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PaperMinTierCount 1 `
     -PaperMinPolicyEvents 0 `
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
+    -EnableVariantMatrixSelection `
     -SplitPolicyHistoricalSelectorEnabled:$false `
     -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v5_acceptance" `

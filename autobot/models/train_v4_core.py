@@ -106,6 +106,7 @@ def prepare_v4_training_inputs(
         y_reg_column=label_contract["y_reg_column"],
         y_rank_column=label_contract["y_rank_column"],
     )
+    pre_domain_sample_weight = np.asarray(dataset.sample_weight, dtype=np.float32).copy()
     try:
         action_aux_frame = load_feature_aux_frame_fn(
             request,
@@ -237,6 +238,7 @@ def prepare_v4_training_inputs(
         "search_budget_decision": search_budget_decision,
         "effective_booster_sweep_trials": effective_booster_sweep_trials,
         "dataset": dataset,
+        "pre_domain_sample_weight": pre_domain_sample_weight,
         "action_aux_arrays": action_aux_arrays,
         "interval_ms": interval_ms,
         "split_info": split_info,

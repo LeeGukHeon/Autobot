@@ -53,6 +53,7 @@ from .train_v1 import _build_thresholds, _evaluate_split, _predict_scores, build
 from .train_v4_artifacts import build_decision_surface_v4, build_v4_metrics_doc, train_config_snapshot_v4
 from .train_v4_core import prepare_v4_training_inputs
 from .v5_runtime_artifacts import persist_v5_runtime_governance_artifacts
+from .v5_domain_weighting import build_v5_domain_weighting_report, write_v5_domain_weighting_report
 from .v5_expert_runtime_export import (
     OPERATING_WINDOW_TIMEZONE,
     build_ts_date_coverage_payload,
@@ -101,6 +102,8 @@ class _StackMetaModel:
 class V5PanelEnsembleEstimator:
     classifier_bundle: dict[str, Any]
     ranker_bundle: dict[str, Any]
+    auxiliary_classifier_bundles: dict[str, dict[str, Any]]
+    auxiliary_ranker_bundles: dict[str, dict[str, Any]]
     regressor_bundles: dict[str, dict[str, Any]]
     regression_member_bundles: dict[str, tuple[dict[str, Any], ...]]
     meta_model: _StackMetaModel
@@ -149,7 +152,17 @@ class V5PanelEnsembleEstimator:
     def _component_payload(self, x: np.ndarray) -> dict[str, Any]:
         cls_score = _predict_scores(self.classifier_bundle, x)
         rank_score = _predict_scores(self.ranker_bundle, x)
+        aux_cls_by_horizon = {
+            key: _predict_scores(bundle["bundle"] if "bundle" in bundle else bundle, x)
+            for key, bundle in self.auxiliary_classifier_bundles.items()
+        }
+        aux_rank_by_horizon = {
+            key: _predict_scores(bundle["bundle"] if "bundle" in bundle else bundle, x)
+            for key, bundle in self.auxiliary_ranker_bundles.items()
+        }
         mu_by_horizon: dict[int, np.ndarray] = {}
+        aux_cls_parts = [aux_cls_by_horizon[key] for key in sorted(aux_cls_by_horizon.keys(), key=lambda item: int(item.replace("h", "")))]
+        aux_rank_parts = [aux_rank_by_horizon[key] for key in sorted(aux_rank_by_horizon.keys(), key=lambda item: int(item.replace("h", "")))]
         reg_prob_parts: list[np.ndarray] = []
         regression_distribution = self._predict_regression_distribution(x)
         for horizon in self.regression_horizons:
@@ -157,11 +170,13 @@ class V5PanelEnsembleEstimator:
             raw = np.asarray(regression_distribution[horizon_key]["mu"], dtype=np.float64)
             mu_by_horizon[int(horizon)] = raw
             reg_prob_parts.append(_sigmoid(raw))
-        component_matrix = np.column_stack([cls_score, rank_score, *reg_prob_parts])
+        component_matrix = np.column_stack([cls_score, rank_score, *aux_cls_parts, *aux_rank_parts, *reg_prob_parts])
         component_std = np.std(component_matrix, axis=1, ddof=0)
         return {
             "cls_score": cls_score,
             "rank_score": rank_score,
+            "aux_cls_by_horizon": aux_cls_by_horizon,
+            "aux_rank_by_horizon": aux_rank_by_horizon,
             "mu_by_horizon": mu_by_horizon,
             "regression_distribution": regression_distribution,
             "component_matrix": component_matrix,
@@ -653,6 +668,7 @@ def _build_panel_tail_context(
     data_platform_ready_snapshot_id: str | None,
     search_budget_decision: dict[str, Any] | None,
     duplicate_candidate: bool,
+    live_domain_reweighting: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     execution_window = _build_execution_evaluation_window_doc(options=options)
     return {
@@ -666,6 +682,7 @@ def _build_panel_tail_context(
         "dependency_expert_only": _should_use_dependency_expert_only_mode(options),
         "tail_mode": _panel_tail_mode(options),
         "runtime_recommendation_profile": _runtime_recommendation_profile_from_search_budget(search_budget_decision),
+        "live_domain_reweighting": dict(live_domain_reweighting or {}),
         "execution_window": execution_window,
         "execution_acceptance": {
             "dataset_name": str(options.execution_acceptance_dataset_name).strip() or "candles_v1",
@@ -862,6 +879,7 @@ def _run_or_reuse_runtime_recommendations(
     trade_action_oos_rows: list[dict[str, Any]],
     resumed: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    live_domain_reweighting = dict(tail_context.get("live_domain_reweighting") or {})
     runtime_recommendations = _load_existing_runtime_recommendations(
         existing_tail_artifacts=existing_tail_artifacts
     )
@@ -921,6 +939,12 @@ def _run_or_reuse_runtime_recommendations(
         runtime_recommendations_doc,
         tail_context=tail_context,
         resumed=resumed,
+    )
+    runtime_recommendations_doc["domain_weighting_policy"] = "v5_domain_weighting_v1"
+    runtime_recommendations_doc["domain_weighting_source_kind"] = "live_candidate_density_ratio_v1"
+    runtime_recommendations_doc["domain_weighting_enabled"] = bool(live_domain_reweighting)
+    runtime_recommendations_doc["domain_weighting_status"] = (
+        "live_candidate_density_ratio_ready" if bool(live_domain_reweighting) else "disabled"
     )
     artifact_paths = _build_panel_runtime_artifact_paths(run_dir)
     _write_json(artifact_paths["execution_acceptance_report_path"], execution_acceptance_doc)
@@ -1096,8 +1120,10 @@ def _build_panel_dependency_runtime_recommendations(
     run_id: str,
     search_budget_decision: dict[str, Any],
     data_platform_ready_snapshot_id: str | None,
+    domain_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     execution_window = _build_execution_evaluation_window_doc(options=options)
+    details = dict(domain_details or {})
     return annotate_v5_runtime_recommendations({
         "version": 1,
         "policy": "v5_panel_dependency_runtime_recommendations_v1",
@@ -1108,6 +1134,9 @@ def _build_panel_dependency_runtime_recommendations(
         "trainer": "v5_panel_ensemble",
         "source_family": str(options.model_family).strip(),
         "source_trainer": "v5_panel_ensemble",
+        "domain_weighting_policy": str(details.get("policy") or "v5_domain_weighting_v1").strip() or "v5_domain_weighting_v1",
+        "domain_weighting_source_kind": str(details.get("source_kind") or "live_candidate_density_ratio_v1").strip() or "live_candidate_density_ratio_v1",
+        "domain_weighting_enabled": bool(details.get("enabled", False)),
         "dependency_expert_only": True,
         "tail_mode": "dependency_expert_only",
         "data_platform_ready_snapshot_id": str(data_platform_ready_snapshot_id or "").strip(),
@@ -1210,6 +1239,7 @@ def _run_panel_dependency_expert_tail(
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         search_budget_decision=search_budget_decision,
         duplicate_candidate=duplicate_candidate,
+        live_domain_reweighting={},
     )
     existing_tail_artifacts = _resolve_existing_tail_artifacts(
         run_dir=run_dir,
@@ -1487,6 +1517,7 @@ def _run_panel_tail_common(
     metrics: dict[str, Any],
     research_support_lane: dict[str, Any],
     cpcv_lite_runtime: dict[str, Any],
+    live_domain_reweighting: dict[str, Any],
     economic_objective_profile: dict[str, Any],
     lane_governance: dict[str, Any],
     data_platform_ready_snapshot_id: str | None,
@@ -1531,6 +1562,7 @@ def _run_panel_tail_common(
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         search_budget_decision=search_budget_decision,
         duplicate_candidate=duplicate_candidate,
+        live_domain_reweighting=live_domain_reweighting,
     )
     existing_tail_artifacts = _resolve_existing_tail_artifacts(
         run_dir=run_dir,
@@ -1658,6 +1690,42 @@ def _load_v5_regression_targets(
     return targets
 
 
+def _load_v5_auxiliary_panel_targets(
+    *,
+    request: Any,
+    label_spec: dict[str, Any],
+    dataset: Any,
+    primary_y_cls_column: str,
+    primary_y_reg_column: str,
+    primary_y_rank_column: str,
+) -> dict[str, dict[str, np.ndarray]]:
+    column_families = dict((label_spec.get("canonical_multi_horizon_columns") or {}))
+    cls_columns = [str(item).strip() for item in (column_families.get("y_cls_resid_leader") or []) if str(item).strip()]
+    rank_columns = [str(item).strip() for item in (column_families.get("y_rank_resid_leader") or []) if str(item).strip()]
+    if not cls_columns and not rank_columns:
+        return {"cls": {}, "rank": {}}
+    aux = load_feature_aux_frame(
+        request,
+        columns=tuple(dict.fromkeys([*cls_columns, *rank_columns])),
+        y_cls_column=primary_y_cls_column,
+        y_reg_column=primary_y_reg_column,
+        y_rank_column=primary_y_rank_column,
+    )
+    aux_ts_ms = aux.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
+    aux_markets = aux.get_column("market").to_numpy()
+    if not np.array_equal(aux_ts_ms, dataset.ts_ms) or not np.array_equal(aux_markets, dataset.markets):
+        raise ValueError("V5_PANEL_AUX_TARGET_ALIGNMENT_FAILED")
+    cls_targets: dict[str, np.ndarray] = {}
+    rank_targets: dict[str, np.ndarray] = {}
+    for name in cls_columns:
+        horizon_token = name.split("_h")[-1]
+        cls_targets[f"h{horizon_token}"] = aux.get_column(name).to_numpy().astype(np.float64, copy=False)
+    for name in rank_columns:
+        horizon_token = name.split("_h")[-1]
+        rank_targets[f"h{horizon_token}"] = aux.get_column(name).to_numpy().astype(np.float64, copy=False)
+    return {"cls": cls_targets, "rank": rank_targets}
+
+
 def _fit_v5_regression_heads(
     *,
     options: TrainV5PanelEnsembleOptions,
@@ -1687,15 +1755,90 @@ def _fit_v5_regression_heads(
     return results
 
 
+def _fit_v5_auxiliary_classifier_heads(
+    *,
+    options: TrainV5PanelEnsembleOptions,
+    best_params: dict[str, Any],
+    dataset: Any,
+    auxiliary_targets: dict[str, np.ndarray],
+    train_mask: np.ndarray,
+    valid_mask: np.ndarray,
+) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for horizon_key, target in auxiliary_targets.items():
+        values = np.asarray(target, dtype=np.float64)
+        usable_train = np.asarray(train_mask, dtype=bool) & np.isfinite(values)
+        usable_valid = np.asarray(valid_mask, dtype=bool) & np.isfinite(values)
+        if int(np.sum(usable_train)) <= 1 or int(np.sum(usable_valid)) <= 0:
+            continue
+        target_train = values[usable_train].astype(np.int64, copy=False)
+        target_valid = values[usable_valid].astype(np.int64, copy=False)
+        if np.unique(target_train).size < 2:
+            continue
+        results[horizon_key] = v4._fit_fixed_classifier_model(
+            options=options,
+            best_params=best_params,
+            x_train=dataset.X[usable_train],
+            y_train=target_train,
+            w_train=dataset.sample_weight[usable_train],
+            x_valid=dataset.X[usable_valid],
+            y_valid=target_valid,
+            w_valid=dataset.sample_weight[usable_valid],
+            fold_index=int(horizon_key.replace("h", "")),
+        )
+    return results
+
+
+def _fit_v5_auxiliary_ranker_heads(
+    *,
+    options: TrainV5PanelEnsembleOptions,
+    best_params: dict[str, Any],
+    dataset: Any,
+    auxiliary_targets: dict[str, np.ndarray],
+    train_mask: np.ndarray,
+    valid_mask: np.ndarray,
+) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for horizon_key, target in auxiliary_targets.items():
+        values = np.asarray(target, dtype=np.float64)
+        usable_train = np.asarray(train_mask, dtype=bool) & np.isfinite(values)
+        usable_valid = np.asarray(valid_mask, dtype=bool) & np.isfinite(values)
+        if int(np.sum(usable_train)) <= 1 or int(np.sum(usable_valid)) <= 0:
+            continue
+        results[horizon_key] = v4._fit_fixed_ranker_model(
+            options=options,
+            best_params=best_params,
+            x_train=dataset.X[usable_train],
+            y_train=values[usable_train],
+            ts_train_ms=dataset.ts_ms[usable_train],
+            w_train=dataset.sample_weight[usable_train],
+            x_valid=dataset.X[usable_valid],
+            y_valid=values[usable_valid],
+            ts_valid_ms=dataset.ts_ms[usable_valid],
+            fold_index=int(horizon_key.replace("h", "")),
+        )
+    return results
+
+
 def _build_component_matrix(
     *,
     x: np.ndarray,
     classifier_bundle: dict[str, Any],
     ranker_bundle: dict[str, Any],
+    auxiliary_classifier_bundles: dict[str, dict[str, Any]],
+    auxiliary_ranker_bundles: dict[str, dict[str, Any]],
     regressor_bundles: dict[str, dict[str, Any]],
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     cls_score = _predict_scores(classifier_bundle["bundle"] if "bundle" in classifier_bundle else classifier_bundle, x)
     rank_score = _predict_scores(ranker_bundle["bundle"] if "bundle" in ranker_bundle else ranker_bundle, x)
+    aux_cls_scores = {
+        key: _predict_scores(bundle["bundle"] if "bundle" in bundle else bundle, x)
+        for key, bundle in auxiliary_classifier_bundles.items()
+    }
+    aux_rank_scores = {
+        key: _predict_scores(bundle["bundle"] if "bundle" in bundle else bundle, x)
+        for key, bundle in auxiliary_ranker_bundles.items()
+    }
     reg_keys = sorted(regressor_bundles.keys(), key=lambda item: int(item.replace("h", "")))
     raw_mus = {
         key: np.asarray(
@@ -1705,10 +1848,20 @@ def _build_component_matrix(
         for key in reg_keys
     }
     reg_probs = [_sigmoid(values) for values in raw_mus.values()]
-    matrix = np.column_stack([cls_score, rank_score, *reg_probs])
+    matrix = np.column_stack(
+        [
+            cls_score,
+            rank_score,
+            *[aux_cls_scores[key] for key in sorted(aux_cls_scores.keys(), key=lambda item: int(item.replace("h", "")))],
+            *[aux_rank_scores[key] for key in sorted(aux_rank_scores.keys(), key=lambda item: int(item.replace("h", "")))],
+            *reg_probs,
+        ]
+    )
     payload = {
         "cls_score": cls_score,
         "rank_score": rank_score,
+        **{f"aux_cls_{key}": values for key, values in aux_cls_scores.items()},
+        **{f"aux_rank_{key}": values for key, values in aux_rank_scores.items()},
         **{f"mu_{key}": values for key, values in raw_mus.items()},
     }
     return matrix, payload
@@ -1757,6 +1910,8 @@ def _build_v5_oof_windows(
     dataset: Any,
     primary_y_reg: np.ndarray,
     regression_targets: dict[str, np.ndarray],
+    auxiliary_classifier_targets: dict[str, np.ndarray],
+    auxiliary_rank_targets: dict[str, np.ndarray],
     classifier_best_params: dict[str, Any],
     ranker_best_params: dict[str, Any],
     regressor_best_params: dict[str, dict[str, Any]],
@@ -1830,6 +1985,22 @@ def _build_v5_oof_windows(
             ts_valid_ms=dataset.ts_ms[valid_mask],
             fold_index=int(info.window_index),
         )
+        aux_cls_windows = _fit_v5_auxiliary_classifier_heads(
+            options=options,
+            best_params=classifier_best_params,
+            dataset=dataset,
+            auxiliary_targets=auxiliary_classifier_targets,
+            train_mask=train_mask,
+            valid_mask=valid_mask,
+        )
+        aux_rank_windows = _fit_v5_auxiliary_ranker_heads(
+            options=options,
+            best_params=ranker_best_params,
+            dataset=dataset,
+            auxiliary_targets=auxiliary_rank_targets,
+            train_mask=train_mask,
+            valid_mask=valid_mask,
+        )
         reg_windows: dict[str, dict[str, Any]] = {}
         for horizon_key, target in regression_targets.items():
             reg_windows[horizon_key] = v4._fit_fixed_regression_model(
@@ -1851,6 +2022,8 @@ def _build_v5_oof_windows(
             x=dataset.X[test_mask],
             classifier_bundle=cls_window,
             ranker_bundle=rank_window,
+            auxiliary_classifier_bundles=aux_cls_windows,
+            auxiliary_ranker_bundles=aux_rank_windows,
             regressor_bundles=reg_windows,
         )
         raw_window_rows.append(
@@ -2050,6 +2223,8 @@ def _build_v5_metrics_doc(
     lane_governance: dict[str, Any],
     cls_bundle: dict[str, Any],
     rank_bundle: dict[str, Any],
+    auxiliary_classifier_horizons: list[int],
+    auxiliary_rank_horizons: list[int],
     regressor_results: dict[str, dict[str, Any]],
     meta_fit: dict[str, Any],
     meta_ensemble_count: int,
@@ -2080,6 +2255,8 @@ def _build_v5_metrics_doc(
         "version": 1,
         "policy": "v5_panel_ensemble_v1",
         "component_order": list(_STACK_COMPONENT_ORDER),
+        "auxiliary_classifier_horizons": list(auxiliary_classifier_horizons),
+        "auxiliary_rank_horizons": list(auxiliary_rank_horizons),
         "regression_horizons": [int(key.replace("h", "")) for key in sorted(regressor_results.keys(), key=lambda item: int(item.replace("h", "")))],
         "classifier_backend": "xgboost",
         "ranker_backend": "xgboost_ranker",
@@ -2257,6 +2434,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
     )
 
     dataset = prepared["dataset"]
+    pre_domain_sample_weight = np.asarray(prepared.get("pre_domain_sample_weight"), dtype=np.float64)
     label_spec = prepared["label_spec"]
     label_contract = prepared["label_contract"]
     request = prepared["request"]
@@ -2275,6 +2453,14 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
     live_domain_reweighting = dict(prepared.get("live_domain_reweighting") or {})
 
     regression_targets = _load_v5_regression_targets(
+        request=request,
+        label_spec=label_spec,
+        dataset=dataset,
+        primary_y_cls_column=str(label_contract["y_cls_column"]),
+        primary_y_reg_column=str(label_contract["y_reg_column"]),
+        primary_y_rank_column=str(label_contract["y_rank_column"]),
+    )
+    auxiliary_targets = _load_v5_auxiliary_panel_targets(
         request=request,
         label_spec=label_spec,
         dataset=dataset,
@@ -2325,12 +2511,36 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
     )
 
     primary_horizon_key = f"h{int(label_contract.get('primary_horizon_bars', 12))}"
+    auxiliary_classifier_targets = {
+        key: value for key, value in dict(auxiliary_targets.get("cls") or {}).items() if key != primary_horizon_key
+    }
+    auxiliary_rank_targets = {
+        key: value for key, value in dict(auxiliary_targets.get("rank") or {}).items() if key != primary_horizon_key
+    }
+    auxiliary_classifier_bundles = _fit_v5_auxiliary_classifier_heads(
+        options=options,
+        best_params=dict(cls_bundle.get("best_params", {})),
+        dataset=dataset,
+        auxiliary_targets=auxiliary_classifier_targets,
+        train_mask=train_mask,
+        valid_mask=valid_mask,
+    )
+    auxiliary_ranker_bundles = _fit_v5_auxiliary_ranker_heads(
+        options=options,
+        best_params=dict(rank_bundle.get("best_params", {})),
+        dataset=dataset,
+        auxiliary_targets=auxiliary_rank_targets,
+        train_mask=train_mask,
+        valid_mask=valid_mask,
+    )
     primary_y_reg = np.asarray(regression_targets.get(primary_horizon_key, dataset.y_reg), dtype=np.float64)
     oof = _build_v5_oof_windows(
         options=options,
         dataset=dataset,
         primary_y_reg=primary_y_reg,
         regression_targets=regression_targets,
+        auxiliary_classifier_targets=auxiliary_classifier_targets,
+        auxiliary_rank_targets=auxiliary_rank_targets,
         classifier_best_params=dict(cls_bundle.get("best_params", {})),
         ranker_best_params=dict(rank_bundle.get("best_params", {})),
         regressor_best_params={key: dict(value.get("best_params", {})) for key, value in regressor_results.items()},
@@ -2360,6 +2570,8 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
     estimator = V5PanelEnsembleEstimator(
         classifier_bundle=cls_bundle["bundle"],
         ranker_bundle=rank_bundle["bundle"],
+        auxiliary_classifier_bundles=dict(auxiliary_classifier_bundles),
+        auxiliary_ranker_bundles=dict(auxiliary_ranker_bundles),
         regressor_bundles={key: value["bundle"] for key, value in regressor_results.items()},
         regression_member_bundles={
             key: tuple(oof.get("regression_member_bundles", {}).get(key) or ())
@@ -2479,6 +2691,8 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         lane_governance=lane_governance,
         cls_bundle=cls_bundle,
         rank_bundle=rank_bundle,
+        auxiliary_classifier_horizons=[int(key.replace("h", "")) for key in sorted(auxiliary_classifier_bundles.keys(), key=lambda item: int(item.replace("h", "")))],
+        auxiliary_rank_horizons=[int(key.replace("h", "")) for key in sorted(auxiliary_ranker_bundles.keys(), key=lambda item: int(item.replace("h", "")))],
         regressor_results=regressor_results,
         meta_fit=meta_fit,
         meta_ensemble_count=len(oof.get("meta_models", [])),
@@ -2559,6 +2773,37 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
             "distributional_contract": dict((metrics.get("panel_ensemble", {}) or {}).get("distributional_contract") or {}),
         },
     )
+    write_v5_domain_weighting_report(
+        run_dir=run_dir,
+        payload=build_v5_domain_weighting_report(
+            run_id=run_id,
+            trainer_name="v5_panel_ensemble",
+            model_family=options.model_family,
+            component_order=["base_sample_weight", "data_quality_weight", "support_level_weight", "domain_weight"],
+            final_sample_weight=np.asarray(dataset.sample_weight, dtype=np.float64),
+            base_sample_weight=np.ones(dataset.rows, dtype=np.float64),
+            data_quality_weight=pre_domain_sample_weight,
+            support_weight=np.ones(dataset.rows, dtype=np.float64),
+            domain_weight=np.clip(
+                np.asarray(dataset.sample_weight, dtype=np.float64) / np.maximum(pre_domain_sample_weight, 1e-12),
+                1e-6,
+                None,
+            ),
+            domain_details=(
+                dict(live_domain_reweighting or {})
+                | {
+                    "enabled": bool(live_domain_reweighting),
+                    "policy": "v5_domain_weighting_v1",
+                    "source_kind": "live_candidate_density_ratio_v1",
+                    "status": (
+                        "live_candidate_density_ratio_ready"
+                        if bool(live_domain_reweighting)
+                        else "disabled"
+                    ),
+                }
+            ),
+        ),
+    )
     support_artifacts = v4_persistence.persist_v4_support_artifacts(
         run_dir=run_dir,
         options=options,
@@ -2590,6 +2835,7 @@ def train_and_register_v5_panel_ensemble(options: TrainV5PanelEnsembleOptions) -
         metrics=metrics,
         research_support_lane=research_support_lane,
         cpcv_lite_runtime=cpcv_lite_runtime,
+        live_domain_reweighting=live_domain_reweighting,
         economic_objective_profile=economic_objective_profile,
         lane_governance=lane_governance,
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
@@ -2691,6 +2937,7 @@ def resume_v5_panel_ensemble_tail(*, run_dir: Path) -> TrainV5PanelEnsembleResul
 
     factor_block_selection_context = dict(((train_config.get("factor_block_selection") or {}).get("resolution_context")) or {})
     cpcv_lite_runtime = dict(train_config.get("cpcv_lite") or prepared["cpcv_lite_runtime"])
+    live_domain_reweighting = dict(prepared.get("live_domain_reweighting") or {})
     economic_objective_profile = v4.build_v4_shared_economic_objective_profile()
     lane_governance = v4._build_lane_governance_v4(
         task="cls",
@@ -2722,6 +2969,7 @@ def resume_v5_panel_ensemble_tail(*, run_dir: Path) -> TrainV5PanelEnsembleResul
         metrics=metrics,
         research_support_lane=research_support_lane,
         cpcv_lite_runtime=cpcv_lite_runtime,
+        live_domain_reweighting=live_domain_reweighting,
         economic_objective_profile=economic_objective_profile,
         lane_governance=lane_governance,
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,

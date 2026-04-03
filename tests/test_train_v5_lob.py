@@ -122,6 +122,9 @@ def test_train_v5_lob_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert result.run_dir.exists()
     assert result.lob_model_contract_path.exists()
     assert result.predictor_contract_path.exists()
+    assert result.lob_backbone_contract_path.exists()
+    assert result.lob_target_contract_path.exists()
+    assert result.domain_weighting_report_path.exists()
     assert (result.run_dir / "expert_prediction_table.parquet").exists()
     assert (result.run_dir / "runtime_feature_dataset" / "_meta" / "feature_spec.json").exists()
     assert result.walk_forward_report_path.exists()
@@ -129,6 +132,13 @@ def test_train_v5_lob_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert (result.run_dir / "expert_tail_context.json").exists()
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_lob"
     assert load_json(result.lob_model_contract_path)["policy"] == "v5_lob_v1"
+    assert load_json(result.lob_backbone_contract_path)["policy"] == "lob_backbone_contract_v1"
+    assert load_json(result.lob_backbone_contract_path)["backbone_family"] == "deeplob_v1"
+    assert load_json(result.lob_target_contract_path)["policy"] == "lob_target_contract_v1"
+    assert load_json(result.lob_target_contract_path)["primary_horizon_seconds"] == 30
+    assert load_json(result.domain_weighting_report_path)["policy"] == "v5_domain_weighting_v1"
+    assert load_json(result.run_dir / "runtime_recommendations.json")["lob_backbone_name"] == "deeplob_v1"
+    assert load_json(result.run_dir / "runtime_recommendations.json")["lob_uncertainty_head"] == "softplus_scalar"
     assert load_json(result.predictor_contract_path)["micro_alpha_30s_field"] == "micro_alpha_30s"
     assert load_json(result.train_report_path)["resumed"] is False
     assert float(load_json(result.train_report_path)["tail_duration_sec"]) >= 0.0

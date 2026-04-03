@@ -196,6 +196,9 @@ def build_runtime_topology_report(
         "persisted_runtime_contract": persisted_runtime_contract,
         "live_runtime_contract": live_current_contract,
         "candidate_runtime_contract": candidate_current_contract,
+        "runtime_provenance": _extract_runtime_provenance(current_contract),
+        "live_runtime_provenance": _extract_runtime_provenance(live_current_contract),
+        "candidate_runtime_provenance": _extract_runtime_provenance(candidate_current_contract),
         "runtime_sync_status": runtime_sync_status,
         "live_runtime_sync_status": live_runtime_sync_status,
         "candidate_runtime_sync_status": candidate_runtime_sync_status,
@@ -233,6 +236,13 @@ def build_runtime_topology_report(
             "target_topology_replay_excluded": bool(legacy_replay.get("target_topology_excluded", False)),
             "topology_health_status": str(topology_health.get("status", "unknown")).strip().lower() or "unknown",
             "topology_health_reason_codes": list(topology_health.get("reason_codes") or []),
+            "sequence_backbone_name": str(_extract_runtime_provenance(current_contract).get("sequence_backbone_name") or "").strip() or None,
+            "lob_backbone_name": str(_extract_runtime_provenance(current_contract).get("lob_backbone_name") or "").strip() or None,
+            "tradability_source_run_id": str(_extract_runtime_provenance(current_contract).get("tradability_source_run_id") or "").strip() or None,
+            "fusion_stacker_family": str(_extract_runtime_provenance(current_contract).get("fusion_stacker_family") or "").strip() or None,
+            "fusion_gating_policy": str(_extract_runtime_provenance(current_contract).get("fusion_gating_policy") or "").strip() or None,
+            "domain_weighting_policy": str(_extract_runtime_provenance(current_contract).get("domain_weighting_policy") or "").strip() or None,
+            "domain_weighting_source_kind": str(_extract_runtime_provenance(current_contract).get("domain_weighting_source_kind") or "").strip() or None,
         },
     }
     return report
@@ -302,6 +312,39 @@ def _load_unit_runtime_defaults(
     defaults["runtime_model_family"] = model_family
     defaults["source_unit"] = unit_name
     return defaults
+
+
+def _extract_runtime_provenance(contract: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(contract or {})
+    return {
+        "source_family": str(payload.get("source_family") or "").strip() or None,
+        "decision_contract_version": str(payload.get("decision_contract_version") or "").strip() or None,
+        "sequence_variant_name": str(payload.get("sequence_variant_name") or "").strip() or None,
+        "lob_variant_name": str(payload.get("lob_variant_name") or "").strip() or None,
+        "fusion_variant_name": str(payload.get("fusion_variant_name") or "").strip() or None,
+        "sequence_backbone_name": str(payload.get("sequence_backbone_name") or "").strip() or None,
+        "lob_backbone_name": str(payload.get("lob_backbone_name") or "").strip() or None,
+        "tradability_source_run_id": str(payload.get("tradability_source_run_id") or "").strip() or None,
+        "fusion_stacker_family": str(payload.get("fusion_stacker_family") or "").strip() or None,
+        "fusion_gating_policy": str(payload.get("fusion_gating_policy") or "").strip() or None,
+        "fusion_candidate_default_eligible": bool(payload.get("fusion_candidate_default_eligible", False)),
+        "fusion_evidence_winner": str(payload.get("fusion_evidence_winner") or "").strip() or None,
+        "fusion_evidence_reason_code": str(payload.get("fusion_evidence_reason_code") or "").strip() or None,
+        "fusion_offline_winner": str(payload.get("fusion_offline_winner") or "").strip() or None,
+        "fusion_default_eligible_winner": str(payload.get("fusion_default_eligible_winner") or "").strip() or None,
+        "domain_weighting_policy": str(payload.get("domain_weighting_policy") or "").strip() or None,
+        "domain_weighting_source_kind": str(payload.get("domain_weighting_source_kind") or "").strip() or None,
+        "domain_weighting_enabled": bool(payload.get("domain_weighting_enabled", False)),
+        "ood_status": str(payload.get("ood_status") or "").strip() or None,
+        "ood_source_kind": str(payload.get("ood_source_kind") or "").strip() or None,
+        "ood_penalty_enabled": bool(payload.get("ood_penalty_enabled", False)),
+        "sequence_pretrain_ready": bool(payload.get("sequence_pretrain_ready", False)),
+        "sequence_pretrain_method": str(payload.get("sequence_pretrain_method") or "").strip() or None,
+        "sequence_pretrain_status": str(payload.get("sequence_pretrain_status") or "").strip() or None,
+        "sequence_pretrain_objective": str(payload.get("sequence_pretrain_objective") or "").strip() or None,
+        "sequence_pretrain_best_epoch": int(payload.get("sequence_pretrain_best_epoch", 0) or 0) or None,
+        "sequence_pretrain_encoder_present": bool(payload.get("sequence_pretrain_encoder_present", False)),
+    }
 
 
 def _load_pointer(path: Path) -> dict[str, Any]:

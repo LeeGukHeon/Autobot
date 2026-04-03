@@ -289,3 +289,73 @@ def test_candidate_canary_report_reads_opportunity_reason_summary(tmp_path) -> N
     assert report["opportunity_entry_decision_reasons_top"][0][0] == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
     assert report["opportunity_safety_veto_reasons_top"][0][0] == "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
     assert report["opportunity_skip_reasons_top"][0][0] == "ENTRY_GATE_PORTFOLIO_BUDGET_BLOCKED"
+
+
+def test_candidate_canary_report_surfaces_variant_profile(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    db_path = project_root / "data" / "state" / "live_canary" / "live_state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with LiveStateStore(db_path):
+        pass
+    run_dir = project_root / "models" / "registry" / "train_v5_fusion" / "fusion-run-variant"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "train_config.yaml").write_text(
+        json.dumps(
+            {
+                "fusion_variant_name": "linear",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "runtime_recommendations.json").write_text(
+        json.dumps(
+            {
+                "sequence_variant_name": "patchtst_v1__none",
+                "lob_variant_name": "deeplob_v1",
+                "fusion_variant_name": "linear",
+                "fusion_stacker_family": "linear",
+                "fusion_gating_policy": "single_expert_v1",
+                "fusion_offline_winner": "linear",
+                "fusion_default_eligible_winner": "linear",
+                "fusion_candidate_default_eligible": True,
+                "fusion_evidence_winner": "linear",
+                "fusion_evidence_reason_code": "LINEAR_BASELINE_WINNER",
+                "domain_weighting_source_kind": "regime_inverse_frequency_v1",
+                "ood_status": "informative_ready",
+                "ood_source_kind": "regime_inverse_frequency_v1",
+                "ood_penalty_enabled": True,
+                "sequence_pretrain_ready": False,
+                "sequence_pretrain_method": "none",
+                "sequence_pretrain_status": "disabled",
+                "sequence_pretrain_objective": "none",
+                "sequence_pretrain_best_epoch": 0,
+                "sequence_pretrain_encoder_present": False,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "domain_weighting_report.json").write_text(
+        json.dumps(
+            {
+                "domain_details": {"source_kind": "regime_inverse_frequency_v1"},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_candidate_canary_report(db_path, run_id="fusion-run-variant")
+
+    assert report["variant_profile"]["sequence_variant_name"] == "patchtst_v1__none"
+    assert report["variant_profile"]["lob_variant_name"] == "deeplob_v1"
+    assert report["variant_profile"]["fusion_variant_name"] == "linear"
+    assert report["variant_profile"]["fusion_offline_winner"] == "linear"
+    assert report["variant_profile"]["fusion_default_eligible_winner"] == "linear"
+    assert report["variant_profile"]["ood_status"] == "informative_ready"
+    assert report["variant_profile"]["sequence_pretrain_method"] == "none"
+    assert report["variant_profile"]["sequence_pretrain_ready"] is False

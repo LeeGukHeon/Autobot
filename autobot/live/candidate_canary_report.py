@@ -177,6 +177,10 @@ def build_candidate_canary_report(
         opportunity_log_path=opportunity_log_path,
         run_id=str(run_id or "").strip() or None,
     )
+    variant_profile = _load_run_variant_profile(
+        project_root=_infer_project_root_from_db_path(Path(db_path)),
+        run_id=str(run_id or "").strip() or None,
+    )
 
     by_market: dict[str, dict[str, Any]] = defaultdict(lambda: {"closed": 0, "verified": 0, "realized_pnl_quote": 0.0, "wins": 0, "losses": 0})
     for row in closed_rows:
@@ -226,6 +230,7 @@ def build_candidate_canary_report(
         "opportunity_entry_decision_reasons_top": list(opportunity_summary.get("entry_decision_reasons_top") or []),
         "opportunity_safety_veto_reasons_top": list(opportunity_summary.get("safety_veto_reasons_top") or []),
         "opportunity_skip_reasons_top": list(opportunity_summary.get("skip_reasons_top") or []),
+        "variant_profile": variant_profile,
         "verification_status": dict(verification_status),
         "markets_top": sorted(
             (
@@ -404,6 +409,56 @@ def _load_opportunity_summary(*, opportunity_log_path: Path | None, run_id: str 
     }
 
 
+def _infer_project_root_from_db_path(db_path: Path) -> Path | None:
+    resolved = Path(db_path).resolve()
+    for parent in (resolved.parent, *resolved.parents):
+        if (parent / "models" / "registry").exists():
+            return parent
+    return None
+
+
+def _load_run_variant_profile(*, project_root: Path | None, run_id: str | None) -> dict[str, Any]:
+    if project_root is None or not run_id:
+        return {}
+    registry_root = Path(project_root) / "models" / "registry"
+    run_dir = registry_root / "train_v5_fusion" / str(run_id)
+    if not run_dir.exists() and registry_root.exists():
+        for family_root in registry_root.iterdir():
+            candidate = family_root / str(run_id)
+            if candidate.exists():
+                run_dir = candidate
+                break
+    if not run_dir.exists():
+        return {}
+    train_config = _load_json(run_dir / "train_config.yaml")
+    runtime_recommendations = _load_json(run_dir / "runtime_recommendations.json")
+    domain_weighting_report = _load_json(run_dir / "domain_weighting_report.json")
+    return {
+        "run_id": str(run_id),
+        "run_dir": str(run_dir),
+        "sequence_variant_name": str(runtime_recommendations.get("sequence_variant_name") or train_config.get("sequence_variant_name") or "").strip() or None,
+        "lob_variant_name": str(runtime_recommendations.get("lob_variant_name") or train_config.get("lob_variant_name") or "").strip() or None,
+        "fusion_variant_name": str(runtime_recommendations.get("fusion_variant_name") or train_config.get("fusion_variant_name") or "").strip() or None,
+        "fusion_stacker_family": str(runtime_recommendations.get("fusion_stacker_family") or "").strip() or None,
+        "fusion_gating_policy": str(runtime_recommendations.get("fusion_gating_policy") or "").strip() or None,
+        "fusion_candidate_default_eligible": bool(runtime_recommendations.get("fusion_candidate_default_eligible", False)),
+        "fusion_evidence_winner": str(runtime_recommendations.get("fusion_evidence_winner") or "").strip() or None,
+        "fusion_evidence_reason_code": str(runtime_recommendations.get("fusion_evidence_reason_code") or "").strip() or None,
+        "fusion_offline_winner": str(runtime_recommendations.get("fusion_offline_winner") or "").strip() or None,
+        "fusion_default_eligible_winner": str(runtime_recommendations.get("fusion_default_eligible_winner") or "").strip() or None,
+        "domain_weighting_source_kind": str(_dig(domain_weighting_report, "domain_details", "source_kind") or runtime_recommendations.get("domain_weighting_source_kind") or "").strip() or None,
+        "ood_status": str(runtime_recommendations.get("ood_status") or "").strip() or None,
+        "ood_source_kind": str(runtime_recommendations.get("ood_source_kind") or "").strip() or None,
+        "ood_penalty_enabled": bool(runtime_recommendations.get("ood_penalty_enabled", False)),
+        "sequence_pretrain_ready": bool(runtime_recommendations.get("sequence_pretrain_ready", False)),
+        "sequence_pretrain_method": str(runtime_recommendations.get("sequence_pretrain_method") or "").strip() or None,
+        "sequence_pretrain_status": str(runtime_recommendations.get("sequence_pretrain_status") or "").strip() or None,
+        "sequence_pretrain_objective": str(runtime_recommendations.get("sequence_pretrain_objective") or "").strip() or None,
+        "sequence_pretrain_best_epoch": int(runtime_recommendations.get("sequence_pretrain_best_epoch", 0) or 0) or None,
+        "sequence_pretrain_encoder_present": bool(runtime_recommendations.get("sequence_pretrain_encoder_present", False)),
+    }
+
+
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
         rows = []
@@ -417,6 +472,23 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
         return rows
     except (OSError, json.JSONDecodeError):
         return []
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _dig(payload: dict[str, Any] | None, *path: str) -> Any:
+    current: Any = payload or {}
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
 
 
 def _parse_args() -> argparse.Namespace:

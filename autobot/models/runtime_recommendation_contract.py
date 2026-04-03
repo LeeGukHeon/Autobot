@@ -206,6 +206,21 @@ def normalize_runtime_recommendations_payload(payload: dict[str, Any] | None) ->
             field_payload = normalized.get(field_name)
             if not isinstance(field_payload, dict) or not field_payload:
                 issues.append(issue_code)
+        provenance_fields = {
+            "sequence_variant_name": "RUNTIME_RECOMMENDATIONS_SEQUENCE_VARIANT_NAME_MISSING",
+            "lob_variant_name": "RUNTIME_RECOMMENDATIONS_LOB_VARIANT_NAME_MISSING",
+            "sequence_backbone_name": "RUNTIME_RECOMMENDATIONS_SEQUENCE_BACKBONE_NAME_MISSING",
+            "sequence_pretrain_method": "RUNTIME_RECOMMENDATIONS_SEQUENCE_PRETRAIN_METHOD_MISSING",
+            "sequence_pretrain_status": "RUNTIME_RECOMMENDATIONS_SEQUENCE_PRETRAIN_STATUS_MISSING",
+            "sequence_pretrain_objective": "RUNTIME_RECOMMENDATIONS_SEQUENCE_PRETRAIN_OBJECTIVE_MISSING",
+            "lob_backbone_name": "RUNTIME_RECOMMENDATIONS_LOB_BACKBONE_NAME_MISSING",
+            "tradability_source_run_id": "RUNTIME_RECOMMENDATIONS_TRADABILITY_SOURCE_RUN_ID_MISSING",
+            "domain_weighting_policy": "RUNTIME_RECOMMENDATIONS_DOMAIN_WEIGHTING_POLICY_MISSING",
+            "domain_weighting_source_kind": "RUNTIME_RECOMMENDATIONS_DOMAIN_WEIGHTING_SOURCE_KIND_MISSING",
+        }
+        for field_name, issue_code in provenance_fields.items():
+            if not str(normalized.get(field_name) or "").strip():
+                issues.append(issue_code)
     normalized["contract_backfilled_fields"] = list(dict.fromkeys(backfilled_fields))
     normalized["contract_issues"] = list(dict.fromkeys(issues))
     if normalized["contract_issues"]:

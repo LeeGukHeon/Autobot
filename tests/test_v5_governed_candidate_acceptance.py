@@ -21,7 +21,8 @@ def test_v5_governed_candidate_acceptance_targets_v5_fusion_contract() -> None:
 
     assert '-ModelFamily "train_v5_fusion"' in source
     assert '-Trainer "v5_fusion"' in source
-    assert '-DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob")' in source
+    assert '-DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability")' in source
+    assert '-EnableVariantMatrixSelection' in source
     assert '-FeatureSet "v4"' in source
     assert '-LabelSet "v3"' in source
     assert '-CandidateModelRef "latest_candidate"' in source
@@ -40,13 +41,14 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     )
     fake_candidate_acceptance = scripts_dir / "candidate_acceptance.ps1"
     fake_candidate_acceptance.write_text(
-        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '', [string[]]$DependencyTrainers = @())\n"
+        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '', [string[]]$DependencyTrainers = @(), [switch]$EnableVariantMatrixSelection)\n"
         "Write-Host ('[fake-v5] family=' + $ModelFamily)\n"
         "Write-Host ('[fake-v5] trainer=' + $Trainer)\n"
         "Write-Host ('[fake-v5] feature=' + $FeatureSet)\n"
         "Write-Host ('[fake-v5] label=' + $LabelSet)\n"
         "Write-Host ('[fake-v5] champion_family=' + $ChampionModelFamily)\n"
         "Write-Host ('[fake-v5] deps=' + (($DependencyTrainers | ForEach-Object { [string]$_ }) -join ','))\n"
+        "Write-Host ('[fake-v5] matrix=' + [string]$EnableVariantMatrixSelection.IsPresent)\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -81,4 +83,5 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     assert "[fake-v5] feature=v4" in completed.stdout
     assert "[fake-v5] label=v3" in completed.stdout
     assert "[fake-v5] champion_family=" in completed.stdout
-    assert "[fake-v5] deps=v5_panel_ensemble,v5_sequence,v5_lob" in completed.stdout
+    assert "[fake-v5] deps=v5_panel_ensemble,v5_sequence,v5_lob,v5_tradability" in completed.stdout
+    assert "[fake-v5] matrix=True" in completed.stdout

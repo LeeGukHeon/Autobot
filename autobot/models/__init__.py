@@ -54,6 +54,17 @@ from .train_v5_fusion import (
     resume_v5_fusion_tail,
     train_and_register_v5_fusion,
 )
+from .train_v5_tradability import (
+    TrainV5TradabilityOptions,
+    TrainV5TradabilityResult,
+    materialize_v5_tradability_runtime_export,
+    train_and_register_v5_tradability,
+)
+from .v5_variant_selection import (
+    run_v5_fusion_variant_matrix,
+    run_v5_lob_variant_matrix,
+    run_v5_sequence_variant_matrix,
+)
 from .modelbt_proxy import ModelBtProxyOptions, ModelBtProxyResult, run_modelbt_proxy
 from .metric_audit import MetricAuditOptions, MetricAuditResult, audit_predictions, audit_registered_model
 from .ablation import AblationOptions, AblationResult, run_ablation, select_ablation_feature_columns
@@ -97,6 +108,13 @@ __all__ = [
     "TrainV5FusionResult",
     "resume_v5_fusion_tail",
     "train_and_register_v5_fusion",
+    "TrainV5TradabilityOptions",
+    "TrainV5TradabilityResult",
+    "materialize_v5_tradability_runtime_export",
+    "train_and_register_v5_tradability",
+    "run_v5_sequence_variant_matrix",
+    "run_v5_lob_variant_matrix",
+    "run_v5_fusion_variant_matrix",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",
     "run_modelbt_proxy",

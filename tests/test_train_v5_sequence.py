@@ -112,6 +112,10 @@ def test_train_v5_sequence_writes_core_contract_artifacts(tmp_path: Path) -> Non
     assert result.run_dir.exists()
     assert result.sequence_model_contract_path.exists()
     assert result.predictor_contract_path.exists()
+    assert result.sequence_pretrain_contract_path.exists()
+    assert result.sequence_pretrain_report_path.exists()
+    assert result.sequence_pretrain_encoder_path.exists() is False
+    assert result.domain_weighting_report_path.exists()
     assert (result.run_dir / "expert_prediction_table.parquet").exists()
     assert (result.run_dir / "runtime_feature_dataset" / "_meta" / "feature_spec.json").exists()
     assert result.walk_forward_report_path.exists()
@@ -119,6 +123,17 @@ def test_train_v5_sequence_writes_core_contract_artifacts(tmp_path: Path) -> Non
     assert (result.run_dir / "expert_tail_context.json").exists()
     assert load_json(result.run_dir / "train_config.yaml")["trainer"] == "v5_sequence"
     assert load_json(result.sequence_model_contract_path)["policy"] == "v5_sequence_v1"
+    assert load_json(result.sequence_pretrain_contract_path)["policy"] == "sequence_pretrain_contract_v1"
+    assert load_json(result.sequence_model_contract_path)["backbone_family"] == "patchtst_v1"
+    assert load_json(result.sequence_model_contract_path)["target_family"] == "leader_residualized_return_v1"
+    assert load_json(result.sequence_pretrain_contract_path)["pretrain_method"] == "none"
+    assert load_json(result.sequence_pretrain_contract_path)["status"] == "disabled"
+    assert load_json(result.sequence_pretrain_contract_path)["pretrain_ready"] is False
+    assert load_json(result.sequence_pretrain_report_path)["policy"] == "sequence_pretrain_report_v1"
+    assert load_json(result.sequence_pretrain_report_path)["objective_name"] == "none"
+    assert load_json(result.sequence_pretrain_report_path)["best_epoch"] == 0
+    assert load_json(result.sequence_pretrain_report_path)["mask_ratio_schedule"] == []
+    assert load_json(result.domain_weighting_report_path)["policy"] == "v5_domain_weighting_v1"
     assert load_json(result.predictor_contract_path)["regime_embedding_dim"] == 4
     assert load_json(result.train_report_path)["resumed"] is False
     assert float(load_json(result.train_report_path)["tail_duration_sec"]) >= 0.0
@@ -132,6 +147,9 @@ def test_train_v5_sequence_writes_core_contract_artifacts(tmp_path: Path) -> Non
     assert runtime_recommendations["decision_contract_version"] == "v5_post_model_contract_v1"
     assert runtime_recommendations["entry_ownership"] == "predictor_boundary"
     assert runtime_recommendations["trade_action_role"] == "advisory_only_v1"
+    assert runtime_recommendations["sequence_backbone_name"] == "patchtst_v1"
+    assert runtime_recommendations["sequence_pretrain_ready"] is False
+    assert runtime_recommendations["sequence_pretrain_method"] == "none"
     predictor = load_predictor_from_registry(
         registry_root=tmp_path / "registry",
         model_ref=result.run_id,
@@ -140,6 +158,212 @@ def test_train_v5_sequence_writes_core_contract_artifacts(tmp_path: Path) -> Non
     payload = predictor.predict_score_contract(np.zeros((2, len(predictor.feature_columns)), dtype=np.float64))
     assert payload["final_rank_score"].shape == (2,)
     assert (tmp_path / "registry" / "train_v5_sequence" / "latest.json").exists()
+
+
+def test_train_v5_sequence_ts2vec_pretrain_writes_enabled_report(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "parquet" / "sequence_v1"
+    meta_root = dataset_root / "_meta"
+    cache_root = dataset_root / "cache" / "market=KRW-BTC" / "date=2026-03-27"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    anchors = [1_774_569_600_000 + (idx * 60_000) for idx in range(12)]
+    manifest_rows = []
+    for idx, anchor_ts_ms in enumerate(anchors):
+        cache_file = cache_root / f"anchor-{anchor_ts_ms}.npz"
+        np.savez_compressed(
+            cache_file,
+            second_tensor=np.full((4, 4), 0.1 + idx, dtype=np.float32),
+            minute_tensor=np.full((1, 4), 0.2 + idx, dtype=np.float32),
+            micro_tensor=np.full((1, 7), 0.3 + idx, dtype=np.float32),
+            lob_tensor=np.full((1, 30, 5), 0.4 + idx, dtype=np.float32),
+            lob_global_tensor=np.full((1, 5), 0.5 + idx, dtype=np.float32),
+            second_mask=np.ones((4,), dtype=np.float32),
+            minute_mask=np.ones((1,), dtype=np.float32),
+            micro_mask=np.ones((1,), dtype=np.float32),
+            lob_mask=np.ones((1,), dtype=np.float32),
+        )
+        manifest_rows.append(
+            {
+                "market": "KRW-BTC",
+                "date": "2026-03-27",
+                "anchor_ts_ms": anchor_ts_ms,
+                "anchor_utc": "2026-03-27T00:00:00+00:00",
+                "status": "OK",
+                "reasons_json": "[]",
+                "error_message": None,
+                "cache_file": str(cache_file),
+                "second_coverage_ratio": 1.0,
+                "minute_coverage_ratio": 1.0,
+                "micro_coverage_ratio": 1.0,
+                "lob_coverage_ratio": 1.0,
+                "built_at_ms": anchor_ts_ms + 1,
+            }
+        )
+    pl.DataFrame(manifest_rows).write_parquet(meta_root / "manifest.parquet")
+    (meta_root / "sequence_tensor_contract.json").write_text(
+        json.dumps({"policy": "sequence_tensor_contract_v1", "second_tensor": {"lookback_steps": 4}}),
+        encoding="utf-8",
+    )
+    (meta_root / "lob_tensor_contract.json").write_text(
+        json.dumps({"policy": "lob_tensor_contract_v1", "shape": {"levels": 30}}),
+        encoding="utf-8",
+    )
+    ws_root = tmp_path / "parquet" / "ws_candle_v1" / "tf=1m" / "market=KRW-BTC"
+    ws_root.mkdir(parents=True, exist_ok=True)
+    ws_rows = []
+    for idx in range(40):
+        ts_ms = anchors[0] + (idx * 60_000)
+        close = 100.0 + (idx * 0.5)
+        ws_rows.append(
+            {
+                "ts_ms": ts_ms,
+                "open": close - 0.2,
+                "high": close + 0.2,
+                "low": close - 0.3,
+                "close": close,
+                "volume_base": 1.0 + idx,
+                "volume_quote": 100.0 + idx,
+                "volume_quote_est": False,
+            }
+        )
+    pl.DataFrame(ws_rows).write_parquet(ws_root / "part-000.parquet")
+    options = TrainV5SequenceOptions(
+        dataset_root=dataset_root,
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_sequence",
+        quote="KRW",
+        top_n=1,
+        start="2026-03-27",
+        end="2026-03-27",
+        seed=7,
+        pretrain_method="ts2vec_v1",
+        batch_size=4,
+        pretrain_epochs=1,
+        finetune_epochs=1,
+        horizons_minutes=(3, 6, 12, 24),
+        quantile_levels=(0.1, 0.5, 0.9),
+        hidden_dim=16,
+        regime_embedding_dim=4,
+    )
+    result = train_and_register_v5_sequence(options)
+    contract = load_json(result.sequence_pretrain_contract_path)
+    report = load_json(result.sequence_pretrain_report_path)
+    assert contract["status"] == "enabled"
+    assert contract["pretrain_ready"] is True
+    assert contract["objective_name"] == "ts2vec_alignment_variance_v1"
+    assert Path(contract["encoder_artifact_path"]).exists()
+    assert report["status"] == "enabled"
+    assert report["objective_name"] == "ts2vec_alignment_variance_v1"
+    assert "covariance_loss" in report["objective_components"]
+    assert "crop_alignment_loss" in report["objective_components"]
+    assert report["best_epoch"] >= 1
+    assert report["encoder_dim"] > 0
+    assert report["augmentation_policy"] == ["gaussian_noise_v1", "temporal_crop_mismatch_v1"]
+    assert report["final_component_values"]["alignment_loss"] >= 0.0
+    assert report["encoder_norm_summary"]["parameter_tensor_count"] > 0
+
+
+def test_train_v5_sequence_timemae_pretrain_writes_enabled_report(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "parquet" / "sequence_v1"
+    meta_root = dataset_root / "_meta"
+    cache_root = dataset_root / "cache" / "market=KRW-BTC" / "date=2026-03-27"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    anchors = [1_774_569_600_000 + (idx * 60_000) for idx in range(12)]
+    manifest_rows = []
+    for idx, anchor_ts_ms in enumerate(anchors):
+        cache_file = cache_root / f"anchor-{anchor_ts_ms}.npz"
+        np.savez_compressed(
+            cache_file,
+            second_tensor=np.full((4, 4), 0.1 + idx, dtype=np.float32),
+            minute_tensor=np.full((1, 4), 0.2 + idx, dtype=np.float32),
+            micro_tensor=np.full((1, 7), 0.3 + idx, dtype=np.float32),
+            lob_tensor=np.full((1, 30, 5), 0.4 + idx, dtype=np.float32),
+            lob_global_tensor=np.full((1, 5), 0.5 + idx, dtype=np.float32),
+            second_mask=np.ones((4,), dtype=np.float32),
+            minute_mask=np.ones((1,), dtype=np.float32),
+            micro_mask=np.ones((1,), dtype=np.float32),
+            lob_mask=np.ones((1,), dtype=np.float32),
+        )
+        manifest_rows.append(
+            {
+                "market": "KRW-BTC",
+                "date": "2026-03-27",
+                "anchor_ts_ms": anchor_ts_ms,
+                "anchor_utc": "2026-03-27T00:00:00+00:00",
+                "status": "OK",
+                "reasons_json": "[]",
+                "error_message": None,
+                "cache_file": str(cache_file),
+                "second_coverage_ratio": 1.0,
+                "minute_coverage_ratio": 1.0,
+                "micro_coverage_ratio": 1.0,
+                "lob_coverage_ratio": 1.0,
+                "built_at_ms": anchor_ts_ms + 1,
+            }
+        )
+    pl.DataFrame(manifest_rows).write_parquet(meta_root / "manifest.parquet")
+    (meta_root / "sequence_tensor_contract.json").write_text(
+        json.dumps({"policy": "sequence_tensor_contract_v1", "second_tensor": {"lookback_steps": 4}}),
+        encoding="utf-8",
+    )
+    (meta_root / "lob_tensor_contract.json").write_text(
+        json.dumps({"policy": "lob_tensor_contract_v1", "shape": {"levels": 30}}),
+        encoding="utf-8",
+    )
+    ws_root = tmp_path / "parquet" / "ws_candle_v1" / "tf=1m" / "market=KRW-BTC"
+    ws_root.mkdir(parents=True, exist_ok=True)
+    ws_rows = []
+    for idx in range(40):
+        ts_ms = anchors[0] + (idx * 60_000)
+        close = 100.0 + (idx * 0.5)
+        ws_rows.append(
+            {
+                "ts_ms": ts_ms,
+                "open": close - 0.2,
+                "high": close + 0.2,
+                "low": close - 0.3,
+                "close": close,
+                "volume_base": 1.0 + idx,
+                "volume_quote": 100.0 + idx,
+                "volume_quote_est": False,
+            }
+        )
+    pl.DataFrame(ws_rows).write_parquet(ws_root / "part-000.parquet")
+    options = TrainV5SequenceOptions(
+        dataset_root=dataset_root,
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_sequence",
+        quote="KRW",
+        top_n=1,
+        start="2026-03-27",
+        end="2026-03-27",
+        seed=7,
+        pretrain_method="timemae_v1",
+        batch_size=4,
+        pretrain_epochs=1,
+        finetune_epochs=1,
+        horizons_minutes=(3, 6, 12, 24),
+        quantile_levels=(0.1, 0.5, 0.9),
+        hidden_dim=16,
+        regime_embedding_dim=4,
+    )
+    result = train_and_register_v5_sequence(options)
+    contract = load_json(result.sequence_pretrain_contract_path)
+    report = load_json(result.sequence_pretrain_report_path)
+    assert contract["status"] == "enabled"
+    assert contract["pretrain_ready"] is True
+    assert contract["objective_name"] == "timemae_masked_reconstruction_v1"
+    assert Path(contract["encoder_artifact_path"]).exists()
+    assert report["status"] == "enabled"
+    assert report["objective_name"] == "timemae_masked_reconstruction_v1"
+    assert "reconstruction_loss" in report["objective_components"]
+    assert report["best_epoch"] >= 1
+    assert len(report["mask_ratio_schedule"]) == 1
+    assert report["mask_ratio_schedule"][0] >= 0.2
+    assert report["encoder_norm_summary"]["parameter_tensor_count"] > 0
 
 
 def test_resume_v5_sequence_tail_reuses_existing_artifacts(tmp_path: Path) -> None:

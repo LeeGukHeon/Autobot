@@ -49,6 +49,11 @@ from .v5_expert_runtime_export import (
     resolve_expert_runtime_export_paths,
     write_expert_runtime_export_metadata,
 )
+from .v5_domain_weighting import (
+    build_v5_domain_weighting_report,
+    resolve_v5_domain_weighting_components,
+    write_v5_domain_weighting_report,
+)
 from autobot.data.collect.sequence_tensor_store import (
     SUPPORT_LEVEL_REDUCED_CONTEXT,
     SUPPORT_LEVEL_STRICT_FULL,
@@ -58,7 +63,20 @@ from autobot.data.collect.sequence_tensor_store import (
 
 
 LOB_HORIZONS_SECONDS: tuple[int, ...] = (1, 5, 30, 60)
-VALID_LOB_BACKBONES = ("deeplob", "bdlob", "hlob")
+LOB_BACKBONE_ALIASES: dict[str, str] = {
+    "deeplob": "deeplob_v1",
+    "deeplob_v1": "deeplob_v1",
+    "bdlob": "bdlob_v1",
+    "bdlob_v1": "bdlob_v1",
+    "hlob": "hlob_v1",
+    "hlob_v1": "hlob_v1",
+}
+LOB_BACKBONE_IMPL_FAMILIES: dict[str, str] = {
+    "deeplob_v1": "deeplob",
+    "bdlob_v1": "bdlob",
+    "hlob_v1": "hlob",
+}
+VALID_LOB_BACKBONES = tuple(LOB_BACKBONE_ALIASES.keys())
 
 
 @dataclass(frozen=True)
@@ -72,7 +90,7 @@ class TrainV5LobOptions:
     start: str
     end: str
     seed: int
-    backbone_family: str = "deeplob"
+    backbone_family: str = "deeplob_v1"
     batch_size: int = 16
     epochs: int = 5
     learning_rate: float = 1e-3
@@ -98,6 +116,9 @@ class TrainV5LobResult:
     walk_forward_report_path: Path
     lob_model_contract_path: Path
     predictor_contract_path: Path
+    lob_backbone_contract_path: Path
+    lob_target_contract_path: Path
+    domain_weighting_report_path: Path
 
 
 @dataclass
@@ -190,6 +211,21 @@ def _slice_lob_samples_by_indices(samples: _LobSamples, indices: np.ndarray) -> 
         rows_by_market=samples.rows_by_market,
         support_level_counts=samples.support_level_counts,
     )
+
+
+def _normalize_lob_backbone_family(value: str | None) -> str:
+    resolved = str(value or "").strip().lower() or "deeplob_v1"
+    canonical = LOB_BACKBONE_ALIASES.get(resolved)
+    if canonical is None:
+        raise ValueError(f"backbone_family must be one of: {', '.join(VALID_LOB_BACKBONES)}")
+    return canonical
+
+
+def _lob_backbone_impl_family(canonical_family: str) -> str:
+    resolved = str(canonical_family or "").strip().lower()
+    if resolved not in LOB_BACKBONE_IMPL_FAMILIES:
+        raise ValueError(f"unsupported canonical lob backbone: {canonical_family}")
+    return LOB_BACKBONE_IMPL_FAMILIES[resolved]
 
 
 def _align_lob_samples_to_anchor_export(
@@ -491,11 +527,30 @@ def _write_lob_expert_prediction_table(
     return resolved_output_path
 
 
-def _build_lob_runtime_recommendations(*, options: TrainV5LobOptions, runtime_dataset_root: Path) -> dict[str, Any]:
+def _build_lob_runtime_recommendations(
+    *,
+    options: TrainV5LobOptions,
+    runtime_dataset_root: Path,
+    domain_details: dict[str, Any] | None = None,
+    support_level_quality_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details = dict(domain_details or {})
+    canonical_backbone = _normalize_lob_backbone_family(options.backbone_family)
     return annotate_v5_runtime_recommendations({
         "status": "lob_runtime_ready",
         "source_family": options.model_family,
         "runtime_feature_dataset_root": str(runtime_dataset_root),
+        "lob_variant_name": canonical_backbone,
+        "lob_backbone_name": canonical_backbone,
+        "lob_short_horizon_targets": list(LOB_HORIZONS_SECONDS),
+        "lob_auxiliary_targets": ["micro_alpha_60s", "five_min_alpha", "adverse_excursion_30s"],
+        "lob_uncertainty_head": "softplus_scalar",
+        "lob_uncertainty_quality_target": "micro_uncertainty_calibration_v1",
+        "lob_micro_move_calibration_target": "primary_vs_aux_horizon_consistency_v1",
+        "lob_support_level_quality_summary": dict(support_level_quality_summary or {}),
+        "domain_weighting_policy": str(details.get("policy") or "v5_domain_weighting_v1").strip() or "v5_domain_weighting_v1",
+        "domain_weighting_source_kind": str(details.get("source_kind") or "regime_inverse_frequency_v1").strip() or "regime_inverse_frequency_v1",
+        "domain_weighting_enabled": bool(details.get("enabled", False)),
     })
 
 
@@ -534,7 +589,7 @@ def _options_from_v5_lob_train_config(train_config: dict[str, Any]) -> TrainV5Lo
         start=str(base["start"]),
         end=str(base["end"]),
         seed=int(base["seed"]),
-        backbone_family=str(base.get("backbone_family", "deeplob")),
+        backbone_family=_normalize_lob_backbone_family(str(base.get("backbone_family", "deeplob_v1"))),
         batch_size=int(base.get("batch_size", 16)),
         epochs=int(base.get("epochs", 5)),
         learning_rate=float(base.get("learning_rate", 1e-3)),
@@ -591,6 +646,7 @@ def _run_lob_expert_tail(
     runtime_recommendations = _build_lob_runtime_recommendations(
         options=options,
         runtime_dataset_root=runtime_dataset_written_root,
+        support_level_quality_summary=dict((load_json(run_dir / "lob_target_contract.json") or {}).get("support_level_quality_summary") or {}),
     )
     promotion_payload = _build_lob_promotion_payload(
         run_id=run_id,
@@ -1287,9 +1343,8 @@ def _compute_adverse_excursion(*, second_ts: np.ndarray, second_close: np.ndarra
 
 
 def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
-    backbone_family = str(options.backbone_family).strip().lower()
-    if backbone_family not in VALID_LOB_BACKBONES:
-        raise ValueError(f"backbone_family must be one of: {', '.join(VALID_LOB_BACKBONES)}")
+    backbone_family = _normalize_lob_backbone_family(options.backbone_family)
+    backbone_impl_family = _lob_backbone_impl_family(backbone_family)
 
     started_at = time.time()
     run_id = make_run_id(seed=options.seed)
@@ -1303,6 +1358,23 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         interval_ms=60_000,
     )
     masks = split_masks(labels)
+    support_weight = np.asarray([_support_level_weight(level) for level in samples.support_level], dtype=np.float64)
+    data_quality_weight = np.maximum(
+        np.asarray(samples.sample_weight, dtype=np.float64) / np.maximum(support_weight, 1e-12),
+        1e-12,
+    )
+    weight_components = resolve_v5_domain_weighting_components(
+        markets=samples.markets,
+        ts_ms=samples.ts_ms,
+        split_labels=labels,
+        base_sample_weight=np.ones(samples.rows, dtype=np.float64),
+        data_quality_weight=data_quality_weight,
+        support_weight=support_weight,
+    )
+    samples = replace(
+        samples,
+        sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+    )
     train_idx = np.flatnonzero(masks["train"])
     valid_idx = np.flatnonzero(masks["valid"])
     test_idx = np.flatnonzero(masks["test"])
@@ -1313,7 +1385,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
     np.random.seed(int(options.seed))
     device = torch.device("cpu")
     model = _V5LobModel(
-        backbone_family=backbone_family,
+        backbone_family=backbone_impl_family,
         lob_channels=int(samples.lob.shape[3]),
         lob_global_dim=int(samples.lob_global.shape[2]),
         micro_dim=int(samples.micro.shape[2]),
@@ -1434,6 +1506,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "lob_model": {
             "policy": "v5_lob_v1",
             "backbone_family": backbone_family,
+            "backbone_impl_family": backbone_impl_family,
             "outputs": ["micro_alpha_1s", "micro_alpha_5s", "micro_alpha_30s", "micro_uncertainty"],
             "auxiliary_targets": ["micro_alpha_60s", "five_min_alpha", "adverse_excursion_30s"],
         },
@@ -1479,10 +1552,19 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         "support_level_counts": dict(samples.support_level_counts),
         "autobot_version": autobot_version,
         "data_platform_ready_snapshot_id": data_platform_ready_snapshot_id,
+        "backbone_family": backbone_family,
+        "backbone_impl_family": backbone_impl_family,
     }
     runtime_recommendations = _build_lob_runtime_recommendations(
         options=options,
         runtime_dataset_root=runtime_dataset_root,
+        domain_details=dict(weight_components["domain_details"] or {}),
+        support_level_quality_summary={
+            "counts": dict(samples.support_level_counts),
+            "strict_full_ratio": float((samples.support_level_counts.get(SUPPORT_LEVEL_STRICT_FULL, 0) or 0) / max(samples.rows, 1)),
+            "reduced_context_ratio": float((samples.support_level_counts.get(SUPPORT_LEVEL_REDUCED_CONTEXT, 0) or 0) / max(samples.rows, 1)),
+            "structural_invalid_ratio": float((samples.support_level_counts.get(SUPPORT_LEVEL_STRUCTURAL_INVALID, 0) or 0) / max(samples.rows, 1)),
+        },
     )
     data_fingerprint = {
         "dataset_root": str(options.dataset_root),
@@ -1533,6 +1615,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
             {
                 "policy": "v5_lob_v1",
                 "backbone_family": backbone_family,
+                "backbone_impl_family": backbone_impl_family,
                 "input_modalities": feature_spec["input_modalities"],
                 "short_horizons_seconds": list(LOB_HORIZONS_SECONDS),
                 "outputs": {
@@ -1549,6 +1632,63 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         )
         + "\n",
         encoding="utf-8",
+    )
+    lob_backbone_contract_path = run_dir / "lob_backbone_contract.json"
+    lob_backbone_contract_path.write_text(
+        json.dumps(
+            {
+                "policy": "lob_backbone_contract_v1",
+                "backbone_family": backbone_family,
+                "backbone_impl_family": backbone_impl_family,
+                "status": "enabled",
+                "uncertainty_head": "softplus_scalar",
+                "input_modalities": feature_spec["input_modalities"],
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    lob_target_contract_path = run_dir / "lob_target_contract.json"
+    lob_target_contract_path.write_text(
+        json.dumps(
+            {
+                "policy": "lob_target_contract_v1",
+                "target_family": "short_horizon_microstructure_bundle_v1",
+                "short_horizons_seconds": list(LOB_HORIZONS_SECONDS),
+                "primary_horizon_seconds": 30,
+                "auxiliary_targets": ["micro_alpha_60s", "five_min_alpha", "adverse_excursion_30s"],
+                "uncertainty_target": "micro_uncertainty",
+                "uncertainty_quality_target": "micro_uncertainty_calibration_v1",
+                "micro_move_calibration_target": "primary_vs_aux_horizon_consistency_v1",
+                "support_level_quality_summary": {
+                    "counts": dict(samples.support_level_counts),
+                    "strict_full_ratio": float((samples.support_level_counts.get(SUPPORT_LEVEL_STRICT_FULL, 0) or 0) / max(samples.rows, 1)),
+                    "reduced_context_ratio": float((samples.support_level_counts.get(SUPPORT_LEVEL_REDUCED_CONTEXT, 0) or 0) / max(samples.rows, 1)),
+                    "structural_invalid_ratio": float((samples.support_level_counts.get(SUPPORT_LEVEL_STRUCTURAL_INVALID, 0) or 0) / max(samples.rows, 1)),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    domain_weighting_report_path = write_v5_domain_weighting_report(
+        run_dir=run_dir,
+        payload=build_v5_domain_weighting_report(
+            run_id=run_id,
+            trainer_name="v5_lob",
+            model_family=options.model_family,
+            component_order=["base_sample_weight", "data_quality_weight", "support_level_weight", "domain_weight"],
+            final_sample_weight=np.asarray(weight_components["final_sample_weight"], dtype=np.float64),
+            base_sample_weight=np.asarray(weight_components["base_sample_weight"], dtype=np.float64),
+            data_quality_weight=np.asarray(weight_components["data_quality_weight"], dtype=np.float64),
+            support_weight=np.asarray(weight_components["support_weight"], dtype=np.float64),
+            domain_weight=np.asarray(weight_components["domain_weight"], dtype=np.float64),
+            domain_details=dict(weight_components["domain_details"] or {}),
+        ),
     )
     predictor_contract_path = run_dir / "predictor_contract.json"
     predictor_contract_path.write_text(
@@ -1637,6 +1777,9 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         walk_forward_report_path=walk_forward_report_path,
         lob_model_contract_path=lob_model_contract_path,
         predictor_contract_path=predictor_contract_path,
+        lob_backbone_contract_path=lob_backbone_contract_path,
+        lob_target_contract_path=lob_target_contract_path,
+        domain_weighting_report_path=domain_weighting_report_path,
     )
 
 
@@ -1741,4 +1884,7 @@ def resume_v5_lob_tail(*, run_dir: Path) -> TrainV5LobResult:
         walk_forward_report_path=walk_forward_report_path,
         lob_model_contract_path=run_dir / "lob_model_contract.json",
         predictor_contract_path=run_dir / "predictor_contract.json",
+        lob_backbone_contract_path=run_dir / "lob_backbone_contract.json",
+        lob_target_contract_path=run_dir / "lob_target_contract.json",
+        domain_weighting_report_path=run_dir / "domain_weighting_report.json",
     )

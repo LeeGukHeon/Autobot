@@ -41,7 +41,7 @@ def _write_dataset(root: Path, dataset_name: str) -> None:
 
 def test_publish_ready_snapshot_writes_pointer_and_resolves_dataset_roots(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
-    for name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "candles_api_v1", "features_v4"):
+    for name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "private_execution_v1", "candles_api_v1", "features_v4"):
         _write_dataset(project_root, name)
 
     result = publish_ready_snapshot(project_root=project_root)
@@ -61,7 +61,7 @@ def test_publish_ready_snapshot_writes_pointer_and_resolves_dataset_roots(tmp_pa
 
 def test_env_snapshot_id_overrides_ready_pointer(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "project"
-    for name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "candles_api_v1", "features_v4"):
+    for name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "private_execution_v1", "candles_api_v1", "features_v4"):
         _write_dataset(project_root, name)
 
     first = publish_ready_snapshot(project_root=project_root)
