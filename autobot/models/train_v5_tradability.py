@@ -796,6 +796,8 @@ def materialize_v5_tradability_runtime_export(
         "selected_markets": sorted({str(item).strip().upper() for item in merged.get_column("market").to_list() if str(item).strip()}),
         "selected_markets_source": "acceptance_common_runtime_universe" if selected_markets_override is not None else "runtime_input_markets",
         "fallback_reason": "",
+        "anchor_alignment_complete": True,
+        "anchor_export_path": str(Path(panel_runtime_input_path).resolve()),
         "rows": int(merged.height),
     }
     existing_export = load_existing_expert_runtime_export(run_dir, start, end)

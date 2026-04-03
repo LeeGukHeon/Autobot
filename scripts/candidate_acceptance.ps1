@@ -1032,6 +1032,21 @@ function Test-DependencyRuntimeExportContractAlignment {
         $selectedMarkets = @(Normalize-MarketArray -Markets (Get-PropValue -ObjectValue $item -Name "selected_markets" -DefaultValue @()))
         $selectedMarketsSource = [string](Get-PropValue -ObjectValue $item -Name "selected_markets_source" -DefaultValue "")
         $fallbackReason = [string](Get-PropValue -ObjectValue $item -Name "fallback_reason" -DefaultValue "")
+        $missingCoverageDates = @($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ })
+        $allowTrailingSingleDayGap = $false
+        if (
+            (@($missingCoverageDates).Count -eq 1) -and
+            ([string]$missingCoverageDates[0] -eq [string]$CertificationEndDate) -and
+            (-not [string]::IsNullOrWhiteSpace($coverageEndDate))
+        ) {
+            try {
+                $coverageEndObj = [DateTime]::ParseExact($coverageEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+                $certificationEndObj = [DateTime]::ParseExact([string]$CertificationEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+                $allowTrailingSingleDayGap = ($coverageEndObj.AddDays(1).ToString("yyyy-MM-dd") -eq $certificationEndObj.ToString("yyyy-MM-dd"))
+            } catch {
+                $allowTrailingSingleDayGap = $false
+            }
+        }
         $windowGap = (
             ($startDate -ne [string]$CertificationStartDate) -or
             ($endDate -ne [string]$CertificationEndDate) -or
@@ -1039,8 +1054,8 @@ function Test-DependencyRuntimeExportContractAlignment {
             [string]::IsNullOrWhiteSpace($coverageStartDate) -or
             [string]::IsNullOrWhiteSpace($coverageEndDate) -or
             ($coverageStartDate -gt [string]$CertificationStartDate) -or
-            ($coverageEndDate -lt [string]$CertificationEndDate) -or
-            (@($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ }).Count -gt 0)
+            (($coverageEndDate -lt [string]$CertificationEndDate) -and (-not $allowTrailingSingleDayGap)) -or
+            ((@($missingCoverageDates).Count -gt 0) -and (-not $allowTrailingSingleDayGap))
         )
         $anchorGap = (
             (([string]$trainerName -ne "v5_panel_ensemble")) -and
