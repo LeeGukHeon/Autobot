@@ -25,6 +25,13 @@ SNAPSHOT_DATASET_LAYOUT: dict[str, tuple[Path, Path]] = {
 
 CORE_DERIVED_DATASETS: tuple[str, ...] = tuple(SNAPSHOT_DATASET_LAYOUT.keys())
 
+SNAPSHOT_VALIDATE_REPORT_FALLBACKS: dict[str, Path] = {
+    "candles_second_v1": Path("data/collect/_meta/candle_second_validate_report.json"),
+    "ws_candle_v1": Path("data/collect/_meta/ws_candle_validate_report.json"),
+    "lob30_v1": Path("data/collect/_meta/lob30_validate_report.json"),
+    "candles_api_v1": Path("data/collect/_meta/candle_validate_report.json"),
+}
+
 
 def ready_snapshot_pointer_path(*, project_root: Path) -> Path:
     return project_root / "data" / "_meta" / "data_platform_ready_snapshot.json"
@@ -104,9 +111,17 @@ def publish_ready_snapshot(
         source_root = resolved_project_root / relative_source
         if not source_root.exists():
             raise FileNotFoundError(f"derived dataset root missing: {source_root}")
-        requirements = _resolve_snapshot_requirements(dataset_name=name, source_root=source_root)
+        requirements = _resolve_snapshot_requirements(
+            dataset_name=name,
+            source_root=source_root,
+            project_root=resolved_project_root,
+        )
         target_root = snapshot_root / relative_target
         _copytree_hardlink(src=source_root, dst=target_root)
+        _materialize_snapshot_validate_report(
+            target_root=target_root,
+            validate_report_source_path=Path(str(requirements["validate_report_source_path"])),
+        )
         dataset_payload[name] = {
             "dataset_root": str(target_root),
             "source_root": str(source_root),
@@ -164,9 +179,20 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temp.replace(path)
 
 
-def _resolve_snapshot_requirements(*, dataset_name: str, source_root: Path) -> dict[str, Any]:
+def _materialize_snapshot_validate_report(*, target_root: Path, validate_report_source_path: Path) -> None:
+    target_path = Path(target_root) / "_meta" / "validate_report.json"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_path.exists():
+        return
+    shutil.copy2(validate_report_source_path, target_path)
+
+
+def _resolve_snapshot_requirements(*, dataset_name: str, source_root: Path, project_root: Path) -> dict[str, Any]:
     meta_root = Path(source_root) / "_meta"
     validate_report_path = meta_root / "validate_report.json"
+    fallback_path = SNAPSHOT_VALIDATE_REPORT_FALLBACKS.get(str(dataset_name).strip().lower())
+    if (not validate_report_path.exists()) and fallback_path is not None:
+        validate_report_path = Path(project_root) / fallback_path
     validate_report = _load_json_doc(validate_report_path)
     if not validate_report_path.exists():
         raise FileNotFoundError(f"snapshot publish requires validate report: {validate_report_path}")
@@ -177,6 +203,7 @@ def _resolve_snapshot_requirements(*, dataset_name: str, source_root: Path) -> d
 
     requirements: dict[str, Any] = {
         "validate_report_required": True,
+        "validate_report_source_path": str(validate_report_path),
         "validate_report_path": str(validate_report_path),
         "validate_report_status": validate_status,
     }
