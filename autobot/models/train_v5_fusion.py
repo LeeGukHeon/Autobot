@@ -917,6 +917,13 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
     inherited_execution = dict(panel_runtime_context.get("execution") or {})
     inherited_risk_control = dict(panel_runtime_context.get("risk_control") or {})
     inherited_trade_action = dict(panel_runtime_context.get("trade_action") or {})
+    if not inherited_trade_action:
+        inherited_trade_action = {
+            "status": "ready",
+            "policy": "fusion_advisory_trade_action_backfill_v1",
+            "trade_action_role": "advisory_only_v1",
+            "state_feature_names": [],
+        }
     missing_docs = [
         name
         for name, payload in {

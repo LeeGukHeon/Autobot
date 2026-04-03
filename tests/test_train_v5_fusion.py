@@ -512,6 +512,90 @@ def test_train_v5_fusion_fails_when_panel_runtime_contract_lacks_top_level_docs(
         train_and_register_v5_fusion(options)
 
 
+def test_train_v5_fusion_backfills_missing_trade_action_doc(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-trade-action-backfill-001"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-trade-action-backfill-001",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "final_rank_score": 0.5, "final_expected_return": 0.1, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.03} for row in base_rows],
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-trade-action-backfill-001",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.5, "sequence_uncertainty_primary": 0.04} for row in base_rows],
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-trade-action-backfill-001",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
+    )
+    tradability_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_tradability",
+        run_id="tradability-run-trade-action-backfill-001",
+        trainer="v5_tradability",
+        snapshot_id=snapshot_id,
+        rows=_tradability_rows(base_rows),
+    )
+    (panel_path.parent / "runtime_recommendations.json").write_text(
+        json.dumps(
+            {
+                "status": "v5_panel_ensemble_runtime_ready",
+                "source_family": "train_v5_panel_ensemble",
+                "data_platform_ready_snapshot_id": snapshot_id,
+                "exit": {
+                    "recommended_exit_mode": "risk",
+                    "recommended_exit_mode_source": "test_panel_runtime",
+                    "recommended_exit_mode_reason_code": "TEST_PANEL_RUNTIME",
+                },
+                "execution": {
+                    "recommended_price_mode": "JOIN",
+                    "recommended_timeout_bars": 2,
+                    "recommended_replace_max": 1,
+                },
+                "risk_control": {
+                    "policy": "test_risk_control",
+                    "operating_mode": "test_panel_runtime",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=panel_path,
+            sequence_input_path=sequence_path,
+            lob_input_path=lob_path,
+            tradability_input_path=tradability_path,
+            registry_root=registry_root,
+            logs_root=tmp_path / "logs",
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=7,
+        )
+    )
+
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+    assert runtime_recommendations["trade_action"]["policy"] == "fusion_advisory_trade_action_backfill_v1"
+
+
 def test_train_v5_fusion_uses_panel_as_canonical_label_anchor(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     snapshot_id = "snapshot-fusion-anchor-001"
