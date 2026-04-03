@@ -206,6 +206,16 @@ def _load_and_merge_tradability_inputs(options: TrainV5TradabilityOptions) -> tu
     if merged.height <= 0:
         raise ValueError("tradability expert found no overlapping expert rows with private execution labels")
     feature_names, _monotone_signs, feature_contract = _build_fusion_numeric_feature_contract(merged)
+    label_columns = {
+        "decision_bucket_ts_ms",
+        "y_tradeable",
+        "y_fill_within_deadline",
+        "y_shortfall_bps",
+        "y_adverse_tolerance",
+        "label_count",
+    }
+    feature_names = tuple(name for name in feature_names if str(name) not in label_columns)
+    feature_contract["feature_columns"] = list(feature_names)
     snapshot_ids = {
         str(panel_meta.get("data_platform_ready_snapshot_id") or "").strip(),
         str(sequence_meta.get("data_platform_ready_snapshot_id") or "").strip(),

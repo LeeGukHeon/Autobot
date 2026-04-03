@@ -92,6 +92,11 @@ def test_train_v5_tradability_writes_core_contract_artifacts(tmp_path: Path) -> 
     assert result.predictor_contract_path.exists()
     assert (result.run_dir / "expert_prediction_table.parquet").exists()
     assert (result.run_dir / "runtime_recommendations.json").exists()
+    train_config = json.loads((result.run_dir / "train_config.yaml").read_text(encoding="utf-8"))
+    assert "y_tradeable" not in train_config["feature_columns"]
+    assert "y_fill_within_deadline" not in train_config["feature_columns"]
+    assert "y_shortfall_bps" not in train_config["feature_columns"]
+    assert "y_adverse_tolerance" not in train_config["feature_columns"]
 
 
 def test_materialize_v5_tradability_runtime_export_uses_runtime_inputs(tmp_path: Path) -> None:
