@@ -104,3 +104,47 @@ def test_feature_dataset_certification_and_lineage_build_from_existing_artifacts
 
     lineage = build_raw_to_feature_lineage_report(project_root=project_root, feature_set="v4")
     assert lineage["feature_contract"]["contract_id"] == "feature_dataset:features_v4"
+
+
+def test_feature_dataset_certification_accepts_validate_reports_without_status_when_fail_files_are_zero(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    ws_meta = project_root / "data" / "raw_ws" / "upbit" / "_meta"
+    _write_json(ws_meta / "ws_public_health.json", {"connected": True, "run_id": "ws-run-1"})
+    _write_json(ws_meta / "ws_validate_report.json", {"status": "PASS", "fail_files": 0, "run_id": "ws-validate-1"})
+
+    micro_meta = project_root / "data" / "parquet" / "micro_v1" / "_meta"
+    _write_json(micro_meta / "aggregate_report.json", {"run_id": "micro-run-1", "raw_ws_root": "data/raw_ws/upbit", "rows_written_total": 10})
+    _write_json(micro_meta / "validate_report.json", {"status": "PASS", "fail_files": 0, "run_id": "micro-validate-1"})
+
+    features_meta = project_root / "data" / "features" / "features_v4" / "_meta"
+    _write_json(
+        features_meta / "build_report.json",
+        {
+            "status": "PASS",
+            "run_id": "feature-build-1",
+            "requested_start": "2026-03-20",
+            "requested_end": "2026-04-02",
+            "effective_start": "2026-03-20",
+            "effective_end": "2026-03-31",
+            "base_candles_root": "data/parquet/candles_api_v1",
+            "micro_root": "data/parquet/micro_v1",
+        },
+    )
+    _write_json(
+        features_meta / "validate_report.json",
+        {
+            "checked_files": 50,
+            "ok_files": 30,
+            "warn_files": 20,
+            "fail_files": 0,
+            "leakage_smoke": "PASS",
+        },
+    )
+    _write_json(
+        features_meta / "live_feature_parity_report.json",
+        {"status": "PASS", "acceptable": True, "sampled_pairs": 5},
+    )
+
+    certification = build_feature_dataset_certification(project_root=project_root, feature_set="v4")
+    assert certification["pass"] is True
+    assert certification["checks"]["validate_report_pass"] is True

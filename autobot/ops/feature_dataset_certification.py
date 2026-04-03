@@ -50,7 +50,22 @@ def build_feature_dataset_certification(
 
     validate_status = str(validate_report.get("status") or "").strip().upper()
     validate_present = bool(validate_report)
-    validate_pass = validate_present and validate_status in {"PASS", "OK"} and _safe_int(validate_report.get("fail_files")) <= 0
+    validate_fail_files = _safe_int(validate_report.get("fail_files"))
+    validate_checked_files = _safe_int(validate_report.get("checked_files"))
+    validate_ok_files = _safe_int(validate_report.get("ok_files"))
+    validate_warn_files = _safe_int(validate_report.get("warn_files"))
+    validate_leakage_smoke = str(validate_report.get("leakage_smoke") or "").strip().upper()
+    validate_pass = validate_present and (
+        (
+            validate_status in {"PASS", "OK"}
+            and validate_fail_files <= 0
+        )
+        or (
+            validate_fail_files <= 0
+            and validate_leakage_smoke in {"", "PASS", "OK"}
+            and max(validate_checked_files, (validate_ok_files + validate_warn_files)) > 0
+        )
+    )
 
     parity_status = str(parity_report.get("status") or "").strip().upper()
     parity_present = bool(parity_report)
