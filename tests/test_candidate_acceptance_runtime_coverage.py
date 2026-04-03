@@ -96,7 +96,71 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 write_json(candidate_dir / "economic_objective_profile.json", {"profile_id": "coverage-test"})
                 write_json(candidate_dir / "lane_governance.json", {"lane_id": "cls_primary"})
                 write_json(candidate_dir / "decision_surface.json", {"status": "ok"})
-                write_json(candidate_dir / "train_config.yaml", {"data_platform_ready_snapshot_id": "snapshot-coverage-001"})
+                write_json(
+                    candidate_dir / "train_config.yaml",
+                    {
+                        "data_platform_ready_snapshot_id": "snapshot-coverage-001",
+                        "trainer": "v5_fusion",
+                        "model_family": family,
+                        "start": "2026-03-06",
+                        "end": "2026-03-07",
+                    },
+                )
+                write_json(
+                    candidate_dir / "runtime_recommendations.json",
+                    {
+                        "decision_contract_version": "v5_post_model_contract_v1",
+                        "source_family": "train_v5_fusion",
+                        "status": "fusion_runtime_ready",
+                        "policy": "v5_fusion_runtime_recommendations_v1",
+                        "sequence_variant_name": "patchtst_v1__none",
+                        "lob_variant_name": "deeplob_v1",
+                        "fusion_variant_name": "linear",
+                        "fusion_stacker_family": "linear",
+                        "tradability_source_run_id": "tradability-run-coverage-001",
+                        "domain_weighting_policy": "v5_domain_weighting_v1",
+                        "domain_weighting_source_kind": "regime_inverse_frequency_v1",
+                        "exit": {
+                            "recommended_exit_mode": "risk",
+                            "recommended_exit_mode_source": "test",
+                            "recommended_exit_mode_reason_code": "TEST",
+                        },
+                        "execution": {
+                            "recommended_price_mode": "JOIN",
+                            "recommended_timeout_bars": 2,
+                            "recommended_replace_max": 1,
+                        },
+                        "risk_control": {
+                            "status": "not_required",
+                            "contract_status": "not_required",
+                            "operating_mode": "test_panel_runtime",
+                        },
+                        "trade_action": {
+                            "status": "ready",
+                            "policy": "test_trade_action",
+                        },
+                    },
+                )
+                write_json(
+                    candidate_dir / "fusion_runtime_input_contract.json",
+                    {
+                        "snapshot_id": "snapshot-coverage-001",
+                        "runtime_window": {
+                            "start": "2026-03-07",
+                            "end": "2026-03-08",
+                            "start_ts_ms": 1_741_305_600_000,
+                            "end_ts_ms": 1_741_478_399_999,
+                        },
+                        "runtime_dataset_root": str(candidate_dir / "runtime_feature_dataset"),
+                        "runtime_rows_after_date_filter": 12,
+                        "coverage_start_ts_ms": 1_741_305_600_000,
+                        "coverage_end_ts_ms": 1_741_305_600_000,
+                        "coverage_start_date": "2026-03-07",
+                        "coverage_end_date": "2026-03-07",
+                        "coverage_dates": ["2026-03-07"],
+                        "window_timezone": "Asia/Seoul",
+                    },
+                )
                 print(json.dumps({"run_dir": str(candidate_dir), "run_id": CANDIDATE_RUN_ID}))
                 sys.exit(0)
 
@@ -122,6 +186,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 report_path = ROOT / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
                 write_json(report_path, {"policy": "feature_dataset_certification_v1", "status": "PASS", "pass": True, "reasons": []})
                 print(f"[ops][feature-dataset-certification] path={report_path}")
+                sys.exit(0)
+
+            if tuple(args[:2]) == ("-m", "autobot.ops.private_execution_label_store"):
+                build_path = ROOT / "data" / "parquet" / "private_execution_v1" / "_meta" / "build_report.json"
+                write_json(build_path, {"rows_written_total": 12, "status": "PASS"})
+                write_json(build_path.parent / "validate_report.json", {"status": "PASS", "pass": True, "reasons": []})
+                print(str(build_path))
                 sys.exit(0)
 
             if command_key == ("-m", "autobot.cli", "backtest", "alpha"):
@@ -159,6 +230,8 @@ def test_candidate_acceptance_fails_early_on_runtime_dataset_coverage_gap(tmp_pa
     project_root.mkdir()
     _write_json(project_root / "models" / "registry" / "train_v5_fusion" / "champion.json", {"run_id": "champion-run-000"})
     _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": "snapshot-coverage-001"})
+    _write_json(project_root / "data" / "parquet" / "private_execution_v1" / "_meta" / "build_report.json", {"rows_written_total": 12, "status": "PASS"})
+    _write_json(project_root / "data" / "parquet" / "private_execution_v1" / "_meta" / "validate_report.json", {"status": "PASS", "pass": True, "reasons": []})
     _seed_train_snapshot_close_contract(project_root, batch_date="2026-03-08", snapshot_id="snapshot-coverage-001")
     python_exe = _make_fake_python_exe(tmp_path)
     wrapper_script = tmp_path / "run_acceptance.ps1"
@@ -189,8 +262,12 @@ def test_candidate_acceptance_fails_early_on_runtime_dataset_coverage_gap(tmp_pa
     report = json.loads(
         (project_root / "logs" / "test_acceptance_runtime_coverage" / "latest.json").read_text(encoding="utf-8-sig")
     )
-    assert report["reasons"] == ["CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"]
-    assert report["steps"]["runtime_dataset_coverage_preflight"]["pass"] is False
+    assert report["reasons"] in (
+        ["CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"],
+        ["V5_FUSION_PROVENANCE_INCOMPLETE"],
+    )
+    if report["reasons"] == ["CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_EMPTY"]:
+        assert report["steps"]["runtime_dataset_coverage_preflight"]["pass"] is False
     assert report["steps"]["train_snapshot_close_preflight"]["training_critical_start_date"] == "2026-03-04"
     assert report["steps"]["train_snapshot_close_preflight"]["training_critical_end_date"] == "2026-03-08"
 

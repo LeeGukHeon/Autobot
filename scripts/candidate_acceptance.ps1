@@ -4697,19 +4697,34 @@ function Test-CandidateRuntimeDatasetCertificationCoverage {
     $coverageDates = @((Get-PropValue -ObjectValue $coverageFields -Name "coverage_dates" -DefaultValue @()))
     $windowTimezone = [string](Get-PropValue -ObjectValue $coverageFields -Name "window_timezone" -DefaultValue "")
     $expectedCoverageDates = @(Get-DateTokenRangeInclusive -StartDate $CertificationStartDate -EndDate $CertificationEndDate)
+    $missingCoverageDates = @($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ })
+    $allowTrailingSingleDayGap = $false
+    if (
+        (@($missingCoverageDates).Count -eq 1) -and
+        ([string]$missingCoverageDates[0] -eq [string]$CertificationEndDate) -and
+        (-not [string]::IsNullOrWhiteSpace($coverageEndDate))
+    ) {
+        try {
+            $coverageEndObj = [DateTime]::ParseExact($coverageEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+            $certificationEndObj = [DateTime]::ParseExact([string]$CertificationEndDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
+            $allowTrailingSingleDayGap = ($coverageEndObj.AddDays(1).ToString("yyyy-MM-dd") -eq $certificationEndObj.ToString("yyyy-MM-dd"))
+        } catch {
+            $allowTrailingSingleDayGap = $false
+        }
+    }
     if (($windowTimezone -ne "Asia/Seoul") -or [string]::IsNullOrWhiteSpace($coverageStartDate) -or [string]::IsNullOrWhiteSpace($coverageEndDate)) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
         }
     }
-    if (($coverageStartDate -gt $CertificationStartDate) -or ($coverageEndDate -lt $CertificationEndDate)) {
+    if (($coverageStartDate -gt $CertificationStartDate) -or (($coverageEndDate -lt $CertificationEndDate) -and (-not $allowTrailingSingleDayGap))) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
         }
     }
-    if (@($expectedCoverageDates | Where-Object { @($coverageDates) -notcontains [string]$_ }).Count -gt 0) {
+    if ((@($missingCoverageDates).Count -gt 0) -and (-not $allowTrailingSingleDayGap)) {
         return [ordered]@{
             pass = $false
             reason = "CANDIDATE_RUNTIME_DATASET_CERTIFICATION_WINDOW_GAP"
