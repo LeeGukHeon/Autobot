@@ -218,3 +218,97 @@ def test_load_private_execution_rows_tolerates_nullable_schema_drift_between_par
 
     assert frame.height == 2
     assert frame.get_column("ts_ms").to_list() == [1_774_569_600_000, 1_774_656_000_000]
+
+
+def test_train_v5_tradability_derives_fallback_temporal_splits_when_input_split_is_missing(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    logs_root = tmp_path / "logs"
+    private_root = tmp_path / "data" / "parquet" / "private_execution_v1"
+    panel_path = tmp_path / "panel" / "expert_prediction_table.parquet"
+    sequence_path = tmp_path / "sequence" / "expert_prediction_table.parquet"
+    lob_path = tmp_path / "lob" / "expert_prediction_table.parquet"
+    base_rows = []
+    ts_values = [
+        1_774_569_600_000,
+        1_774_570_200_000,
+        1_774_570_800_000,
+        1_774_571_400_000,
+        1_774_572_000_000,
+        1_774_572_600_000,
+    ]
+    for idx, ts_ms in enumerate(ts_values):
+        base_rows.append(
+            {
+                "market": "KRW-BTC",
+                "ts_ms": ts_ms,
+                "split": "train",
+                "y_cls": 1 if idx % 2 == 0 else 0,
+                "y_reg": 0.1,
+                "final_rank_score": 0.70 + (idx * 0.01),
+                "final_expected_return": 0.10 + (idx * 0.005),
+                "final_expected_es": 0.02,
+                "final_tradability": 0.60,
+                "final_uncertainty": 0.05,
+                "final_alpha_lcb": 0.03 + (idx * 0.01),
+            }
+        )
+    _write_table(
+        panel_path,
+        base_rows,
+        train_config={"model_family": "train_v5_panel_ensemble", "trainer": "v5_panel_ensemble", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    _write_table(
+        sequence_path,
+        [
+            {"market": row["market"], "ts_ms": row["ts_ms"], "split": "train", "directional_probability_primary": 0.55 + (i * 0.01), "sequence_uncertainty_primary": 0.04}
+            for i, row in enumerate(base_rows)
+        ],
+        train_config={"model_family": "train_v5_sequence", "trainer": "v5_sequence", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    _write_table(
+        lob_path,
+        [
+            {"market": row["market"], "ts_ms": row["ts_ms"], "split": "train", "micro_alpha_1s": 0.01, "micro_alpha_5s": 0.02, "micro_alpha_30s": 0.03, "micro_uncertainty": 0.02}
+            for row in base_rows
+        ],
+        train_config={"model_family": "train_v5_lob", "trainer": "v5_lob", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    private_meta = private_root / "_meta"
+    private_meta.mkdir(parents=True, exist_ok=True)
+    (private_meta / "build_report.json").write_text(json.dumps({"status": "PASS"}, ensure_ascii=False), encoding="utf-8")
+    (private_meta / "validate_report.json").write_text(json.dumps({"status": "PASS", "pass": True}, ensure_ascii=False), encoding="utf-8")
+    private_part = private_root / "market=KRW-BTC" / "date=2026-03-27"
+    private_part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "market": ["KRW-BTC"] * len(ts_values),
+            "ts_ms": ts_values,
+            "decision_bucket_ts_ms": ts_values,
+            "y_tradeable": [1, 1, 0, 1, 0, 1],
+            "y_fill_within_deadline": [1, 1, 1, 0, 1, 0],
+            "y_shortfall_bps": [1.0, 1.2, 2.5, 1.5, 3.0, 1.1],
+            "y_adverse_tolerance": [1, 1, 0, 1, 0, 1],
+        }
+    ).write_parquet(private_part / "part-000.parquet")
+
+    result = train_and_register_v5_tradability(
+        TrainV5TradabilityOptions(
+            panel_input_path=panel_path,
+            sequence_input_path=sequence_path,
+            lob_input_path=lob_path,
+            private_execution_root=private_root,
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_tradability",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=42,
+        )
+    )
+
+    assert result.run_dir.exists()
+    metrics = json.loads((result.run_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["rows"]["train"] > 0
+    assert metrics["rows"]["valid"] > 0
+    assert metrics["rows"]["test"] > 0

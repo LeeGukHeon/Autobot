@@ -226,6 +226,44 @@ def _load_and_merge_tradability_inputs(options: TrainV5TradabilityOptions) -> tu
     return merged, input_contract, feature_names
 
 
+def _resolve_tradability_split_labels(merged: pl.DataFrame) -> np.ndarray:
+    if merged.height <= 0:
+        return np.asarray([], dtype=object)
+    raw_labels = (
+        merged.get_column("split").to_numpy()
+        if "split" in merged.columns
+        else np.full(merged.height, "train", dtype=object)
+    )
+    labels = np.asarray(
+        [str(value or "").strip().lower() or "train" for value in raw_labels],
+        dtype=object,
+    )
+    masks = split_masks(labels)
+    train_mask = np.asarray(masks.get("train", np.zeros(merged.height, dtype=bool)), dtype=bool)
+    valid_mask = np.asarray(masks.get("valid", np.zeros(merged.height, dtype=bool)), dtype=bool)
+    test_mask = np.asarray(masks.get("test", np.zeros(merged.height, dtype=bool)), dtype=bool)
+    if train_mask.sum() > 0 and valid_mask.sum() > 0 and test_mask.sum() > 0:
+        return labels
+
+    ts_values = merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
+    unique_ts = np.unique(ts_values)
+    if unique_ts.size < 3:
+        raise ValueError("v5_tradability requires at least three unique timestamps to derive train/valid/test splits")
+    train_end = min(max(int(unique_ts.size * 0.6), 1), unique_ts.size - 2)
+    valid_end = min(max(int(unique_ts.size * 0.8), train_end + 1), unique_ts.size - 1)
+    train_ts = set(unique_ts[:train_end].tolist())
+    valid_ts = set(unique_ts[train_end:valid_end].tolist())
+    fallback = np.full(merged.height, "test", dtype=object)
+    for idx, ts_ms in enumerate(ts_values):
+        if int(ts_ms) in train_ts:
+            fallback[idx] = "train"
+        elif int(ts_ms) in valid_ts:
+            fallback[idx] = "valid"
+        else:
+            fallback[idx] = "test"
+    return fallback
+
+
 def _fit_binary_head(x: np.ndarray, y: np.ndarray, *, seed: int, sample_weight: np.ndarray | None = None) -> Any:
     target = y.astype(np.int64)
     unique = np.unique(target)
@@ -337,7 +375,7 @@ def _build_data_fingerprint(*, options: TrainV5TradabilityOptions, input_contrac
 def train_and_register_v5_tradability(options: TrainV5TradabilityOptions) -> TrainV5TradabilityResult:
     merged, input_contract, feature_names = _load_and_merge_tradability_inputs(options)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    labels = merged.get_column("split").to_numpy() if "split" in merged.columns else np.full(merged.height, "train", dtype=object)
+    labels = _resolve_tradability_split_labels(merged)
     masks = split_masks(labels)
     train_mask = np.asarray(masks.get("train", np.zeros(merged.height, dtype=bool)), dtype=bool)
     valid_mask = np.asarray(masks.get("valid", np.zeros(merged.height, dtype=bool)), dtype=bool)
