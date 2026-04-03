@@ -127,6 +127,38 @@ function Invoke-ProjectPythonStep {
             }
         }
     }
+    if (($exitCode -ne 0) -and ([string]$StepName -eq "collect_ws_candles")) {
+        $collectReportPath = Join-Path $resolvedMetaDir "ws_candle_collect_report.json"
+        $validateReportPath = Join-Path $resolvedMetaDir "ws_candle_validate_report.json"
+        if ((Test-Path $collectReportPath) -and (Test-Path $validateReportPath)) {
+            try {
+                $collectReport = Get-Content -Path $collectReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $validateReport = Get-Content -Path $validateReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $rowsWritten = 0
+                if ($collectReport.PSObject.Properties.Name -contains "rows_written") {
+                    $rowsWritten = [int]$collectReport.rows_written
+                }
+                $failFiles = 0
+                if ($validateReport.PSObject.Properties.Name -contains "fail_files") {
+                    $failFiles = [int]$validateReport.fail_files
+                }
+                $primaryFailureReason = ""
+                $failures = @($collectReport.failures)
+                if ($failures.Count -gt 0) {
+                    $firstFailure = $failures[0]
+                    if ($firstFailure -and $firstFailure.PSObject -and ($firstFailure.PSObject.Properties.Name -contains "reason")) {
+                        $primaryFailureReason = [string]$firstFailure.reason
+                    }
+                }
+                if (($rowsWritten -gt 0) -and ($failFiles -le 0)) {
+                    $reasonSuffix = if ([string]::IsNullOrWhiteSpace($primaryFailureReason)) { "" } else { " reason=" + $primaryFailureReason }
+                    Write-Warning ("[data-platform-refresh] tolerating partial ws-candle collect because rows_written={0} fail_files={1}{2}" -f $rowsWritten, $failFiles, $reasonSuffix)
+                    $exitCode = 0
+                }
+            } catch {
+            }
+        }
+    }
     if ($exitCode -ne 0) {
         throw ("step failed: " + $StepName + " exit_code=" + $exitCode)
     }

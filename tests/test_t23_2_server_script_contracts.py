@@ -85,6 +85,74 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
     return wrapper_path
 
 
+def _make_fake_python_exe_with_ws_candle_partial_failure(tmp_path: Path) -> Path:
+    driver_path = tmp_path / "fake_python_driver_ws_partial.py"
+    driver_path.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            argv = sys.argv[2:]
+            payload = {"argv": argv, "argc": len(argv)}
+            log_path = Path(sys.argv[1])
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload) + "\\n")
+
+            if argv[:4] == ["-m", "autobot.cli", "collect", "ws-candles"]:
+                meta_dir = Path.cwd() / "data" / "collect" / "_meta"
+                meta_dir.mkdir(parents=True, exist_ok=True)
+                (meta_dir / "ws_candle_collect_report.json").write_text(
+                    json.dumps(
+                        {
+                            "run_id": "partial-ws-candle-run",
+                            "rows_written": 12,
+                            "failures": [{"reason": "MAX_RECONNECT_PER_MIN_REACHED"}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                (meta_dir / "ws_candle_validate_report.json").write_text(
+                    json.dumps(
+                        {
+                            "checked_files": 1,
+                            "ok_files": 1,
+                            "warn_files": 0,
+                            "fail_files": 0,
+                            "status": "PASS",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                sys.exit(2)
+
+            sys.exit(0)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    if sys.platform.startswith("win"):
+        wrapper_path = tmp_path / "fake_python_ws_partial.cmd"
+        wrapper_path.write_text(
+            f'@echo off\r\n"{sys.executable}" "%~dp0fake_python_driver_ws_partial.py" "%~dp0fake_python_invocations_ws_partial.jsonl" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "fake_python_ws_partial"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$(dirname "$0")/fake_python_driver_ws_partial.py" "$(dirname "$0")/fake_python_invocations_ws_partial.jsonl" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
 def test_t23_2_dashboard_installer_dry_run_keeps_protected_unit_contract() -> None:
     stdout = _run_script_dry_run("install_server_dashboard_service.ps1")
 
@@ -308,6 +376,38 @@ def test_t23_2_data_platform_refresh_wrapper_executes_python_steps_with_full_arg
     assert lines, completed.stdout + "\n" + completed.stderr
     assert lines[0]["argc"] > 0
     assert lines[0]["argv"][:4] == ["-m", "autobot.cli", "collect", "plan-candles"]
+
+
+def test_t23_2_data_platform_refresh_wrapper_tolerates_partial_ws_candle_collect_when_validate_passes(tmp_path: Path) -> None:
+    fake_python = _make_fake_python_exe_with_ws_candle_partial_failure(tmp_path)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "refresh_data_platform_layers.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "runtime_rich",
+            "-PublishLockFile",
+            "",
+            "-SkipPublishReadySnapshot",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    assert "tolerating partial ws-candle collect" in (completed.stdout + completed.stderr)
 
 
 def test_t23_2_train_snapshot_close_installer_dry_run_keeps_v5_timer_contract() -> None:
