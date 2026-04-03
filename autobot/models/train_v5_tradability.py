@@ -294,6 +294,17 @@ def _fit_reg_head(
     return model
 
 
+def _select_tradability_feature_matrix(frame: pl.DataFrame, feature_names: tuple[str, ...]) -> np.ndarray:
+    if len(feature_names) <= 0:
+        return np.zeros((frame.height, 0), dtype=np.float64)
+    return (
+        frame.select(list(feature_names))
+        .with_columns([pl.col(name).cast(pl.Float64, strict=False).fill_null(0.0).fill_nan(0.0).alias(name) for name in feature_names])
+        .to_numpy()
+        .astype(np.float64, copy=False)
+    )
+
+
 def _write_tradability_expert_prediction_table(
     *,
     run_dir: Path,
@@ -302,7 +313,7 @@ def _write_tradability_expert_prediction_table(
     feature_names: tuple[str, ...],
     output_path: Path | None = None,
 ) -> Path:
-    x = frame.select(list(feature_names)).to_numpy().astype(np.float64, copy=False)
+    x = _select_tradability_feature_matrix(frame, feature_names)
     payload = estimator.predict_tradability_contract(x)
     export_frame = pl.DataFrame(
         {
@@ -383,7 +394,7 @@ def train_and_register_v5_tradability(options: TrainV5TradabilityOptions) -> Tra
     if train_mask.sum() <= 0 or valid_mask.sum() <= 0 or test_mask.sum() <= 0:
         raise ValueError("v5_tradability requires non-empty train/valid/test splits")
 
-    x = merged.select(list(feature_names)).to_numpy().astype(np.float64, copy=False)
+    x = _select_tradability_feature_matrix(merged, feature_names)
     y_tradeable = (merged.get_column("y_tradeable").to_numpy().astype(np.float64, copy=False) >= 0.5).astype(np.int64)
     y_fill = (merged.get_column("y_fill_within_deadline").to_numpy().astype(np.float64, copy=False) >= 0.5).astype(np.int64)
     y_shortfall = np.maximum(merged.get_column("y_shortfall_bps").to_numpy().astype(np.float64, copy=False), 0.0)
@@ -757,7 +768,7 @@ def materialize_v5_tradability_runtime_export(
     if merged.height <= 0:
         raise ValueError("tradability runtime export produced no rows in requested certification window")
     feature_names = tuple(str(item).strip() for item in (train_config.get("feature_columns") or []) if str(item).strip())
-    x = merged.select(list(feature_names)).to_numpy().astype(np.float64, copy=False)
+    x = _select_tradability_feature_matrix(merged, feature_names)
     payload = estimator.predict_tradability_contract(x)
     metadata = {
         "version": 1,

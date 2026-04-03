@@ -312,3 +312,106 @@ def test_train_v5_tradability_derives_fallback_temporal_splits_when_input_split_
     assert metrics["rows"]["train"] > 0
     assert metrics["rows"]["valid"] > 0
     assert metrics["rows"]["test"] > 0
+
+
+def test_train_v5_tradability_imputes_missing_expert_values(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    logs_root = tmp_path / "logs"
+    private_root = tmp_path / "data" / "parquet" / "private_execution_v1"
+    panel_path = tmp_path / "panel" / "expert_prediction_table.parquet"
+    sequence_path = tmp_path / "sequence" / "expert_prediction_table.parquet"
+    lob_path = tmp_path / "lob" / "expert_prediction_table.parquet"
+    ts_values = [
+        1_774_569_600_000,
+        1_774_570_200_000,
+        1_774_570_800_000,
+        1_774_571_400_000,
+        1_774_572_000_000,
+        1_774_572_600_000,
+    ]
+    _write_table(
+        panel_path,
+        [
+            {
+                "market": "KRW-BTC",
+                "ts_ms": ts_ms,
+                "split": split,
+                "y_cls": 1 if idx % 2 == 0 else 0,
+                "y_reg": 0.1,
+                "final_rank_score": 0.7 + (idx * 0.01),
+                "final_expected_return": 0.1,
+                "final_expected_es": 0.02,
+                "final_tradability": 0.6,
+                "final_uncertainty": 0.05,
+                "final_alpha_lcb": 0.04,
+            }
+            for idx, (ts_ms, split) in enumerate(zip(ts_values, ["train", "train", "valid", "valid", "test", "test"]))
+        ],
+        train_config={"model_family": "train_v5_panel_ensemble", "trainer": "v5_panel_ensemble", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    _write_table(
+        sequence_path,
+        [
+            {
+                "market": "KRW-BTC",
+                "ts_ms": ts_ms,
+                "split": split,
+                "directional_probability_primary": None if idx in {1, 4} else 0.6,
+                "sequence_uncertainty_primary": None if idx in {2, 5} else 0.04,
+            }
+            for idx, (ts_ms, split) in enumerate(zip(ts_values, ["train", "train", "valid", "valid", "test", "test"]))
+        ],
+        train_config={"model_family": "train_v5_sequence", "trainer": "v5_sequence", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    _write_table(
+        lob_path,
+        [
+            {
+                "market": "KRW-BTC",
+                "ts_ms": ts_ms,
+                "split": split,
+                "micro_alpha_1s": None if idx in {0, 3} else 0.01,
+                "micro_alpha_5s": 0.02,
+                "micro_alpha_30s": 0.03,
+                "micro_uncertainty": None if idx in {1, 5} else 0.02,
+            }
+            for idx, (ts_ms, split) in enumerate(zip(ts_values, ["train", "train", "valid", "valid", "test", "test"]))
+        ],
+        train_config={"model_family": "train_v5_lob", "trainer": "v5_lob", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    private_meta = private_root / "_meta"
+    private_meta.mkdir(parents=True, exist_ok=True)
+    (private_meta / "build_report.json").write_text(json.dumps({"status": "PASS"}, ensure_ascii=False), encoding="utf-8")
+    (private_meta / "validate_report.json").write_text(json.dumps({"status": "PASS", "pass": True}, ensure_ascii=False), encoding="utf-8")
+    private_part = private_root / "market=KRW-BTC" / "date=2026-03-27"
+    private_part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "market": ["KRW-BTC"] * len(ts_values),
+            "ts_ms": ts_values,
+            "decision_bucket_ts_ms": ts_values,
+            "y_tradeable": [1, 0, 1, 0, 1, 0],
+            "y_fill_within_deadline": [1, 1, 0, 1, 0, 1],
+            "y_shortfall_bps": [1.0, 1.4, 2.0, 1.8, 2.5, 1.1],
+            "y_adverse_tolerance": [1, 0, 1, 0, 1, 0],
+        }
+    ).write_parquet(private_part / "part-000.parquet")
+
+    result = train_and_register_v5_tradability(
+        TrainV5TradabilityOptions(
+            panel_input_path=panel_path,
+            sequence_input_path=sequence_path,
+            lob_input_path=lob_path,
+            private_execution_root=private_root,
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_tradability",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=42,
+        )
+    )
+
+    assert result.run_dir.exists()
+    assert (result.run_dir / "expert_prediction_table.parquet").exists()
