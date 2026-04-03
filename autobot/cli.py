@@ -989,6 +989,13 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_variant_parser.add_argument("--fusion-tradability-runtime-input", help="Path to tradability fusion runtime predictions parquet.")
     model_train_variant_parser.add_argument("--fusion-runtime-start", help="Runtime/certification start date YYYY-MM-DD for fusion runtime dataset export.")
     model_train_variant_parser.add_argument("--fusion-runtime-end", help="Runtime/certification end date YYYY-MM-DD for fusion runtime dataset export.")
+    model_train_variant_parser.add_argument("--live-domain-reweighting", action="store_true", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--live-domain-reweighting-db-path", help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--execution-acceptance-top-n", type=int, help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--execution-acceptance-top-pct", type=float, help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--execution-acceptance-min-prob", type=float, help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--execution-acceptance-min-cands-per-ts", type=int, help=argparse.SUPPRESS)
+    model_train_variant_parser.add_argument("--execution-acceptance-hold-bars", type=int, help=argparse.SUPPRESS)
 
     model_export_expert_parser = model_subparsers.add_parser(
         "export-expert-table",
