@@ -132,14 +132,36 @@ def _load_private_execution_rows(*, dataset_root: Path, start: str, end: str) ->
     files = sorted(root.glob("market=*/date=*/part-*.parquet"))
     if not files:
         return pl.DataFrame()
-    lazy = pl.scan_parquet([str(path) for path in files])
+    required_columns = [
+        "market",
+        "ts_ms",
+        "decision_bucket_ts_ms",
+        "y_tradeable",
+        "y_fill_within_deadline",
+        "y_shortfall_bps",
+        "y_adverse_tolerance",
+    ]
     start_ts_ms = _parse_date_to_ts_ms(start)
     end_ts_ms = _parse_date_to_ts_ms(end, end_of_day=True)
-    if start_ts_ms is not None:
-        lazy = lazy.filter(pl.col("ts_ms") >= int(start_ts_ms))
-    if end_ts_ms is not None:
-        lazy = lazy.filter(pl.col("ts_ms") <= int(end_ts_ms))
-    frame = lazy.collect().sort(["market", "ts_ms"])
+    frames: list[pl.DataFrame] = []
+    for path in files:
+        frame = pl.read_parquet(path, columns=required_columns)
+        frame = frame.with_columns(
+            pl.col("market").cast(pl.Utf8, strict=False),
+            pl.col("ts_ms").cast(pl.Int64, strict=False),
+            pl.col("decision_bucket_ts_ms").cast(pl.Int64, strict=False),
+            pl.col("y_tradeable").cast(pl.Float64, strict=False),
+            pl.col("y_fill_within_deadline").cast(pl.Float64, strict=False),
+            pl.col("y_shortfall_bps").cast(pl.Float64, strict=False),
+            pl.col("y_adverse_tolerance").cast(pl.Float64, strict=False),
+        )
+        if start_ts_ms is not None:
+            frame = frame.filter(pl.col("ts_ms") >= int(start_ts_ms))
+        if end_ts_ms is not None:
+            frame = frame.filter(pl.col("ts_ms") <= int(end_ts_ms))
+        if frame.height > 0:
+            frames.append(frame)
+    frame = pl.concat(frames, how="vertical_relaxed").sort(["market", "ts_ms"]) if frames else pl.DataFrame()
     if frame.height <= 0:
         return frame
     required = {

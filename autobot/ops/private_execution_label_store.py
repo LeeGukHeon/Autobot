@@ -54,6 +54,38 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "y_adverse_tolerance",
 )
 
+_PRIVATE_EXECUTION_SCHEMA: dict[str, pl.DataType] = {
+    "row_key": pl.Utf8,
+    "market": pl.Utf8,
+    "ts_ms": pl.Int64,
+    "decision_bucket_ts_ms": pl.Int64,
+    "runtime_model_family": pl.Utf8,
+    "runtime_model_run_id": pl.Utf8,
+    "action_code": pl.Utf8,
+    "ord_type": pl.Utf8,
+    "time_in_force": pl.Utf8,
+    "requested_price": pl.Float64,
+    "requested_volume": pl.Float64,
+    "spread_bps": pl.Float64,
+    "depth_top5_notional_krw": pl.Float64,
+    "snapshot_age_ms": pl.Int64,
+    "expected_edge_bps": pl.Float64,
+    "score_mean": pl.Float64,
+    "score_std": pl.Float64,
+    "final_state": pl.Utf8,
+    "first_fill_ts_ms": pl.Int64,
+    "full_fill_ts_ms": pl.Int64,
+    "fill_latency_ms": pl.Int64,
+    "shortfall_bps": pl.Float64,
+    "adverse_move_bps": pl.Float64,
+    "filled_within_deadline": pl.Boolean,
+    "label_source": pl.Utf8,
+    "y_tradeable": pl.Int64,
+    "y_fill_within_deadline": pl.Int64,
+    "y_shortfall_bps": pl.Float64,
+    "y_adverse_tolerance": pl.Int64,
+}
+
 
 def build_private_execution_label_store(
     *,
@@ -72,7 +104,7 @@ def build_private_execution_label_store(
         part_dir = dataset_root / f"market={market}" / f"date={date_value}"
         part_dir.mkdir(parents=True, exist_ok=True)
         part_path = part_dir / "part-000.parquet"
-        frame = pl.DataFrame(part_rows)
+        frame = _normalize_private_execution_frame(pl.DataFrame(part_rows))
         frame.write_parquet(part_path, compression="zstd")
         rows_written_total += int(frame.height)
         manifest_rows.append(
@@ -143,6 +175,18 @@ def write_private_execution_label_store(
         project_root=project_root,
         output_root=output_root,
     )
+
+
+def _normalize_private_execution_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    normalized = frame
+    for column_name, dtype in _PRIVATE_EXECUTION_SCHEMA.items():
+        if column_name not in normalized.columns:
+            normalized = normalized.with_columns(pl.lit(None, dtype=dtype).alias(column_name))
+        else:
+            normalized = normalized.with_columns(pl.col(column_name).cast(dtype, strict=False))
+    ordered = [name for name in _PRIVATE_EXECUTION_SCHEMA.keys() if name in normalized.columns]
+    extras = [name for name in normalized.columns if name not in _PRIVATE_EXECUTION_SCHEMA]
+    return normalized.select(ordered + extras)
 
 
 def _collect_private_execution_rows(*, project_root: Path) -> tuple[list[dict[str, Any]], list[str]]:

@@ -7,6 +7,7 @@ import polars as pl
 
 from autobot.models.train_v5_tradability import (
     TrainV5TradabilityOptions,
+    _load_private_execution_rows,
     materialize_v5_tradability_runtime_export,
     train_and_register_v5_tradability,
 )
@@ -179,3 +180,41 @@ def test_materialize_v5_tradability_runtime_export_uses_runtime_inputs(tmp_path:
 
     assert payload["trainer"] == "v5_tradability"
     assert Path(payload["export_path"]).exists()
+
+
+def test_load_private_execution_rows_tolerates_nullable_schema_drift_between_partitions(tmp_path: Path) -> None:
+    root = tmp_path / "data" / "parquet" / "private_execution_v1"
+    part_a = root / "market=KRW-BTC" / "date=2026-03-27"
+    part_b = root / "market=KRW-BTC" / "date=2026-03-28"
+    part_a.mkdir(parents=True, exist_ok=True)
+    part_b.mkdir(parents=True, exist_ok=True)
+
+    pl.DataFrame(
+        {
+            "market": ["KRW-BTC"],
+            "ts_ms": [1_774_569_600_000],
+            "decision_bucket_ts_ms": [1_774_569_600_000],
+            "first_fill_ts_ms": [None],
+            "y_tradeable": [1],
+            "y_fill_within_deadline": [1],
+            "y_shortfall_bps": [1.0],
+            "y_adverse_tolerance": [1],
+        }
+    ).write_parquet(part_a / "part-000.parquet")
+    pl.DataFrame(
+        {
+            "market": ["KRW-BTC"],
+            "ts_ms": [1_774_656_000_000],
+            "decision_bucket_ts_ms": [1_774_656_000_000],
+            "first_fill_ts_ms": [1_774_656_010_000],
+            "y_tradeable": [0],
+            "y_fill_within_deadline": [0],
+            "y_shortfall_bps": [3.0],
+            "y_adverse_tolerance": [0],
+        }
+    ).write_parquet(part_b / "part-000.parquet")
+
+    frame = _load_private_execution_rows(dataset_root=root, start="2026-03-27", end="2026-03-28")
+
+    assert frame.height == 2
+    assert frame.get_column("ts_ms").to_list() == [1_774_569_600_000, 1_774_656_000_000]
