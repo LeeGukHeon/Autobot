@@ -1240,7 +1240,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_run_parser.add_argument(
         "--paper-feature-provider",
-        choices=("offline_parquet", "live_v3", "live_v4", "live_v4_native"),
+        choices=("offline_parquet", "live_v3", "live_v4", "live_v4_native", "live_v5"),
         help="Paper feature provider selection for model_alpha_v1.",
     )
     paper_alpha_parser = paper_subparsers.add_parser(
@@ -1284,7 +1284,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paper_alpha_parser.add_argument(
         "--paper-feature-provider",
-        choices=("offline_parquet", "live_v3", "live_v4", "live_v4_native"),
+        choices=("offline_parquet", "live_v3", "live_v4", "live_v4_native", "live_v5"),
         help="Optional provider override on top of preset.",
     )
     paper_alpha_parser.add_argument("--paper-micro-warmup-sec", type=int)

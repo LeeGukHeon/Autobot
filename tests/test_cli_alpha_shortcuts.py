@@ -30,6 +30,26 @@ def test_build_parser_supports_paper_alpha_shortcut() -> None:
     assert args.preset == "live_v5"
 
 
+def test_build_parser_accepts_live_v5_paper_feature_provider_for_paper_run() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "paper",
+            "run",
+            "--duration-sec",
+            "60",
+            "--strategy",
+            "model_alpha_v1",
+            "--paper-feature-provider",
+            "live_v5",
+        ]
+    )
+
+    assert args.command == "paper"
+    assert args.paper_command == "run"
+    assert args.paper_feature_provider == "live_v5"
+
+
 def test_normalize_paper_alpha_args_defaults_to_live_v5() -> None:
     args = argparse.Namespace(
         paper_command="alpha",
