@@ -149,15 +149,27 @@ class LiveFeatureProviderV5:
         self._lob_predictor = self._load_predictor_from_input_path(input_experts.get("lob"))
 
     def _load_predictor_from_input_path(self, path_value: Any) -> ModelPredictor | None:
-        text = str(path_value or "").strip()
+        payload = dict(path_value or {}) if isinstance(path_value, dict) else {}
+        family = str(payload.get("model_family") or "").strip()
+        run_id = str(payload.get("run_id") or "").strip()
+        if family and run_id:
+            return load_predictor_from_registry(
+                registry_root=self._registry_root,
+                model_ref=run_id,
+                model_family=family,
+            )
+        text = str(payload.get("run_dir") or payload.get("path") or path_value or "").strip()
         if not text:
             return None
         input_path = Path(text)
-        run_dir = input_path.parent
+        run_dir = input_path if input_path.is_dir() else input_path.parent
         if not run_dir.exists():
             return None
-        family = run_dir.parent.name if run_dir.parent is not None else ""
-        run_id = run_dir.name
+        train_config = self._load_json(run_dir / "train_config.yaml")
+        if not family:
+            family = str(train_config.get("model_family") or "").strip() or (run_dir.parent.name if run_dir.parent is not None else "")
+        if not run_id:
+            run_id = run_dir.name
         if not family or not run_id:
             return None
         return load_predictor_from_registry(
