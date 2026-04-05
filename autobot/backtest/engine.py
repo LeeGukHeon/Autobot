@@ -178,6 +178,9 @@ class BacktestRunSummary:
     selected_rows: int = 0
     skipped_missing_features_rows: int = 0
     selection_ratio: float = 0.0
+    intent_created_count: int = 0
+    entry_intent_created_count: int = 0
+    exit_intent_created_count: int = 0
     exposure_avg_open_positions: float = 0.0
     exposure_max_open_positions: int = 0
     orders_partially_filled: int = 0
@@ -868,6 +871,8 @@ class BacktestRunEngine:
             "scored_rows": 0,
             "eligible_rows": 0,
             "selected_rows": 0,
+            "intent_created_count": 0,
+            "entry_intent_created_count": 0,
             "skipped_missing_features_rows": 0,
             "dropped_min_prob_rows": 0,
             "dropped_top_pct_rows": 0,
@@ -985,6 +990,8 @@ class BacktestRunEngine:
             "scored_rows": 0,
             "eligible_rows": 0,
             "selected_rows": 0,
+            "intent_created_count": 0,
+            "entry_intent_created_count": 0,
             "skipped_missing_features_rows": 0,
             "dropped_min_prob_rows": 0,
             "dropped_top_pct_rows": 0,
@@ -1205,6 +1212,9 @@ class BacktestRunEngine:
         fill_events_total = int(self._runtime_counters.get("fill_events_total", 0))
         scored_rows = int(self._runtime_counters.get("scored_rows", 0))
         selected_rows = int(self._runtime_counters.get("selected_rows", 0))
+        intent_created_count = int(self._runtime_counters.get("intent_created_count", 0))
+        entry_intent_created_count = int(self._runtime_counters.get("entry_intent_created_count", 0))
+        exit_intent_created_count = int(self._runtime_counters.get("exit_intents_total", 0))
         skipped_missing_features_rows = int(self._runtime_counters.get("skipped_missing_features_rows", 0))
         selection_ratio = (selected_rows / scored_rows) if scored_rows > 0 else 0.0
         summary = BacktestRunSummary(
@@ -1245,6 +1255,9 @@ class BacktestRunEngine:
             selected_rows=selected_rows,
             skipped_missing_features_rows=skipped_missing_features_rows,
             selection_ratio=selection_ratio,
+            intent_created_count=intent_created_count,
+            entry_intent_created_count=entry_intent_created_count,
+            exit_intent_created_count=exit_intent_created_count,
             exposure_avg_open_positions=mean(open_positions_curve),
             exposure_max_open_positions=int(max(open_positions_curve) if open_positions_curve else 0),
             orders_partially_filled=orders_partially_filled,
@@ -1471,6 +1484,16 @@ class BacktestRunEngine:
         self._runtime_counters["selected_rows"] = int(self._runtime_counters.get("selected_rows", 0)) + int(
             result.selected_rows
         )
+        intent_created_count_ts = int(len(result.intents))
+        entry_intent_created_count_ts = sum(
+            1 for intent in result.intents if str(intent.side).strip().lower() == "bid"
+        )
+        self._runtime_counters["intent_created_count"] = int(
+            self._runtime_counters.get("intent_created_count", 0)
+        ) + intent_created_count_ts
+        self._runtime_counters["entry_intent_created_count"] = int(
+            self._runtime_counters.get("entry_intent_created_count", 0)
+        ) + int(entry_intent_created_count_ts)
         self._runtime_counters["skipped_missing_features_rows"] = int(
             self._runtime_counters.get("skipped_missing_features_rows", 0)
         ) + int(result.skipped_missing_features_rows)
@@ -1506,7 +1529,12 @@ class BacktestRunEngine:
                     "eligible_rows": eligible_rows_ts,
                     "selected_rows": selected_rows_ts,
                     "selected_ratio": (selected_rows_ts / scored_rows_ts) if scored_rows_ts > 0 else 0.0,
-                    "intents_created": int(len(result.intents)),
+                    "intent_created_count": int(intent_created_count_ts),
+                    "entry_intent_created_count": int(entry_intent_created_count_ts),
+                    "exit_intent_created_count": int(
+                        max(intent_created_count_ts - int(entry_intent_created_count_ts), 0)
+                    ),
+                    "intents_created": int(intent_created_count_ts),
                     "missing_rows": int(result.skipped_missing_features_rows),
                     "min_prob_used": float(result.min_prob_used),
                     "min_prob_source": str(result.min_prob_source),
@@ -1541,7 +1569,12 @@ class BacktestRunEngine:
                 "scored_rows": int(result.scored_rows),
                 "eligible_rows": int(result.eligible_rows),
                 "selected_rows": int(result.selected_rows),
-                "intents": int(len(result.intents)),
+                "intents": int(intent_created_count_ts),
+                "intent_created_count": int(intent_created_count_ts),
+                "entry_intent_created_count": int(entry_intent_created_count_ts),
+                "exit_intent_created_count": int(
+                    max(intent_created_count_ts - int(entry_intent_created_count_ts), 0)
+                ),
                 "skipped_missing_features_rows": int(result.skipped_missing_features_rows),
                 "dropped_min_prob_rows": int(result.dropped_min_prob_rows),
                 "dropped_top_pct_rows": int(result.dropped_top_pct_rows),

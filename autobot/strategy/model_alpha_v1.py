@@ -280,6 +280,16 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
             market_name = str(row.get("market", "")).strip().upper()
             if not market_name:
                 return
+            resolved_entry_decision = dict(entry_decision_payload or {})
+            resolved_reason_codes = [
+                str(code).strip()
+                for code in (resolved_entry_decision.get("reason_codes") or [])
+                if str(code).strip()
+            ]
+            if not resolved_reason_codes and str(chosen_action).strip().lower() == "intent_created":
+                resolved_reason_codes = ["ENTRY_ALLOWED"]
+            if not resolved_reason_codes and skip_reason_code:
+                resolved_reason_codes = [str(skip_reason_code).strip()]
             behavior_policy = _build_behavior_policy_logging(
                 execution_decision=execution_decision,
                 execution_profile=execution_profile,
@@ -304,6 +314,14 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         trade_action=trade_action_decision,
                     ),
                     uncertainty=_resolve_opportunity_uncertainty(row),
+                    expected_net_edge_bps=_resolve_v5_strategy_expected_net_edge_bps(
+                        row=row,
+                        execution_decision=execution_decision,
+                        trade_action=trade_action_decision,
+                    ),
+                    final_alpha_lcb=_safe_optional_float(row.get("final_alpha_lcb")),
+                    alpha_lcb_floor=_safe_optional_float(resolved_entry_decision.get("alpha_lcb_floor")),
+                    reason_codes=tuple(resolved_reason_codes),
                     run_id=self.predictor_run_id,
                     candidate_actions_json=tuple(behavior_policy.get("candidate_actions_json") or ()),
                     chosen_action_propensity=_safe_optional_float(behavior_policy.get("chosen_action_propensity")),
@@ -319,7 +337,14 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "notional_multiplier": notional_multiplier,
                         "state_features": _build_live_state_feature_snapshot(row=row),
                         "behavior_policy": dict(behavior_policy),
-                        "entry_decision": dict(entry_decision_payload or {}),
+                        "entry_decision": {
+                            **resolved_entry_decision,
+                            "reason_codes": list(resolved_reason_codes),
+                            "primary_reason_code": (
+                                str(resolved_entry_decision.get("primary_reason_code") or "").strip()
+                                or (resolved_reason_codes[0] if resolved_reason_codes else "")
+                            ),
+                        },
                         "sizing_decision": dict(sizing_decision_payload or {}),
                         "safety_vetoes": dict(safety_vetoes_payload or {}),
                         "exit_decision": dict(exit_decision_payload or {}),

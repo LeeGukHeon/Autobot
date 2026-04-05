@@ -2050,6 +2050,7 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
     family_compare = dict(exit_payload.get("family_compare") or {})
     trade_action = dict(normalized.get("trade_action") or {})
     risk_control = dict(normalized.get("risk_control") or {})
+    runtime_viability = dict(normalized.get("runtime_viability_summary") or {})
     trade_action_summary = {
         "status": trade_action.get("status"),
         "source": trade_action.get("source"),
@@ -2136,6 +2137,26 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
         "contract_issues": list(_dig(normalized, "exit", "contract_issues") or []),
         "exit_mode_compare": _summarize_exit_mode_compare(exit_payload),
         "trade_action": trade_action_summary,
+        "runtime_viability_pass": bool(normalized.get("runtime_viability_pass", False)),
+        "runtime_viability_report_path": normalized.get("runtime_viability_report_path"),
+        "runtime_viability": {
+            "alpha_lcb_floor": _coerce_float(runtime_viability.get("alpha_lcb_floor")),
+            "runtime_rows_total": _coerce_int(runtime_viability.get("runtime_rows_total")),
+            "mean_final_expected_return": _coerce_float(runtime_viability.get("mean_final_expected_return")),
+            "mean_final_expected_es": _coerce_float(runtime_viability.get("mean_final_expected_es")),
+            "mean_final_uncertainty": _coerce_float(runtime_viability.get("mean_final_uncertainty")),
+            "mean_final_alpha_lcb": _coerce_float(runtime_viability.get("mean_final_alpha_lcb")),
+            "alpha_lcb_positive_count": _coerce_int(runtime_viability.get("alpha_lcb_positive_count")),
+            "rows_above_alpha_floor": _coerce_int(runtime_viability.get("rows_above_alpha_floor")),
+            "rows_above_alpha_floor_ratio": _coerce_float(runtime_viability.get("rows_above_alpha_floor_ratio")),
+            "expected_return_positive_count": _coerce_int(runtime_viability.get("expected_return_positive_count")),
+            "entry_gate_allowed_count": _coerce_int(runtime_viability.get("entry_gate_allowed_count")),
+            "entry_gate_allowed_ratio": _coerce_float(runtime_viability.get("entry_gate_allowed_ratio")),
+            "estimated_intent_candidate_count": _coerce_int(runtime_viability.get("estimated_intent_candidate_count")),
+            "primary_reason_code": runtime_viability.get("primary_reason_code"),
+            "top_entry_gate_reason_codes": list(runtime_viability.get("top_entry_gate_reason_codes") or []),
+            "sample_rows": list(runtime_viability.get("sample_rows") or [])[:5],
+        },
         "risk_control": {
             "status": risk_control.get("status"),
             "contract_status": risk_control.get("contract_status"),
@@ -2277,6 +2298,7 @@ def _collect_recent_model_artifacts(project_root: Path, candidate_run_dir: str |
         return {"run_dir": str(run_dir), "exists": False}
     files = {
         "runtime_recommendations": run_dir / "runtime_recommendations.json",
+        "runtime_viability_report": run_dir / "runtime_viability_report.json",
         "selection_policy": run_dir / "selection_policy.json",
         "selection_calibration": run_dir / "selection_calibration.json",
         "search_budget_decision": run_dir / "search_budget_decision.json",
@@ -2289,6 +2311,8 @@ def _collect_recent_model_artifacts(project_root: Path, candidate_run_dir: str |
         raw_payload = _load_json(path)
         if key == "runtime_recommendations":
             payload[key] = _summarize_runtime_recommendations(raw_payload)
+        elif key == "runtime_viability_report":
+            payload[key] = raw_payload
         elif key == "selection_policy":
             payload[key] = _summarize_selection_policy(raw_payload)
         elif key == "selection_calibration":
@@ -2337,6 +2361,16 @@ def _load_model_provenance(project_root: Path, run_id: str | None) -> dict[str, 
         "runtime_profile": _dig(search_budget, "applied", "runtime_recommendation_profile"),
         "risk_control_operating_mode": _dig(runtime_recommendations, "risk_control", "operating_mode"),
         "risk_control_live_gate_enabled": bool(_dig(runtime_recommendations, "risk_control", "live_gate", "enabled")),
+        "runtime_viability_pass": bool(runtime_recommendations.get("runtime_viability_pass", False)),
+        "runtime_viability_primary_reason_code": _dig(
+            runtime_recommendations, "runtime_viability_summary", "primary_reason_code"
+        ),
+        "runtime_viability_rows_above_alpha_floor": _dig(
+            runtime_recommendations, "runtime_viability_summary", "rows_above_alpha_floor"
+        ),
+        "runtime_viability_entry_gate_allowed_count": _dig(
+            runtime_recommendations, "runtime_viability_summary", "entry_gate_allowed_count"
+        ),
         "trade_action_status": _dig(runtime_recommendations, "trade_action", "status"),
         "recommended_exit_mode": _dig(runtime_recommendations, "exit", "recommended_exit_mode")
         or _dig(runtime_recommendations, "exit", "mode"),

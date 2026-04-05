@@ -2409,6 +2409,10 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert opportunity_rows[0]["behavior_policy_support"] == "deterministic_no_exploration"
     assert opportunity_rows[0]["chosen_action_propensity"] in {0.0, 1.0}
     assert opportunity_rows[0]["no_trade_action_propensity"] in {0.0, 1.0}
+    assert "reason_codes" in opportunity_rows[0]
+    assert "expected_net_edge_bps" in opportunity_rows[0]
+    assert "final_alpha_lcb" in opportunity_rows[0]
+    assert "alpha_lcb_floor" in opportunity_rows[0]
     counterfactual_rows = [
         json.loads(line)
         for line in (run_dir / "counterfactual_action_log.jsonl").read_text(encoding="utf-8").splitlines()
@@ -2421,6 +2425,9 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")
     assert summary_json["execution_ope_report_path"].endswith("execution_ope_report.json")
+    assert summary_json["intent_created_count"] >= 1
+    assert summary_json["entry_intent_created_count"] >= 1
+    assert summary_json["exit_intent_created_count"] >= 0
     intent_events = [item for item in events_payloads if item.get("event_type") == "INTENT_CREATED"]
     assert intent_events
     intent_meta = ((intent_events[0].get("payload") or {}).get("meta") or {})

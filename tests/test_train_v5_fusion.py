@@ -309,10 +309,14 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert runtime_recommendations["risk_control"]["operating_mode"] == "test_panel_runtime"
     assert runtime_recommendations["runtime_viability_report_path"].endswith("runtime_viability_report.json")
     assert "rows_above_alpha_floor" in runtime_recommendations["runtime_viability_summary"]
+    assert "mean_final_alpha_lcb" in runtime_recommendations["runtime_viability_summary"]
+    assert "top_entry_gate_reason_codes" in runtime_recommendations["runtime_viability_summary"]
     report = load_json(result.train_report_path)
     assert report["data_platform_ready_snapshot_id"] == snapshot_id
     assert report["resumed"] is False
     assert float(report["tail_duration_sec"]) >= 0.0
+    assert report["runtime_viability_pass"] == runtime_recommendations["runtime_viability_pass"]
+    assert report["runtime_viability_summary"]["rows_above_alpha_floor"] == runtime_recommendations["runtime_viability_summary"]["rows_above_alpha_floor"]
     artifact_status = load_json(result.run_dir / "artifact_status.json")
     assert artifact_status["tail_context_written"] is True
     assert artifact_status["runtime_recommendations_complete"] is True
@@ -321,6 +325,9 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert runtime_viability["policy"] == "v5_runtime_viability_report_v1"
     assert runtime_viability["runtime_rows_total"] > 0
     assert "entry_gate_allowed_count" in runtime_viability
+    assert "mean_final_expected_return" in runtime_viability
+    assert "mean_final_alpha_lcb" in runtime_viability
+    assert "top_entry_gate_reason_codes" in runtime_viability
     assert (tmp_path / "registry" / "train_v5_fusion" / "latest.json").exists()
     assert not (tmp_path / "registry" / "latest.json").exists()
 

@@ -481,3 +481,5 @@ def test_fusion_variant_matrix_rejects_zero_runtime_viability_candidate(tmp_path
     report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
     assert "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY" in report["rejection_reasons"]["monotone_gbdt"]
     assert report["runtime_viability_pass"] is True
+    latest_payload = json.loads((registry_root / "train_v5_fusion" / "latest.json").read_text(encoding="utf-8"))
+    assert latest_payload["run_id"] == "fusion-linear"

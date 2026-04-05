@@ -207,6 +207,10 @@ def _normalize_explicit_record(
     payload.setdefault("selection_score_raw", None)
     payload.setdefault("uncertainty", None)
     payload.setdefault("expected_edge_bps", None)
+    payload.setdefault("expected_net_edge_bps", None)
+    payload.setdefault("final_alpha_lcb", None)
+    payload.setdefault("alpha_lcb_floor", None)
+    payload.setdefault("reason_codes", None)
     payload.setdefault("candidate_actions_json", None)
     payload.setdefault("chosen_action_propensity", None)
     payload.setdefault("no_trade_action_propensity", None)
@@ -216,6 +220,7 @@ def _normalize_explicit_record(
     payload.setdefault("skip_reason_code", None)
     payload.setdefault("realized_outcome_json", None)
     payload.setdefault("meta", {})
+    _hydrate_entry_decision_surface(payload)
     return payload
 
 
@@ -228,9 +233,14 @@ def _fallback_record_from_intent(
     source: str,
 ) -> dict[str, Any]:
     meta = dict(intent.meta or {})
+    entry_decision = dict(meta.get("entry_decision") or {}) if isinstance(meta.get("entry_decision"), dict) else {}
     selection_score = _safe_optional_float(intent.score)
     if selection_score is None:
         selection_score = _safe_optional_float(intent.prob)
+    reason_codes = _normalize_reason_codes(entry_decision.get("reason_codes"))
+    if not reason_codes:
+        reason_code = str(intent.reason_code).strip()
+        reason_codes = [reason_code] if reason_code else []
     return {
         "artifact_version": OPPORTUNITY_LOG_VERSION,
         "opportunity_id": f"fallback:{int(ts_ms)}:{str(intent.market).strip().upper()}:{str(intent.side).strip().lower()}",
@@ -246,6 +256,10 @@ def _fallback_record_from_intent(
         "selection_score_raw": selection_score,
         "uncertainty": None,
         "expected_edge_bps": _safe_optional_float(meta.get("expected_edge_bps")),
+        "expected_net_edge_bps": _safe_optional_float(meta.get("expected_net_edge_bps")),
+        "final_alpha_lcb": _safe_optional_float(meta.get("final_alpha_lcb")),
+        "alpha_lcb_floor": _safe_optional_float(entry_decision.get("alpha_lcb_floor")),
+        "reason_codes": reason_codes,
         "candidate_actions_json": None,
         "chosen_action": "intent_created",
         "chosen_action_propensity": None,
@@ -259,6 +273,52 @@ def _fallback_record_from_intent(
         "meta": meta,
         "realized_outcome_json": None,
     }
+
+
+def _hydrate_entry_decision_surface(payload: dict[str, Any]) -> None:
+    meta = payload.get("meta")
+    meta_dict = dict(meta) if isinstance(meta, dict) else {}
+    entry_decision = (
+        dict(meta_dict.get("entry_decision") or {})
+        if isinstance(meta_dict.get("entry_decision"), dict)
+        else {}
+    )
+    if payload.get("expected_net_edge_bps") is None:
+        payload["expected_net_edge_bps"] = (
+            _safe_optional_float(entry_decision.get("expected_net_edge_bps"))
+            if entry_decision
+            else None
+        )
+    if payload.get("final_alpha_lcb") is None:
+        payload["final_alpha_lcb"] = (
+            _safe_optional_float(entry_decision.get("final_alpha_lcb"))
+            if entry_decision
+            else None
+        )
+    if payload.get("alpha_lcb_floor") is None:
+        payload["alpha_lcb_floor"] = (
+            _safe_optional_float(entry_decision.get("alpha_lcb_floor"))
+            if entry_decision
+            else None
+        )
+    reason_codes = _normalize_reason_codes(payload.get("reason_codes"))
+    if not reason_codes:
+        reason_codes = _normalize_reason_codes(entry_decision.get("reason_codes"))
+    if not reason_codes:
+        skip_reason_code = str(payload.get("skip_reason_code") or "").strip()
+        if skip_reason_code:
+            reason_codes = [skip_reason_code]
+    if not reason_codes:
+        reason_code = str(payload.get("reason_code") or "").strip()
+        if reason_code:
+            reason_codes = [reason_code]
+    payload["reason_codes"] = reason_codes
+
+
+def _normalize_reason_codes(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def _to_jsonable(value: Any) -> Any:

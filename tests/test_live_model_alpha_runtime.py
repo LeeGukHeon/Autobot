@@ -273,6 +273,10 @@ class _Strategy:
                     feature_hash="test-hash",
                     chosen_action="JOIN",
                     reason_code="MODEL_ALPHA_ENTRY_V1",
+                    expected_net_edge_bps=12.5,
+                    final_alpha_lcb=0.0015,
+                    alpha_lcb_floor=0.0,
+                    reason_codes=("ENTRY_ALLOWED",),
                     run_id="run-live",
                     chosen_action_propensity=1.0,
                     no_trade_action_propensity=0.0,
@@ -496,6 +500,9 @@ def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: P
 
     assert summary["shadow_intents_total"] == 1
     assert summary["submitted_intents_total"] == 0
+    assert summary["intent_created_count"] == 1
+    assert summary["entry_intent_created_count"] == 1
+    assert summary["exit_intent_created_count"] == 0
     assert intents
     assert intents[0]["status"] == "SHADOW"
     opportunity_path = Path(str(summary["opportunity_log_path"]))
@@ -507,6 +514,10 @@ def test_live_model_alpha_runtime_shadow_records_hypothetical_intent(tmp_path: P
     assert records[0]["chosen_action"] == "JOIN"
     assert records[0]["chosen_action_propensity"] == 1.0
     assert records[0]["no_trade_action_propensity"] == 0.0
+    assert records[0]["reason_codes"] == ["ENTRY_ALLOWED"]
+    assert records[0]["expected_net_edge_bps"] == 12.5
+    assert records[0]["final_alpha_lcb"] == 0.0015
+    assert records[0]["alpha_lcb_floor"] == 0.0
     counterfactual_path = Path(str(summary["counterfactual_action_log_path"]))
     assert counterfactual_path.exists()
     counterfactual_rows = [json.loads(line) for line in counterfactual_path.read_text(encoding="utf-8").splitlines() if line.strip()]

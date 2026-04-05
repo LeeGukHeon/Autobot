@@ -7798,12 +7798,18 @@ try {
             exists = [bool](Get-PropValue -ObjectValue $runtimeViability -Name "exists" -DefaultValue $false)
             alpha_lcb_floor = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_floor" -DefaultValue 0.0) 0.0
             runtime_rows_total = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "runtime_rows_total" -DefaultValue 0) 0)
+            mean_final_expected_return = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_expected_return" -DefaultValue 0.0) 0.0
+            mean_final_expected_es = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_expected_es" -DefaultValue 0.0) 0.0
+            mean_final_uncertainty = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_uncertainty" -DefaultValue 0.0) 0.0
+            mean_final_alpha_lcb = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_alpha_lcb" -DefaultValue 0.0) 0.0
             alpha_lcb_positive_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_positive_count" -DefaultValue 0) 0)
             rows_above_alpha_floor = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor" -DefaultValue 0) 0)
             rows_above_alpha_floor_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor_ratio" -DefaultValue 0.0) 0.0
             entry_gate_allowed_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_count" -DefaultValue 0) 0)
             entry_gate_allowed_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_ratio" -DefaultValue 0.0) 0.0
             estimated_intent_candidate_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "estimated_intent_candidate_count" -DefaultValue 0) 0)
+            top_entry_gate_reason_codes = @((Get-PropValue -ObjectValue $runtimeViability -Name "top_entry_gate_reason_codes" -DefaultValue @()))
+            sample_rows = @((Get-PropValue -ObjectValue $runtimeViability -Name "sample_rows" -DefaultValue @()))
             pass = [bool](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "pass" -DefaultValue $false)
             reason = [string](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "reason" -DefaultValue "")
         }
@@ -7812,9 +7818,20 @@ try {
         $report.candidate.runtime_viability_summary = [ordered]@{
             alpha_lcb_floor = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_floor" -DefaultValue 0.0) 0.0
             runtime_rows_total = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "runtime_rows_total" -DefaultValue 0) 0)
+            mean_final_expected_return = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_expected_return" -DefaultValue 0.0) 0.0
+            mean_final_expected_es = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_expected_es" -DefaultValue 0.0) 0.0
+            mean_final_uncertainty = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_uncertainty" -DefaultValue 0.0) 0.0
+            mean_final_alpha_lcb = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "mean_final_alpha_lcb" -DefaultValue 0.0) 0.0
+            alpha_lcb_positive_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_positive_count" -DefaultValue 0) 0)
             rows_above_alpha_floor = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor" -DefaultValue 0) 0)
+            rows_above_alpha_floor_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor_ratio" -DefaultValue 0.0) 0.0
+            expected_return_positive_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "expected_return_positive_count" -DefaultValue 0) 0)
             entry_gate_allowed_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_count" -DefaultValue 0) 0)
+            entry_gate_allowed_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_ratio" -DefaultValue 0.0) 0.0
+            estimated_intent_candidate_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "estimated_intent_candidate_count" -DefaultValue 0) 0)
             primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeViability -Name "primary_reason_code" -DefaultValue "")
+            top_entry_gate_reason_codes = @((Get-PropValue -ObjectValue $runtimeViability -Name "top_entry_gate_reason_codes" -DefaultValue @()))
+            sample_rows = @((Get-PropValue -ObjectValue $runtimeViability -Name "sample_rows" -DefaultValue @()))
         }
         if (-not [bool](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "pass" -DefaultValue $false)) {
             $runtimeViabilityFailureCode = [string](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "reason" -DefaultValue "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")

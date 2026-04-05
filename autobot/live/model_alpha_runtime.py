@@ -170,6 +170,9 @@ async def run_live_model_alpha_runtime(
         "ticker_events": 0,
         "universe_updates": 0,
         "decisions": 0,
+        "intent_created_count": 0,
+        "entry_intent_created_count": 0,
+        "exit_intent_created_count": 0,
         "shadow_intents_total": 0,
         "submitted_intents_total": 0,
         "skipped_intents_total": 0,
@@ -488,6 +491,18 @@ async def run_live_model_alpha_runtime(
                         open_markets=_snapshot_open_markets(store),
                     )
                     summary["decisions"] = int(summary["decisions"]) + 1
+                    intent_created_count = int(len(result.intents))
+                    entry_intent_created_count = sum(
+                        1 for intent in result.intents if str(intent.side).strip().lower() == "bid"
+                    )
+                    exit_intent_created_count = max(intent_created_count - int(entry_intent_created_count), 0)
+                    summary["intent_created_count"] = int(summary["intent_created_count"]) + intent_created_count
+                    summary["entry_intent_created_count"] = int(summary["entry_intent_created_count"]) + int(
+                        entry_intent_created_count
+                    )
+                    summary["exit_intent_created_count"] = int(summary["exit_intent_created_count"]) + int(
+                        exit_intent_created_count
+                    )
                     store.set_checkpoint(
                         name="live_model_alpha_last_selection",
                         payload={
@@ -495,7 +510,10 @@ async def run_live_model_alpha_runtime(
                             "scored_rows": int(result.scored_rows),
                             "eligible_rows": int(result.eligible_rows),
                             "selected_rows": int(result.selected_rows),
-                            "intents": int(len(result.intents)),
+                            "intents": int(intent_created_count),
+                            "intent_created_count": int(intent_created_count),
+                            "entry_intent_created_count": int(entry_intent_created_count),
+                            "exit_intent_created_count": int(exit_intent_created_count),
                             "skipped_reasons": dict(result.skipped_reasons),
                             "feature_provider_stats": getattr(feature_provider, "last_build_stats", lambda: {})(),
                         },

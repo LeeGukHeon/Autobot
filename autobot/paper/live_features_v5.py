@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -84,6 +85,7 @@ class LiveFeatureProviderV5:
         self._last_build_stats: dict[str, Any] = {}
         self._last_requested_ts_ms: int | None = None
         self._last_built_ts_ms: int | None = None
+        self._runtime_source_lineage = self._resolve_runtime_source_lineage()
 
         self._mode = self._resolve_mode()
         self._panel_predictor: ModelPredictor | None = None
@@ -312,6 +314,7 @@ class LiveFeatureProviderV5:
             "skip_reasons": dict(sorted(skip_reasons.items(), key=lambda item: str(item[0]))),
             "base_provider_stats": dict(getattr(self._base_provider, "_last_build_stats", {}) or {}),
             "primary_model_family": str(self._predictor.model_family or ""),
+            "runtime_source_lineage": dict(self._runtime_source_lineage),
         }
         return frame
 
@@ -322,10 +325,45 @@ class LiveFeatureProviderV5:
         payload["built_ts_ms"] = self._last_built_ts_ms
         payload["requested_ts_ms"] = int(requested_ts_ms) if requested_ts_ms is not None else self._last_requested_ts_ms
         payload["primary_model_family"] = str(self._predictor.model_family or "")
+        payload["runtime_source_lineage"] = dict(self._runtime_source_lineage)
         return payload
 
     def last_build_stats(self) -> dict[str, Any]:
-        return dict(self._last_build_stats)
+        return json.loads(json.dumps(self._last_build_stats, ensure_ascii=False))
+
+    def _resolve_runtime_source_lineage(self) -> dict[str, Any]:
+        runtime_recommendations = self._load_json(self._predictor.run_dir / "runtime_recommendations.json")
+        runtime_viability = self._load_json(self._predictor.run_dir / "runtime_viability_report.json")
+        runtime_input_contract = self._load_json(self._predictor.run_dir / "fusion_runtime_input_contract.json")
+        exit_doc = dict(runtime_recommendations.get("exit") or {})
+        execution_doc = dict(runtime_recommendations.get("execution") or {})
+        runtime_source_family = (
+            str(exit_doc.get("runtime_source_family") or "").strip()
+            or str(execution_doc.get("runtime_source_family") or "").strip()
+            or str(runtime_recommendations.get("source_family") or "").strip()
+        )
+        runtime_source_mode = (
+            str(exit_doc.get("runtime_source_mode") or "").strip()
+            or str(execution_doc.get("runtime_source_mode") or "").strip()
+        )
+        return {
+            "model_family": str(self._predictor.model_family or ""),
+            "run_id": str(self._predictor.run_dir.name),
+            "runtime_source_family": runtime_source_family,
+            "runtime_source_mode": runtime_source_mode,
+            "common_runtime_universe_id": str(
+                runtime_viability.get("common_runtime_universe_id")
+                or runtime_input_contract.get("common_runtime_universe_id")
+                or ""
+            ).strip(),
+            "runtime_window": dict(runtime_viability.get("generation_window") or runtime_input_contract.get("runtime_window") or {}),
+            "runtime_viability_pass": bool(runtime_viability.get("pass", False)),
+            "runtime_viability_report_path": (
+                str(self._predictor.run_dir / "runtime_viability_report.json")
+                if (self._predictor.run_dir / "runtime_viability_report.json").exists()
+                else ""
+            ),
+        }
 
     def _resolve_prev_acc_trade_price_24h(self, *, market: str) -> float | None:
         state = self._base_provider._market_state.get(market)  # noqa: SLF001
@@ -840,8 +878,6 @@ class LiveFeatureProviderV5:
         if not path.exists():
             return {}
         try:
-            import json
-
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return {}

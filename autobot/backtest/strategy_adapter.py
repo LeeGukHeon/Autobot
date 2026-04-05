@@ -33,7 +33,11 @@ class StrategyOpportunityRecord:
     skip_reason_code: str | None = None
     intent_id: str | None = None
     expected_edge_bps: float | None = None
+    expected_net_edge_bps: float | None = None
     uncertainty: float | None = None
+    final_alpha_lcb: float | None = None
+    alpha_lcb_floor: float | None = None
+    reason_codes: tuple[str, ...] = ()
     run_id: str | None = None
     candidate_actions_json: tuple[dict[str, Any], ...] = ()
     chosen_action_propensity: float | None = None

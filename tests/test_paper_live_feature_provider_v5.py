@@ -10,13 +10,20 @@ def test_live_feature_provider_v5_last_build_stats_returns_copy() -> None:
     provider._last_build_stats = {  # type: ignore[attr-defined]
         "provider": "LIVE_V5",
         "built_rows": 3,
+        "runtime_source_lineage": {"run_id": "fusion-run-001"},
     }
 
     stats = provider.last_build_stats()
-    assert stats == {"provider": "LIVE_V5", "built_rows": 3}
+    assert stats == {
+        "provider": "LIVE_V5",
+        "built_rows": 3,
+        "runtime_source_lineage": {"run_id": "fusion-run-001"},
+    }
 
     stats["built_rows"] = 0
+    stats["runtime_source_lineage"]["run_id"] = "mutated"
     assert provider._last_build_stats["built_rows"] == 3  # type: ignore[attr-defined]
+    assert provider._last_build_stats["runtime_source_lineage"]["run_id"] == "fusion-run-001"  # type: ignore[attr-defined]
 
 
 def test_live_feature_provider_v5_loads_child_predictor_from_input_expert_metadata(monkeypatch) -> None:

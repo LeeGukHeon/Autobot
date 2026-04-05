@@ -240,6 +240,26 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     _write_json(
         project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_recommendations.json",
         {
+            "runtime_viability_pass": False,
+            "runtime_viability_report_path": str(project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_viability_report.json"),
+            "runtime_viability_summary": {
+                "alpha_lcb_floor": 0.0,
+                "runtime_rows_total": 21298,
+                "mean_final_expected_return": -0.0134,
+                "mean_final_expected_es": 0.0321,
+                "mean_final_uncertainty": 0.0170,
+                "mean_final_alpha_lcb": -0.0625,
+                "alpha_lcb_positive_count": 0,
+                "rows_above_alpha_floor": 0,
+                "rows_above_alpha_floor_ratio": 0.0,
+                "expected_return_positive_count": 0,
+                "entry_gate_allowed_count": 0,
+                "entry_gate_allowed_ratio": 0.0,
+                "estimated_intent_candidate_count": 0,
+                "primary_reason_code": "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY",
+                "top_entry_gate_reason_codes": [{"reason_code": "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE", "count": 21298}],
+                "sample_rows": [{"market": "KRW-BTC", "final_alpha_lcb": -0.0625}],
+            },
             "exit": {
                 "recommended_exit_mode": "hold",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
@@ -402,6 +422,9 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_edge_bps"] == 123.0
     assert runtime_recommendations["trade_action"]["sample_bins"][0]["expected_es_bps"] == pytest.approx(61.0)
     assert runtime_recommendations["trade_action"]["conditional_action_model"] == "conditional_action_linear_quantile_tail_v2"
+    assert runtime_recommendations["runtime_viability_pass"] is False
+    assert runtime_recommendations["runtime_viability"]["mean_final_alpha_lcb"] == pytest.approx(-0.0625)
+    assert runtime_recommendations["runtime_viability"]["top_entry_gate_reason_codes"][0]["reason_code"] == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
     assert exit_compare["hold"]["orders_filled"] == 8
     assert exit_compare["risk"]["slippage_bps_mean"] == 13.5
     assert exit_compare["summary_ko"]
@@ -1450,6 +1473,16 @@ def test_execute_dashboard_operation_adopt_latest_candidate_uses_v5_family_and_v
             "model_family": "train_v5_panel_ensemble",
             "config": {"champion_model_family": "train_v4_crypto_cs"},
             "candidate": {"champion_model_family_used_for_backtest": "train_v4_crypto_cs"},
+        },
+    )
+    _write_json(
+        project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_viability_report.json",
+        {
+            "policy": "v5_runtime_viability_report_v1",
+            "pass": False,
+            "primary_reason_code": "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY",
+            "rows_above_alpha_floor": 0,
+            "entry_gate_allowed_count": 0,
         },
     )
     _write_json(

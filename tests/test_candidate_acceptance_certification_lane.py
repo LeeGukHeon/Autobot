@@ -2533,5 +2533,7 @@ def test_candidate_acceptance_fails_fast_on_zero_runtime_viability(tmp_path: Pat
     assert report["steps"]["runtime_viability_preflight"]["pass"] is False
     assert report["steps"]["runtime_viability_preflight"]["rows_above_alpha_floor"] == 0
     assert report["steps"]["runtime_viability_preflight"]["entry_gate_allowed_count"] == 0
+    assert "mean_final_alpha_lcb" in report["steps"]["runtime_viability_preflight"]
+    assert "top_entry_gate_reason_codes" in report["candidate"]["runtime_viability_summary"]
     assert report["candidate"]["runtime_viability_pass"] is False
     assert backtests == []

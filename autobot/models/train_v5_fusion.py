@@ -1061,6 +1061,10 @@ def _build_runtime_viability_report(
     alpha_lcb_positive_count = int(np.sum(final_alpha_lcb > 0.0))
     rows_above_alpha_floor = int(np.sum(final_alpha_lcb > alpha_lcb_floor))
     expected_return_positive_count = int(np.sum(final_expected_return > 0.0))
+    mean_final_expected_return = float(np.mean(final_expected_return)) if rows_total > 0 else 0.0
+    mean_final_expected_es = float(np.mean(final_expected_es)) if rows_total > 0 else 0.0
+    mean_final_uncertainty = float(np.mean(final_uncertainty)) if rows_total > 0 else 0.0
+    mean_final_alpha_lcb = float(np.mean(final_alpha_lcb)) if rows_total > 0 else 0.0
 
     entry_gate_allowed_count = 0
     reason_counts: dict[str, int] = {}
@@ -1102,11 +1106,17 @@ def _build_runtime_viability_report(
                     "final_tradability": float(final_tradability[idx]),
                     "final_uncertainty": float(final_uncertainty[idx]),
                     "final_alpha_lcb": float(final_alpha_lcb[idx]),
+                    "expected_net_edge_bps": float(final_expected_return[idx]) * 10_000.0,
+                    "alpha_lcb_floor": alpha_lcb_floor,
                     "gate_allowed": bool(gate.get("allowed", False)),
                     "gate_reason_codes": list(gate.get("reason_codes") or []),
                 }
             )
     rows_total_float = float(rows_total) if rows_total > 0 else 1.0
+    top_entry_gate_reason_codes = [
+        {"reason_code": reason_code, "count": int(count)}
+        for reason_code, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1]), str(item[0])))
+    ][:5]
     return {
         "policy": "v5_runtime_viability_report_v1",
         "run_id": run_id,
@@ -1115,6 +1125,10 @@ def _build_runtime_viability_report(
         "common_runtime_universe_id": str(runtime_input_contract.get("common_runtime_universe_id") or "").strip(),
         "alpha_lcb_floor": alpha_lcb_floor,
         "runtime_rows_total": rows_total,
+        "mean_final_expected_return": mean_final_expected_return,
+        "mean_final_expected_es": mean_final_expected_es,
+        "mean_final_uncertainty": mean_final_uncertainty,
+        "mean_final_alpha_lcb": mean_final_alpha_lcb,
         "alpha_lcb_positive_count": alpha_lcb_positive_count,
         "rows_above_alpha_floor": rows_above_alpha_floor,
         "rows_above_alpha_floor_ratio": float(rows_above_alpha_floor / rows_total_float),
@@ -1129,7 +1143,30 @@ def _build_runtime_viability_report(
             else ("FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY" if entry_gate_allowed_count <= 0 else "PASS")
         ),
         "entry_gate_reason_counts": reason_counts,
+        "top_entry_gate_reason_codes": top_entry_gate_reason_codes,
         "sample_rows": sample_rows,
+    }
+
+
+def _build_runtime_viability_summary(report: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(report or {})
+    return {
+        "alpha_lcb_floor": payload.get("alpha_lcb_floor"),
+        "runtime_rows_total": payload.get("runtime_rows_total"),
+        "mean_final_expected_return": payload.get("mean_final_expected_return"),
+        "mean_final_expected_es": payload.get("mean_final_expected_es"),
+        "mean_final_uncertainty": payload.get("mean_final_uncertainty"),
+        "mean_final_alpha_lcb": payload.get("mean_final_alpha_lcb"),
+        "alpha_lcb_positive_count": payload.get("alpha_lcb_positive_count"),
+        "rows_above_alpha_floor": payload.get("rows_above_alpha_floor"),
+        "rows_above_alpha_floor_ratio": payload.get("rows_above_alpha_floor_ratio"),
+        "expected_return_positive_count": payload.get("expected_return_positive_count"),
+        "entry_gate_allowed_count": payload.get("entry_gate_allowed_count"),
+        "entry_gate_allowed_ratio": payload.get("entry_gate_allowed_ratio"),
+        "estimated_intent_candidate_count": payload.get("estimated_intent_candidate_count"),
+        "primary_reason_code": payload.get("primary_reason_code"),
+        "top_entry_gate_reason_codes": list(payload.get("top_entry_gate_reason_codes") or []),
+        "sample_rows": list(payload.get("sample_rows") or [])[:5],
     }
 
 
@@ -1293,10 +1330,13 @@ def _run_fusion_tail(
             "fusion_input_contract_path": str(_fusion_input_contract_path(run_dir)),
             "fusion_runtime_input_contract_path": str(_fusion_runtime_input_contract_path(run_dir)),
             "runtime_viability_report_path": str(runtime_viability_report_path),
+            "runtime_viability_pass": bool(runtime_recommendations.get("runtime_viability_pass", False)),
+            "runtime_viability_summary": dict(runtime_recommendations.get("runtime_viability_summary") or {}),
         },
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         resumed=resumed,
         tail_started_at=tail_started_at,
+        publish_family_latest=bool(runtime_recommendations.get("runtime_viability_pass", False)),
         publish_global_latest=(str(options.run_scope).strip().lower() == "scheduled_daily"),
     )
     return runtime_artifacts, report_path
@@ -1827,15 +1867,9 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     )
     runtime_recommendations["runtime_viability_report_path"] = str(runtime_viability_report_path)
     runtime_recommendations["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
-    runtime_recommendations["runtime_viability_summary"] = {
-        "alpha_lcb_floor": runtime_viability_report.get("alpha_lcb_floor"),
-        "runtime_rows_total": runtime_viability_report.get("runtime_rows_total"),
-        "rows_above_alpha_floor": runtime_viability_report.get("rows_above_alpha_floor"),
-        "rows_above_alpha_floor_ratio": runtime_viability_report.get("rows_above_alpha_floor_ratio"),
-        "entry_gate_allowed_count": runtime_viability_report.get("entry_gate_allowed_count"),
-        "entry_gate_allowed_ratio": runtime_viability_report.get("entry_gate_allowed_ratio"),
-        "primary_reason_code": runtime_viability_report.get("primary_reason_code"),
-    }
+    runtime_recommendations["runtime_viability_summary"] = _build_runtime_viability_summary(
+        runtime_viability_report
+    )
     runtime_recommendations["fusion_candidate_default_eligible"] = bool(runtime_viability_report.get("pass", False))
     runtime_recommendations["fusion_default_eligible_winner"] = stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
     runtime_recommendations["fusion_evidence_winner"] = stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
@@ -2017,15 +2051,9 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     )
     runtime_recommendations["runtime_viability_report_path"] = str(runtime_viability_report_path)
     runtime_recommendations["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
-    runtime_recommendations["runtime_viability_summary"] = {
-        "alpha_lcb_floor": runtime_viability_report.get("alpha_lcb_floor"),
-        "runtime_rows_total": runtime_viability_report.get("runtime_rows_total"),
-        "rows_above_alpha_floor": runtime_viability_report.get("rows_above_alpha_floor"),
-        "rows_above_alpha_floor_ratio": runtime_viability_report.get("rows_above_alpha_floor_ratio"),
-        "entry_gate_allowed_count": runtime_viability_report.get("entry_gate_allowed_count"),
-        "entry_gate_allowed_ratio": runtime_viability_report.get("entry_gate_allowed_ratio"),
-        "primary_reason_code": runtime_viability_report.get("primary_reason_code"),
-    }
+    runtime_recommendations["runtime_viability_summary"] = _build_runtime_viability_summary(
+        runtime_viability_report
+    )
     runtime_recommendations["fusion_candidate_default_eligible"] = bool(runtime_viability_report.get("pass", False))
     runtime_recommendations["fusion_default_eligible_winner"] = options.stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
     runtime_recommendations["fusion_evidence_winner"] = options.stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
