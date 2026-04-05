@@ -53,6 +53,10 @@ def _make_fake_python_exe(
     candidate_orders_filled: int = 64,
     candidate_candidates_aborted_by_policy: int = 0,
     profile_candidate_min_orders_filled: int = 30,
+    write_runtime_viability_report: bool = True,
+    candidate_runtime_rows_total: int = 100,
+    candidate_rows_above_alpha_floor: int = 10,
+    candidate_entry_gate_allowed_count: int = 10,
     feature_rows_by_window: dict[str, int] | None = None,
     feature_min_rows_for_train: int = 4000,
     history_anchor_backtest_by_window: dict[str, dict[str, float | int]] | None = None,
@@ -89,6 +93,10 @@ def _make_fake_python_exe(
             CANDIDATE_ORDERS_FILLED = {int(candidate_orders_filled)}
             CANDIDATE_CANDIDATES_ABORTED_BY_POLICY = {int(candidate_candidates_aborted_by_policy)}
             PROFILE_CANDIDATE_MIN_ORDERS_FILLED = {int(profile_candidate_min_orders_filled)}
+            WRITE_RUNTIME_VIABILITY_REPORT = {str(write_runtime_viability_report)}
+            CANDIDATE_RUNTIME_ROWS_TOTAL = {int(candidate_runtime_rows_total)}
+            CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR = {int(candidate_rows_above_alpha_floor)}
+            CANDIDATE_ENTRY_GATE_ALLOWED_COUNT = {int(candidate_entry_gate_allowed_count)}
             FEATURE_ROWS_BY_WINDOW = {json.dumps(feature_rows_by_window or {})}
             FEATURE_MIN_ROWS_FOR_TRAIN = {int(feature_min_rows_for_train)}
             HISTORY_ANCHOR_BACKTEST_BY_WINDOW = {json.dumps(history_anchor_backtest_by_window or {})}
@@ -576,6 +584,24 @@ def _make_fake_python_exe(
                             "trade_action": {{"status": "ready", "policy": "fixture"}},
                         }},
                     )
+                    if WRITE_RUNTIME_VIABILITY_REPORT:
+                        write_json(
+                            candidate_dir / "runtime_viability_report.json",
+                            {{
+                                "policy": "v5_runtime_viability_report_v1",
+                                "pass": (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR > 0 and CANDIDATE_ENTRY_GATE_ALLOWED_COUNT > 0),
+                                "alpha_lcb_floor": 0.0,
+                                "runtime_rows_total": CANDIDATE_RUNTIME_ROWS_TOTAL,
+                                "alpha_lcb_positive_count": CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR,
+                                "rows_above_alpha_floor": CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR,
+                                "rows_above_alpha_floor_ratio": (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR / CANDIDATE_RUNTIME_ROWS_TOTAL) if CANDIDATE_RUNTIME_ROWS_TOTAL > 0 else 0.0,
+                                "expected_return_positive_count": CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR,
+                                "entry_gate_allowed_count": CANDIDATE_ENTRY_GATE_ALLOWED_COUNT,
+                                "entry_gate_allowed_ratio": (CANDIDATE_ENTRY_GATE_ALLOWED_COUNT / CANDIDATE_RUNTIME_ROWS_TOTAL) if CANDIDATE_RUNTIME_ROWS_TOTAL > 0 else 0.0,
+                                "estimated_intent_candidate_count": CANDIDATE_ENTRY_GATE_ALLOWED_COUNT,
+                                "primary_reason_code": ("PASS" if (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR > 0 and CANDIDATE_ENTRY_GATE_ALLOWED_COUNT > 0) else ("FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY" if CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR <= 0 else "FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY")),
+                            }},
+                        )
                     write_json(
                         candidate_dir / "fusion_model_contract.json",
                         {{
@@ -2473,3 +2499,39 @@ def test_candidate_acceptance_cli_override_can_relax_profile_thresholds(
     assert report["gates"]["backtest"]["candidate_min_orders_threshold"] == 10
     assert report["gates"]["backtest"]["candidate_min_orders_pass"] is True
     assert report["gates"]["backtest"]["pass"] is True
+
+
+def test_candidate_acceptance_fails_fast_on_zero_runtime_viability(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        candidate_rows_above_alpha_floor=0,
+        candidate_entry_gate_allowed_count=0,
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    backtests = [item for item in invocations if item["command"] == "backtest alpha"]
+
+    assert report["failure_stage"] == "runtime_viability"
+    assert report["failure_code"] == "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY"
+    assert report["steps"]["runtime_viability_preflight"]["pass"] is False
+    assert report["steps"]["runtime_viability_preflight"]["rows_above_alpha_floor"] == 0
+    assert report["steps"]["runtime_viability_preflight"]["entry_gate_allowed_count"] == 0
+    assert report["candidate"]["runtime_viability_pass"] is False
+    assert backtests == []

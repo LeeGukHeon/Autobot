@@ -274,6 +274,7 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert result.fusion_model_contract_path.exists()
     assert result.predictor_contract_path.exists()
     assert result.entry_boundary_contract_path.exists()
+    assert result.runtime_viability_report_path.exists()
     assert result.walk_forward_report_path.exists()
     assert result.promotion_path.exists()
     assert (result.run_dir / "fusion_input_contract.json").exists()
@@ -306,6 +307,8 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert runtime_recommendations["exit"]["runtime_source_mode"] == "fusion_owned_panel_seeded"
     assert runtime_recommendations["execution"]["recommended_price_mode"] == "JOIN"
     assert runtime_recommendations["risk_control"]["operating_mode"] == "test_panel_runtime"
+    assert runtime_recommendations["runtime_viability_report_path"].endswith("runtime_viability_report.json")
+    assert "rows_above_alpha_floor" in runtime_recommendations["runtime_viability_summary"]
     report = load_json(result.train_report_path)
     assert report["data_platform_ready_snapshot_id"] == snapshot_id
     assert report["resumed"] is False
@@ -314,6 +317,10 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert artifact_status["tail_context_written"] is True
     assert artifact_status["runtime_recommendations_complete"] is True
     assert artifact_status["governance_artifacts_complete"] is True
+    runtime_viability = load_json(result.runtime_viability_report_path)
+    assert runtime_viability["policy"] == "v5_runtime_viability_report_v1"
+    assert runtime_viability["runtime_rows_total"] > 0
+    assert "entry_gate_allowed_count" in runtime_viability
     assert (tmp_path / "registry" / "train_v5_fusion" / "latest.json").exists()
     assert not (tmp_path / "registry" / "latest.json").exists()
 

@@ -14,11 +14,12 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
-from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations
+from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations, resolve_v5_entry_gate
 
 from .entry_boundary import build_risk_calibrated_entry_boundary
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
+from .entry_boundary import evaluate_entry_boundary
 from .registry import RegistrySavePayload, load_json, load_model_bundle, make_run_id, save_run, update_artifact_status, update_latest_pointer
 from .runtime_feature_dataset import write_runtime_feature_dataset
 from .selection_calibration import _identity_calibration
@@ -86,6 +87,7 @@ class TrainV5FusionResult:
     fusion_model_contract_path: Path
     predictor_contract_path: Path
     entry_boundary_contract_path: Path
+    runtime_viability_report_path: Path
 
 
 @dataclass(frozen=True)
@@ -1033,7 +1035,102 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
             (upstream_inputs.get("sequence") or {}).get("sequence_pretrain_report_path")
             or ""
         ).strip(),
-    })
+    })    
+
+
+def _build_runtime_viability_report(
+    *,
+    run_id: str,
+    model_family: str,
+    predictor: V5FusionEstimator,
+    runtime_x: np.ndarray,
+    runtime_markets: np.ndarray,
+    runtime_ts_ms: np.ndarray,
+    runtime_input_contract: dict[str, Any],
+    entry_boundary: dict[str, Any],
+) -> dict[str, Any]:
+    contract = predictor.predict_panel_contract(runtime_x)
+    final_expected_return = np.asarray(contract["final_expected_return"], dtype=np.float64)
+    final_expected_es = np.asarray(contract["final_expected_es"], dtype=np.float64)
+    final_tradability = np.asarray(contract["final_tradability"], dtype=np.float64)
+    final_uncertainty = np.asarray(contract["final_uncertainty"], dtype=np.float64)
+    final_alpha_lcb = np.asarray(contract["final_alpha_lcb"], dtype=np.float64)
+    alpha_lcb_floor = float(entry_boundary.get("alpha_lcb_floor") or 0.0)
+
+    rows_total = int(final_alpha_lcb.shape[0])
+    alpha_lcb_positive_count = int(np.sum(final_alpha_lcb > 0.0))
+    rows_above_alpha_floor = int(np.sum(final_alpha_lcb > alpha_lcb_floor))
+    expected_return_positive_count = int(np.sum(final_expected_return > 0.0))
+
+    entry_gate_allowed_count = 0
+    reason_counts: dict[str, int] = {}
+    sample_rows: list[dict[str, Any]] = []
+    for idx in range(rows_total):
+        boundary_decision = evaluate_entry_boundary(
+            row={
+                "final_rank_score": float(contract["final_rank_score"][idx]),
+                "final_expected_return": float(final_expected_return[idx]),
+                "final_expected_es": float(final_expected_es[idx]),
+                "final_tradability": float(final_tradability[idx]),
+                "final_uncertainty": float(final_uncertainty[idx]),
+                "final_alpha_lcb": float(final_alpha_lcb[idx]),
+            },
+            contract=entry_boundary,
+        )
+        gate = resolve_v5_entry_gate(
+            market=str(runtime_markets[idx]),
+            final_expected_return=float(final_expected_return[idx]),
+            final_expected_es=float(final_expected_es[idx]),
+            final_tradability=float(final_tradability[idx]),
+            final_uncertainty=float(final_uncertainty[idx]),
+            final_alpha_lcb=float(final_alpha_lcb[idx]),
+            entry_boundary_decision=boundary_decision,
+            expected_net_edge_bps=float(final_expected_return[idx]) * 10_000.0,
+        )
+        if bool(gate.get("allowed", False)):
+            entry_gate_allowed_count += 1
+        else:
+            code = str((gate.get("reason_codes") or ["ENTRY_GATE_BLOCKED"])[0]).strip() or "ENTRY_GATE_BLOCKED"
+            reason_counts[code] = int(reason_counts.get(code, 0)) + 1
+        if idx < 5:
+            sample_rows.append(
+                {
+                    "market": str(runtime_markets[idx]),
+                    "ts_ms": int(runtime_ts_ms[idx]),
+                    "final_expected_return": float(final_expected_return[idx]),
+                    "final_expected_es": float(final_expected_es[idx]),
+                    "final_tradability": float(final_tradability[idx]),
+                    "final_uncertainty": float(final_uncertainty[idx]),
+                    "final_alpha_lcb": float(final_alpha_lcb[idx]),
+                    "gate_allowed": bool(gate.get("allowed", False)),
+                    "gate_reason_codes": list(gate.get("reason_codes") or []),
+                }
+            )
+    rows_total_float = float(rows_total) if rows_total > 0 else 1.0
+    return {
+        "policy": "v5_runtime_viability_report_v1",
+        "run_id": run_id,
+        "model_family": model_family,
+        "generation_window": dict(runtime_input_contract.get("runtime_window") or {}),
+        "common_runtime_universe_id": str(runtime_input_contract.get("common_runtime_universe_id") or "").strip(),
+        "alpha_lcb_floor": alpha_lcb_floor,
+        "runtime_rows_total": rows_total,
+        "alpha_lcb_positive_count": alpha_lcb_positive_count,
+        "rows_above_alpha_floor": rows_above_alpha_floor,
+        "rows_above_alpha_floor_ratio": float(rows_above_alpha_floor / rows_total_float),
+        "expected_return_positive_count": expected_return_positive_count,
+        "entry_gate_allowed_count": entry_gate_allowed_count,
+        "entry_gate_allowed_ratio": float(entry_gate_allowed_count / rows_total_float),
+        "estimated_intent_candidate_count": entry_gate_allowed_count,
+        "pass": bool(rows_above_alpha_floor > 0 and entry_gate_allowed_count > 0),
+        "primary_reason_code": (
+            "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY"
+            if rows_above_alpha_floor <= 0
+            else ("FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY" if entry_gate_allowed_count <= 0 else "PASS")
+        ),
+        "entry_gate_reason_counts": reason_counts,
+        "sample_rows": sample_rows,
+    }
 
 
 def _build_v5_fusion_tail_context(
@@ -1132,6 +1229,7 @@ def _run_fusion_tail(
     runtime_recommendations: dict[str, Any],
     promotion_payload: dict[str, Any],
     entry_boundary: dict[str, Any],
+    runtime_viability_report_path: Path,
     resumed: bool,
 ) -> tuple[dict[str, Any], Path]:
     tail_started_at = time.time()
@@ -1194,6 +1292,7 @@ def _run_fusion_tail(
             "entry_boundary_contract_path": str(_fusion_entry_boundary_path(run_dir)),
             "fusion_input_contract_path": str(_fusion_input_contract_path(run_dir)),
             "fusion_runtime_input_contract_path": str(_fusion_runtime_input_contract_path(run_dir)),
+            "runtime_viability_report_path": str(runtime_viability_report_path),
         },
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         resumed=resumed,
@@ -1711,6 +1810,43 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     runtime_input_contract = dict(runtime_input_bundle.input_contract)
     runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
     runtime_input_contract["domain_weighting_report_path"] = str(domain_weighting_report_path)
+    runtime_viability_report = _build_runtime_viability_report(
+        run_id=run_id,
+        model_family=options.model_family,
+        predictor=estimator,
+        runtime_x=runtime_x,
+        runtime_markets=runtime_markets,
+        runtime_ts_ms=runtime_ts_ms,
+        runtime_input_contract=runtime_input_contract,
+        entry_boundary=entry_boundary,
+    )
+    runtime_viability_report_path = run_dir / "runtime_viability_report.json"
+    runtime_viability_report_path.write_text(
+        json.dumps(runtime_viability_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    runtime_recommendations["runtime_viability_report_path"] = str(runtime_viability_report_path)
+    runtime_recommendations["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
+    runtime_recommendations["runtime_viability_summary"] = {
+        "alpha_lcb_floor": runtime_viability_report.get("alpha_lcb_floor"),
+        "runtime_rows_total": runtime_viability_report.get("runtime_rows_total"),
+        "rows_above_alpha_floor": runtime_viability_report.get("rows_above_alpha_floor"),
+        "rows_above_alpha_floor_ratio": runtime_viability_report.get("rows_above_alpha_floor_ratio"),
+        "entry_gate_allowed_count": runtime_viability_report.get("entry_gate_allowed_count"),
+        "entry_gate_allowed_ratio": runtime_viability_report.get("entry_gate_allowed_ratio"),
+        "primary_reason_code": runtime_viability_report.get("primary_reason_code"),
+    }
+    runtime_recommendations["fusion_candidate_default_eligible"] = bool(runtime_viability_report.get("pass", False))
+    runtime_recommendations["fusion_default_eligible_winner"] = stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
+    runtime_recommendations["fusion_evidence_winner"] = stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
+    runtime_recommendations["fusion_evidence_reason_code"] = (
+        "RUNTIME_VIABILITY_PASS"
+        if bool(runtime_viability_report.get("pass", False))
+        else str(runtime_viability_report.get("primary_reason_code") or "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+    )
+    promotion_payload["runtime_viability_report_path"] = str(runtime_viability_report_path)
+    promotion_payload["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
+    promotion_payload["runtime_viability_summary"] = dict(runtime_recommendations["runtime_viability_summary"])
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_id,
@@ -1725,6 +1861,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         runtime_recommendations=runtime_recommendations,
         promotion_payload=promotion_payload,
         entry_boundary=entry_boundary,
+        runtime_viability_report_path=runtime_viability_report_path,
         resumed=False,
     )
     return TrainV5FusionResult(
@@ -1740,6 +1877,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         fusion_model_contract_path=fusion_model_contract_path,
         predictor_contract_path=predictor_contract_path,
         entry_boundary_contract_path=_fusion_entry_boundary_path(run_dir),
+        runtime_viability_report_path=runtime_viability_report_path,
     )
 
 
@@ -1862,6 +2000,43 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     runtime_input_contract = dict(runtime_input_bundle.input_contract)
     runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
     runtime_input_contract["domain_weighting_report_path"] = str(run_dir / "domain_weighting_report.json")
+    runtime_viability_report = _build_runtime_viability_report(
+        run_id=run_dir.name,
+        model_family=options.model_family,
+        predictor=estimator,
+        runtime_x=runtime_x,
+        runtime_markets=runtime_merged.get_column("market").to_numpy(),
+        runtime_ts_ms=runtime_merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False),
+        runtime_input_contract=runtime_input_contract,
+        entry_boundary=entry_boundary,
+    )
+    runtime_viability_report_path = run_dir / "runtime_viability_report.json"
+    runtime_viability_report_path.write_text(
+        json.dumps(runtime_viability_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    runtime_recommendations["runtime_viability_report_path"] = str(runtime_viability_report_path)
+    runtime_recommendations["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
+    runtime_recommendations["runtime_viability_summary"] = {
+        "alpha_lcb_floor": runtime_viability_report.get("alpha_lcb_floor"),
+        "runtime_rows_total": runtime_viability_report.get("runtime_rows_total"),
+        "rows_above_alpha_floor": runtime_viability_report.get("rows_above_alpha_floor"),
+        "rows_above_alpha_floor_ratio": runtime_viability_report.get("rows_above_alpha_floor_ratio"),
+        "entry_gate_allowed_count": runtime_viability_report.get("entry_gate_allowed_count"),
+        "entry_gate_allowed_ratio": runtime_viability_report.get("entry_gate_allowed_ratio"),
+        "primary_reason_code": runtime_viability_report.get("primary_reason_code"),
+    }
+    runtime_recommendations["fusion_candidate_default_eligible"] = bool(runtime_viability_report.get("pass", False))
+    runtime_recommendations["fusion_default_eligible_winner"] = options.stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
+    runtime_recommendations["fusion_evidence_winner"] = options.stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
+    runtime_recommendations["fusion_evidence_reason_code"] = (
+        "RUNTIME_VIABILITY_PASS"
+        if bool(runtime_viability_report.get("pass", False))
+        else str(runtime_viability_report.get("primary_reason_code") or "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+    )
+    promotion_payload["runtime_viability_report_path"] = str(runtime_viability_report_path)
+    promotion_payload["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
+    promotion_payload["runtime_viability_summary"] = dict(runtime_recommendations["runtime_viability_summary"])
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -1876,6 +2051,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         runtime_recommendations=runtime_recommendations,
         promotion_payload=promotion_payload,
         entry_boundary=entry_boundary,
+        runtime_viability_report_path=runtime_viability_report_path,
         resumed=True,
     )
     return TrainV5FusionResult(
@@ -1891,6 +2067,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         fusion_model_contract_path=run_dir / "fusion_model_contract.json",
         predictor_contract_path=run_dir / "predictor_contract.json",
         entry_boundary_contract_path=_fusion_entry_boundary_path(run_dir),
+        runtime_viability_report_path=runtime_viability_report_path,
     )
 
 

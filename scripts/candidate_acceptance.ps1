@@ -4748,6 +4748,70 @@ function Test-CandidateRuntimeDatasetCertificationCoverage {
     }
 }
 
+function Resolve-CandidateRuntimeViabilityArtifact {
+    param(
+        [string]$CandidateRunDir
+    )
+    if ([string]::IsNullOrWhiteSpace($CandidateRunDir)) {
+        return @{}
+    }
+    $reportPath = Join-Path $CandidateRunDir "runtime_viability_report.json"
+    $payload = Load-JsonOrEmpty -PathValue $reportPath
+    $exists = Test-Path $reportPath
+    return [ordered]@{
+        report_path = $reportPath
+        exists = $exists
+        payload = $payload
+        pass = To-Bool (Get-PropValue -ObjectValue $payload -Name "pass" -DefaultValue $false) $false
+        alpha_lcb_floor = To-Double (Get-PropValue -ObjectValue $payload -Name "alpha_lcb_floor" -DefaultValue 0.0) 0.0
+        runtime_rows_total = To-Int64 (Get-PropValue -ObjectValue $payload -Name "runtime_rows_total" -DefaultValue 0) 0
+        alpha_lcb_positive_count = To-Int64 (Get-PropValue -ObjectValue $payload -Name "alpha_lcb_positive_count" -DefaultValue 0) 0
+        rows_above_alpha_floor = To-Int64 (Get-PropValue -ObjectValue $payload -Name "rows_above_alpha_floor" -DefaultValue 0) 0
+        rows_above_alpha_floor_ratio = To-Double (Get-PropValue -ObjectValue $payload -Name "rows_above_alpha_floor_ratio" -DefaultValue 0.0) 0.0
+        expected_return_positive_count = To-Int64 (Get-PropValue -ObjectValue $payload -Name "expected_return_positive_count" -DefaultValue 0) 0
+        entry_gate_allowed_count = To-Int64 (Get-PropValue -ObjectValue $payload -Name "entry_gate_allowed_count" -DefaultValue 0) 0
+        entry_gate_allowed_ratio = To-Double (Get-PropValue -ObjectValue $payload -Name "entry_gate_allowed_ratio" -DefaultValue 0.0) 0.0
+        estimated_intent_candidate_count = To-Int64 (Get-PropValue -ObjectValue $payload -Name "estimated_intent_candidate_count" -DefaultValue 0) 0
+        primary_reason_code = [string](Get-PropValue -ObjectValue $payload -Name "primary_reason_code" -DefaultValue "")
+    }
+}
+
+function Test-CandidateRuntimeViability {
+    param(
+        $Viability
+    )
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $Viability) {
+        return [ordered]@{
+            pass = $false
+            reason = "FUSION_RUNTIME_VIABILITY_REPORT_MISSING"
+        }
+    }
+    if (-not [bool](Get-PropValue -ObjectValue $Viability -Name "exists" -DefaultValue $false)) {
+        return [ordered]@{
+            pass = $false
+            reason = "FUSION_RUNTIME_VIABILITY_REPORT_MISSING"
+        }
+    }
+    $rowsAboveAlphaFloor = To-Int64 (Get-PropValue -ObjectValue $Viability -Name "rows_above_alpha_floor" -DefaultValue 0) 0
+    if ($rowsAboveAlphaFloor -le 0) {
+        return [ordered]@{
+            pass = $false
+            reason = "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY"
+        }
+    }
+    $entryGateAllowedCount = To-Int64 (Get-PropValue -ObjectValue $Viability -Name "entry_gate_allowed_count" -DefaultValue 0) 0
+    if ($entryGateAllowedCount -le 0) {
+        return [ordered]@{
+            pass = $false
+            reason = "FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY"
+        }
+    }
+    return [ordered]@{
+        pass = $true
+        reason = "FUSION_RUNTIME_VIABILITY_READY"
+    }
+}
+
 function Get-PaperHistoryEvidence {
     param(
         [string]$DirectoryPath,
@@ -7720,6 +7784,62 @@ try {
         }
     } else {
         $report.steps.runtime_dataset_coverage_preflight = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_TRAINER"
+        }
+    }
+
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion" -and (-not $isDuplicateCandidate)) {
+        $runtimeViability = Resolve-CandidateRuntimeViabilityArtifact -CandidateRunDir $candidateRunDir
+        $runtimeViabilityGate = Test-CandidateRuntimeViability -Viability $runtimeViability
+        $report.steps.runtime_viability_preflight = [ordered]@{
+            attempted = $true
+            report_path = [string](Get-PropValue -ObjectValue $runtimeViability -Name "report_path" -DefaultValue "")
+            exists = [bool](Get-PropValue -ObjectValue $runtimeViability -Name "exists" -DefaultValue $false)
+            alpha_lcb_floor = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_floor" -DefaultValue 0.0) 0.0
+            runtime_rows_total = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "runtime_rows_total" -DefaultValue 0) 0)
+            alpha_lcb_positive_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_positive_count" -DefaultValue 0) 0)
+            rows_above_alpha_floor = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor" -DefaultValue 0) 0)
+            rows_above_alpha_floor_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor_ratio" -DefaultValue 0.0) 0.0
+            entry_gate_allowed_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_count" -DefaultValue 0) 0)
+            entry_gate_allowed_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_ratio" -DefaultValue 0.0) 0.0
+            estimated_intent_candidate_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "estimated_intent_candidate_count" -DefaultValue 0) 0)
+            pass = [bool](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "pass" -DefaultValue $false)
+            reason = [string](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "reason" -DefaultValue "")
+        }
+        $report.candidate.runtime_viability_report_path = [string](Get-PropValue -ObjectValue $runtimeViability -Name "report_path" -DefaultValue "")
+        $report.candidate.runtime_viability_pass = [bool](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "pass" -DefaultValue $false)
+        $report.candidate.runtime_viability_summary = [ordered]@{
+            alpha_lcb_floor = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "alpha_lcb_floor" -DefaultValue 0.0) 0.0
+            runtime_rows_total = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "runtime_rows_total" -DefaultValue 0) 0)
+            rows_above_alpha_floor = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "rows_above_alpha_floor" -DefaultValue 0) 0)
+            entry_gate_allowed_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_count" -DefaultValue 0) 0)
+            primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeViability -Name "primary_reason_code" -DefaultValue "")
+        }
+        if (-not [bool](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "pass" -DefaultValue $false)) {
+            $runtimeViabilityFailureCode = [string](Get-PropValue -ObjectValue $runtimeViabilityGate -Name "reason" -DefaultValue "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+            $report.reasons = @($runtimeViabilityFailureCode)
+            $report.gates.overall_pass = $false
+            Set-ReportFailure -Stage "runtime_viability" -Code $runtimeViabilityFailureCode -ReportPath ([string](Get-PropValue -ObjectValue $runtimeViability -Name "report_path" -DefaultValue ""))
+            Update-RunArtifactStatus `
+                -RunDir $candidateRunDir `
+                -RunId $candidateRunId `
+                -Status "acceptance_incomplete" `
+                -AcceptanceCompleted $false `
+                -CandidateAdoptable $false `
+                -CandidateAdopted $false `
+                -Promoted $false | Out-Null
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } elseif (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        $report.steps.runtime_viability_preflight = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+        }
+    } else {
+        $report.steps.runtime_viability_preflight = [ordered]@{
             attempted = $false
             reason = "NOT_REQUIRED_FOR_TRAINER"
         }

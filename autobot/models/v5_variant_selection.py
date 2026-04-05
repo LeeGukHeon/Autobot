@@ -32,6 +32,9 @@ class VariantRunRecord:
     contract_pass: bool
     rejection_reasons: tuple[str, ...]
     selection_key: dict[str, float | None]
+    runtime_viability_report_path: str
+    runtime_viability: dict[str, Any]
+    runtime_viability_pass: bool
 
 
 SEQUENCE_VARIANTS: tuple[dict[str, Any], ...] = (
@@ -169,7 +172,8 @@ def run_v5_fusion_variant_matrix(options: TrainV5FusionOptions) -> dict[str, Any
             "chosen_reason_code": str(load_json(report_path).get("chosen_reason_code") or ""),
         },
     )
-    update_latest_pointer(options.registry_root, options.model_family, selected.run_id)
+    if selected.contract_pass:
+        update_latest_pointer(options.registry_root, options.model_family, selected.run_id)
     return _matrix_result_payload(
         trainer="v5_fusion",
         selected=selected,
@@ -321,6 +325,7 @@ def _collect_variant_run_record(
     walk_forward_report = load_json(resolved_run_dir / "walk_forward_report.json")
     leaderboard_row = load_json(resolved_run_dir / "leaderboard_row.json")
     contract_artifacts = _collect_contract_artifacts(run_dir=resolved_run_dir, trainer=trainer)
+    runtime_viability = load_json(resolved_run_dir / "runtime_viability_report.json")
     contract_pass, rejection_reasons = _validate_variant_contracts(
         trainer=trainer,
         run_dir=resolved_run_dir,
@@ -341,6 +346,9 @@ def _collect_variant_run_record(
         contract_pass=contract_pass,
         rejection_reasons=tuple(rejection_reasons),
         selection_key=_selection_key_from_leaderboard(leaderboard_row),
+        runtime_viability_report_path=str(resolved_run_dir / "runtime_viability_report.json"),
+        runtime_viability=(runtime_viability if isinstance(runtime_viability, dict) else {}),
+        runtime_viability_pass=bool((runtime_viability or {}).get("pass", False)),
     )
 
 
@@ -349,7 +357,7 @@ def _collect_contract_artifacts(*, run_dir: Path, trainer: str) -> dict[str, str
     for artifact_name in {
         "v5_sequence": ("sequence_pretrain_contract.json", "sequence_pretrain_report.json", "domain_weighting_report.json"),
         "v5_lob": ("lob_backbone_contract.json", "lob_target_contract.json", "domain_weighting_report.json"),
-        "v5_fusion": ("fusion_model_contract.json", "runtime_recommendations.json", "domain_weighting_report.json"),
+        "v5_fusion": ("fusion_model_contract.json", "runtime_recommendations.json", "domain_weighting_report.json", "runtime_viability_report.json"),
     }.get(trainer, ()):
         artifacts[artifact_name] = str(run_dir / artifact_name)
     return artifacts
@@ -409,12 +417,19 @@ def _validate_variant_contracts(*, trainer: str, run_dir: Path, contract_artifac
         fusion_contract = load_json(run_dir / "fusion_model_contract.json")
         runtime_doc = load_json(run_dir / "runtime_recommendations.json")
         domain = load_json(run_dir / "domain_weighting_report.json")
+        viability = load_json(run_dir / "runtime_viability_report.json")
         if str(fusion_contract.get("policy") or "") != "v5_fusion_v1":
             reasons.append("FUSION_CONTRACT_INVALID")
         if str(runtime_doc.get("source_family") or "") != "train_v5_fusion":
             reasons.append("FUSION_RUNTIME_RECOMMENDATIONS_INVALID")
         if str(domain.get("policy") or "") != "v5_domain_weighting_v1":
             reasons.append("DOMAIN_WEIGHTING_INVALID")
+        if str(viability.get("policy") or "") != "v5_runtime_viability_report_v1":
+            reasons.append("FUSION_RUNTIME_VIABILITY_REPORT_INVALID")
+        if _safe_int(viability.get("rows_above_alpha_floor")) <= 0:
+            reasons.append("FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+        if _safe_int(viability.get("entry_gate_allowed_count")) <= 0:
+            reasons.append("FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY")
     return len(reasons) == 0, reasons
 
 
@@ -631,14 +646,20 @@ def _build_variant_report_payload(
     if trainer == "v5_fusion":
         payload["offline_winner_variant_name"] = selected.variant_name
         payload["default_eligible_variant_name"] = selected.variant_name
-        payload["default_eligible"] = True
+        payload["default_eligible"] = bool(selected.runtime_viability_pass)
+        payload["runtime_viability_pass"] = bool(selected.runtime_viability_pass)
+        payload["runtime_viability_report_path"] = selected.runtime_viability_report_path
+        payload["runtime_viability_summary"] = dict(selected.runtime_viability or {})
         payload["selection_evidence"] = {
             "utility_edge_vs_linear": 0.0,
             "execution_structure_non_regression": None,
             "paper_non_regression": None,
             "paired_non_regression": None,
             "canary_non_regression": None,
-            "promotion_safe": True,
+            "promotion_safe": bool(selected.runtime_viability_pass),
+            "rows_above_alpha_floor": _safe_int((selected.runtime_viability or {}).get("rows_above_alpha_floor")),
+            "entry_gate_allowed_count": _safe_int((selected.runtime_viability or {}).get("entry_gate_allowed_count")),
+            "runtime_viability_pass": bool(selected.runtime_viability_pass),
         }
     return payload
 
@@ -685,6 +706,8 @@ def _matrix_result_payload(
         payload["offline_winner_variant_name"] = str(report_payload.get("offline_winner_variant_name") or selected.variant_name)
         payload["default_eligible_variant_name"] = str(report_payload.get("default_eligible_variant_name") or selected.variant_name)
         payload["default_eligible"] = bool(report_payload.get("default_eligible", True))
+        payload["runtime_viability_pass"] = bool(report_payload.get("runtime_viability_pass", False))
+        payload["runtime_viability_report_path"] = str(report_payload.get("runtime_viability_report_path") or selected.runtime_viability_report_path)
     if extra:
         payload.update(dict(extra))
     return payload
@@ -744,6 +767,9 @@ def _build_variant_summary(*, record: VariantRunRecord) -> dict[str, Any]:
         "contract_pass": record.contract_pass,
         "rejection_reasons": list(record.rejection_reasons),
         "selection_key": dict(record.selection_key),
+        "runtime_viability_report_path": record.runtime_viability_report_path,
+        "runtime_viability_pass": record.runtime_viability_pass,
+        "runtime_viability_summary": dict(record.runtime_viability or {}),
         "utility_summary": {
             "test_ev_net_top5": _safe_float(leaderboard_row.get("test_ev_net_top5")),
             "test_precision_top5": _safe_float(leaderboard_row.get("test_precision_top5")),
