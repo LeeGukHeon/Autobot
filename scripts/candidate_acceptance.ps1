@@ -4765,6 +4765,10 @@ function Resolve-CandidateRuntimeViabilityArtifact {
         pass = To-Bool (Get-PropValue -ObjectValue $payload -Name "pass" -DefaultValue $false) $false
         alpha_lcb_floor = To-Double (Get-PropValue -ObjectValue $payload -Name "alpha_lcb_floor" -DefaultValue 0.0) 0.0
         runtime_rows_total = To-Int64 (Get-PropValue -ObjectValue $payload -Name "runtime_rows_total" -DefaultValue 0) 0
+        mean_final_expected_return = To-Double (Get-PropValue -ObjectValue $payload -Name "mean_final_expected_return" -DefaultValue 0.0) 0.0
+        mean_final_expected_es = To-Double (Get-PropValue -ObjectValue $payload -Name "mean_final_expected_es" -DefaultValue 0.0) 0.0
+        mean_final_uncertainty = To-Double (Get-PropValue -ObjectValue $payload -Name "mean_final_uncertainty" -DefaultValue 0.0) 0.0
+        mean_final_alpha_lcb = To-Double (Get-PropValue -ObjectValue $payload -Name "mean_final_alpha_lcb" -DefaultValue 0.0) 0.0
         alpha_lcb_positive_count = To-Int64 (Get-PropValue -ObjectValue $payload -Name "alpha_lcb_positive_count" -DefaultValue 0) 0
         rows_above_alpha_floor = To-Int64 (Get-PropValue -ObjectValue $payload -Name "rows_above_alpha_floor" -DefaultValue 0) 0
         rows_above_alpha_floor_ratio = To-Double (Get-PropValue -ObjectValue $payload -Name "rows_above_alpha_floor_ratio" -DefaultValue 0.0) 0.0
@@ -4773,6 +4777,8 @@ function Resolve-CandidateRuntimeViabilityArtifact {
         entry_gate_allowed_ratio = To-Double (Get-PropValue -ObjectValue $payload -Name "entry_gate_allowed_ratio" -DefaultValue 0.0) 0.0
         estimated_intent_candidate_count = To-Int64 (Get-PropValue -ObjectValue $payload -Name "estimated_intent_candidate_count" -DefaultValue 0) 0
         primary_reason_code = [string](Get-PropValue -ObjectValue $payload -Name "primary_reason_code" -DefaultValue "")
+        top_entry_gate_reason_codes = @((Get-PropValue -ObjectValue $payload -Name "top_entry_gate_reason_codes" -DefaultValue @()))
+        sample_rows = @((Get-PropValue -ObjectValue $payload -Name "sample_rows" -DefaultValue @()))
     }
 }
 

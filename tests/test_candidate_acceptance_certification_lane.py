@@ -592,6 +592,10 @@ def _make_fake_python_exe(
                                 "pass": (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR > 0 and CANDIDATE_ENTRY_GATE_ALLOWED_COUNT > 0),
                                 "alpha_lcb_floor": 0.0,
                                 "runtime_rows_total": CANDIDATE_RUNTIME_ROWS_TOTAL,
+                                "mean_final_expected_return": -0.0134,
+                                "mean_final_expected_es": 0.0321,
+                                "mean_final_uncertainty": 0.0170,
+                                "mean_final_alpha_lcb": -0.0625,
                                 "alpha_lcb_positive_count": CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR,
                                 "rows_above_alpha_floor": CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR,
                                 "rows_above_alpha_floor_ratio": (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR / CANDIDATE_RUNTIME_ROWS_TOTAL) if CANDIDATE_RUNTIME_ROWS_TOTAL > 0 else 0.0,
@@ -600,6 +604,8 @@ def _make_fake_python_exe(
                                 "entry_gate_allowed_ratio": (CANDIDATE_ENTRY_GATE_ALLOWED_COUNT / CANDIDATE_RUNTIME_ROWS_TOTAL) if CANDIDATE_RUNTIME_ROWS_TOTAL > 0 else 0.0,
                                 "estimated_intent_candidate_count": CANDIDATE_ENTRY_GATE_ALLOWED_COUNT,
                                 "primary_reason_code": ("PASS" if (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR > 0 and CANDIDATE_ENTRY_GATE_ALLOWED_COUNT > 0) else ("FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY" if CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR <= 0 else "FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY")),
+                                "top_entry_gate_reason_codes": [{{"reason_code": "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE", "count": CANDIDATE_RUNTIME_ROWS_TOTAL}}],
+                                "sample_rows": [{{"market": "KRW-BTC", "final_alpha_lcb": -0.0625}}],
                             }},
                         )
                     write_json(
