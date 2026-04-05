@@ -337,14 +337,7 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                         "notional_multiplier": notional_multiplier,
                         "state_features": _build_live_state_feature_snapshot(row=row),
                         "behavior_policy": dict(behavior_policy),
-                        "entry_decision": {
-                            **resolved_entry_decision,
-                            "reason_codes": list(resolved_reason_codes),
-                            "primary_reason_code": (
-                                str(resolved_entry_decision.get("primary_reason_code") or "").strip()
-                                or (resolved_reason_codes[0] if resolved_reason_codes else "")
-                            ),
-                        },
+                        "entry_decision": dict(resolved_entry_decision),
                         "sizing_decision": dict(sizing_decision_payload or {}),
                         "safety_vetoes": dict(safety_vetoes_payload or {}),
                         "exit_decision": dict(exit_decision_payload or {}),
