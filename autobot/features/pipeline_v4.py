@@ -108,6 +108,209 @@ class FeaturesV4BuildConfig:
     require_micro_validate_pass: bool = True
 
 
+def _default_runtime_high_tfs() -> tuple[str, ...]:
+    return ("15m", "60m", "240m")
+
+
+def _discover_runtime_markets_from_base_root(*, base_root: Path, tf: str, quote: str) -> list[str]:
+    tf_root = Path(base_root) / f"tf={str(tf).strip().lower()}"
+    if not tf_root.exists():
+        return []
+    prefix = f"{str(quote).strip().upper()}-" if str(quote).strip() else ""
+    markets: list[str] = []
+    for market_dir in sorted(tf_root.glob("market=*")):
+        market = str(market_dir.name).replace("market=", "", 1).strip().upper()
+        if not market:
+            continue
+        if prefix and not market.startswith(prefix):
+            continue
+        markets.append(market)
+    return markets
+
+
+def _runtime_warmup_ms_v4(*, base_tf: str, high_tfs: tuple[str, ...], one_m_required_bars: int) -> int:
+    base = expected_interval_ms(base_tf) * 64
+    one_m = expected_interval_ms("1m") * max(int(one_m_required_bars) + 2, 8)
+    high = max((expected_interval_ms(tf) * 12 for tf in high_tfs), default=0)
+    return max(base, one_m, high)
+
+
+def build_runtime_feature_frame_v4_from_contract(
+    *,
+    dataset_root: Path,
+    start: str,
+    end: str,
+    selected_markets: tuple[str, ...] | None = None,
+    float_dtype: str = "float32",
+) -> pl.DataFrame:
+    root = Path(dataset_root)
+    meta_root = root / "_meta"
+    feature_spec = _read_json(meta_root / "feature_spec.json")
+    label_spec = _read_json(meta_root / "label_spec.json")
+    if str(feature_spec.get("feature_set_version") or "").strip().lower() != "v4":
+        raise ValueError(f"runtime feature rebuild requires feature_set_version=v4: {dataset_root}")
+
+    tf = str(feature_spec.get("tf") or "5m").strip().lower() or "5m"
+    quote = str(feature_spec.get("quote") or "KRW").strip().upper() or "KRW"
+    base_root = Path(str(feature_spec.get("base_candles_root") or "")).resolve()
+    micro_root = Path(str(feature_spec.get("micro_root") or "")).resolve()
+    if not base_root.exists():
+        raise ValueError(f"runtime feature rebuild base_candles_root missing: {base_root}")
+    if not micro_root.exists():
+        raise ValueError(f"runtime feature rebuild micro_root missing: {micro_root}")
+
+    feature_cols = [
+        str(item).strip()
+        for item in (feature_spec.get("feature_columns") or [])
+        if str(item).strip()
+    ]
+    if not feature_cols:
+        raise ValueError(f"runtime feature rebuild requires feature_columns in feature_spec: {dataset_root}")
+
+    high_tfs = tuple(
+        str(item).strip().lower()
+        for item in (feature_spec.get("high_tfs") or [])
+        if str(item).strip()
+    ) or _default_runtime_high_tfs()
+    sample_weight_doc = dict(feature_spec.get("sample_weight") or {})
+    synth_weight_doc = dict(sample_weight_doc.get("one_m_synth_quality_weight") or {})
+    one_m_doc = dict(feature_spec.get("one_m_densify") or {})
+    one_m_required_bars = int(feature_spec.get("one_m_required_bars") or 5)
+    one_m_max_missing_ratio = float(feature_spec.get("one_m_max_missing_ratio") or 0.2)
+    high_tf_staleness_multiplier = float(feature_spec.get("high_tf_staleness_multiplier") or 2.0)
+    sample_weight_half_life_days = float(sample_weight_doc.get("half_life_days") or 60.0)
+    one_m_synth_weight_floor = float(synth_weight_doc.get("floor") or 0.2)
+    one_m_synth_weight_power = float(synth_weight_doc.get("power") or 2.0)
+    fee_bps_est = float(label_spec.get("fee_bps_est") or 0.0)
+    safety_bps = float(label_spec.get("safety_bps") or 0.0)
+    horizon_bars = int(label_spec.get("horizon_bars") or max(label_spec.get("multi_horizon_bars") or [24]))
+
+    bootstrap_label = LabelV1Config(
+        horizon_bars=max(int(horizon_bars), 1),
+        thr_bps=1.0,
+        neutral_policy="keep_as_class",
+        fee_bps_est=fee_bps_est,
+        safety_bps=safety_bps,
+    )
+
+    requested_markets = tuple(str(item).strip().upper() for item in (selected_markets or ()) if str(item).strip())
+    if selected_markets is None:
+        requested_markets = tuple(
+            str(item).strip().upper()
+            for item in (feature_spec.get("selected_markets") or [])
+            if str(item).strip()
+        )
+    if not requested_markets:
+        requested_markets = tuple(_discover_runtime_markets_from_base_root(base_root=base_root, tf=tf, quote=quote))
+    if not requested_markets:
+        raise ValueError(f"runtime feature rebuild could not discover markets: {dataset_root}")
+
+    start_ts_ms = parse_date_to_ts_ms(start)
+    end_ts_ms = parse_date_to_ts_ms(end, end_of_day=True)
+    if start_ts_ms is None or end_ts_ms is None:
+        raise ValueError("runtime feature rebuild requires non-empty start/end")
+    extended_start_ts_ms = start_ts_ms - _runtime_warmup_ms_v4(
+        base_tf=tf,
+        high_tfs=high_tfs,
+        one_m_required_bars=one_m_required_bars,
+    )
+
+    market_frames: list[pl.DataFrame] = []
+    for market in requested_markets:
+        base = _load_market_candles(
+            dataset_root=base_root,
+            tf=tf,
+            market=market,
+            from_ts_ms=extended_start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
+        one_m = _load_market_candles(
+            dataset_root=base_root,
+            tf="1m",
+            market=market,
+            from_ts_ms=extended_start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
+        high_frames = {
+            high_tf: _load_market_candles(
+                dataset_root=base_root,
+                tf=high_tf,
+                market=market,
+                from_ts_ms=extended_start_ts_ms,
+                to_ts_ms=end_ts_ms,
+            )
+            for high_tf in high_tfs
+        }
+        micro, micro_tf_used = load_market_micro_for_base(
+            micro_root=micro_root,
+            market=market,
+            base_tf=tf,
+            from_ts_ms=start_ts_ms,
+            to_ts_ms=end_ts_ms,
+        )
+        result = build_feature_set_v4_live_base_from_candles(
+            base_candles_frame=base,
+            one_m_candles_frame=one_m,
+            high_tf_candles=high_frames,
+            micro_frame=micro,
+            micro_tf_used=micro_tf_used,
+            tf=tf,
+            from_ts_ms=start_ts_ms,
+            to_ts_ms=end_ts_ms,
+            label_config=bootstrap_label,
+            high_tfs=high_tfs,
+            high_tf_staleness_multiplier=high_tf_staleness_multiplier,
+            one_m_required_bars=one_m_required_bars,
+            one_m_max_missing_ratio=one_m_max_missing_ratio,
+            one_m_drop_if_real_count_zero=bool(one_m_doc.get("drop_if_real_count_zero", True)),
+            sample_weight_half_life_days=max(sample_weight_half_life_days, 1e-6),
+            one_m_synth_weight_floor=one_m_synth_weight_floor,
+            one_m_synth_weight_power=one_m_synth_weight_power,
+            float_dtype=float_dtype,
+        )
+        frame = result.frame
+        if frame.height <= 0:
+            continue
+        market_frames.append(
+            frame.drop([name for name in ("y_reg", "y_cls") if name in frame.columns]).with_columns(
+                pl.lit(market, dtype=pl.Utf8).alias("market")
+            )
+        )
+
+    combined = pl.concat(market_frames, how="vertical_relaxed") if market_frames else pl.DataFrame()
+    if combined.height <= 0:
+        raise ValueError("runtime feature rebuild produced no rows in requested window")
+
+    enriched = attach_spillover_breadth_features_v4(
+        combined.sort(["ts_ms", "market"]),
+        quote=quote,
+        float_dtype=float_dtype,
+    )
+    enriched = attach_periodicity_features_v4(
+        enriched,
+        float_dtype=float_dtype,
+    )
+    enriched = attach_trend_volume_features_v4(
+        enriched,
+        float_dtype=float_dtype,
+    )
+    enriched = attach_order_flow_panel_v1(
+        enriched,
+        float_dtype=float_dtype,
+    )
+    enriched = attach_interaction_features_v4(
+        enriched,
+        float_dtype=float_dtype,
+    )
+    required_non_null = ["ts_ms", "market", "sample_weight", *feature_cols]
+    filtered = enriched.filter(
+        pl.all_horizontal([pl.col(name).is_not_null() for name in required_non_null if name in enriched.columns])
+    )
+    if filtered.height <= 0:
+        raise ValueError("runtime feature rebuild produced no fully-populated feature rows")
+    return filtered.select([name for name in required_non_null if name in filtered.columns]).sort(["ts_ms", "market"])
+
+
 @dataclass(frozen=True)
 class FeaturesV4ValidateConfig:
     leakage_fail_on_future_ts: bool = True

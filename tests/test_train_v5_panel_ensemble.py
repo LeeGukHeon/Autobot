@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import polars as pl
+import autobot.models.train_v5_panel_ensemble as panel_module
 
 from autobot.models.registry import load_json
 from autobot.models.train_v5_panel_ensemble import (
@@ -660,3 +661,82 @@ def test_load_feature_dataset_can_keep_rows_with_missing_targets_for_runtime_exp
 
     assert dataset.rows == 2
     assert dataset.y_cls.tolist() == [1, 0]
+
+
+def test_load_panel_inference_dataset_window_rebuilds_runtime_source_dataset(tmp_path: Path, monkeypatch) -> None:
+    run_dir = tmp_path / "models" / "registry" / "train_v5_panel_ensemble" / "panel-run-001"
+    dataset_root = tmp_path / "features" / "features_v4"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (dataset_root / "_meta").mkdir(parents=True, exist_ok=True)
+    (dataset_root / "_meta" / "feature_spec.json").write_text(
+        json.dumps({"feature_columns": ["feat_a"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (dataset_root / "_meta" / "label_spec.json").write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+    (dataset_root / "_meta" / "feature_dataset_certification.json").write_text(
+        json.dumps({"pass": True, "quality_budget_summary": {}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (run_dir / "train_config.yaml").write_text(
+        json.dumps(
+            {
+                "dataset_root": str(dataset_root),
+                "registry_root": str(tmp_path / "models" / "registry"),
+                "logs_root": str(tmp_path / "logs"),
+                "model_family": "train_v5_panel_ensemble",
+                "tf": "5m",
+                "quote": "KRW",
+                "top_n": 20,
+                "start": "2026-03-20",
+                "end": "2026-03-29",
+                "feature_set": "v4",
+                "label_set": "v3",
+                "task": "cls",
+                "booster_sweep_trials": 1,
+                "seed": 42,
+                "nthread": 1,
+                "batch_rows": 128,
+                "train_ratio": 0.6,
+                "valid_ratio": 0.2,
+                "test_ratio": 0.2,
+                "embargo_bars": 0,
+                "fee_bps_est": 5.0,
+                "safety_bps": 1.0,
+                "ev_scan_steps": 10,
+                "ev_min_selected": 1,
+                "min_rows_for_train": 1,
+                "selected_markets": ["KRW-BTC"],
+                "feature_columns": ["feat_a"],
+                "y_cls_column": "y_cls",
+                "y_reg_column": "y_reg",
+                "y_rank_column": "y_rank",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    start_ts_ms = panel_module.parse_operating_date_to_ts_ms("2026-04-01")
+    end_ts_ms = panel_module.parse_operating_date_to_ts_ms("2026-04-02", end_of_day=True)
+
+    monkeypatch.setattr(
+        panel_module,
+        "build_runtime_feature_frame_v4_from_contract",
+        lambda **kwargs: pl.DataFrame(
+            {
+                "market": ["KRW-BTC", "KRW-BTC"],
+                "ts_ms": [start_ts_ms, end_ts_ms],
+                "sample_weight": [1.0, 1.0],
+                "feat_a": [0.1, 0.2],
+            }
+        ),
+    )
+
+    dataset, _, _ = panel_module._load_panel_inference_dataset_window(
+        run_dir=run_dir,
+        start="2026-04-01",
+        end="2026-04-02",
+    )
+
+    assert dataset.rows == 2
+    assert dataset.y_cls.tolist() == [0, 0]
+    assert dataset.feature_names == ("feat_a",)

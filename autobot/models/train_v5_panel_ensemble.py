@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -12,6 +13,7 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
+from autobot.features.pipeline_v4 import build_runtime_feature_frame_v4_from_contract
 from autobot.features.feature_spec import parse_date_to_ts_ms
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations
@@ -44,6 +46,7 @@ from .registry import (
     update_latest_pointer,
 )
 from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
+from .runtime_feature_dataset import write_runtime_feature_dataset
 from .search_budget import resolve_v4_search_budget
 from .selection_calibration import build_selection_calibration_by_score_source, build_selection_calibration_from_oos_rows
 from .selection_optimizer import SelectionGridConfig, build_selection_recommendations_from_walk_forward, build_window_selection_objectives
@@ -327,14 +330,43 @@ def _load_panel_inference_dataset_window(
         if selected_markets_override is not None
         else tuple(str(item).strip().upper() for item in (train_config.get("selected_markets") or []) if str(item).strip())
     )
-    request = DatasetRequest(
+    runtime_frame = build_runtime_feature_frame_v4_from_contract(
         dataset_root=Path(options.dataset_root),
+        start=str(start),
+        end=str(end),
+        selected_markets=selected_markets_override if selected_markets_override is not None else selected_markets,
+    )
+    runtime_source_root = _write_panel_runtime_source_dataset(
+        run_dir=run_dir,
+        start=str(start),
+        end=str(end),
+        tf=str(options.tf).strip().lower(),
+        source_dataset_root=Path(options.dataset_root),
+        feature_columns=feature_cols,
+        runtime_frame=runtime_frame,
+        requested_markets=selected_markets_override if selected_markets_override is not None else selected_markets,
+    )
+    explicit_request_markets = (
+        selected_markets
+        if selected_markets
+        else tuple(
+            sorted(
+                {
+                    str(item).strip().upper()
+                    for item in runtime_frame.get_column("market").to_list()
+                    if str(item).strip()
+                }
+            )
+        )
+    )
+    request = DatasetRequest(
+        dataset_root=runtime_source_root,
         tf=str(options.tf).strip().lower(),
         quote=(str(options.quote).strip().upper() if options.quote else None),
         top_n=max(int(options.top_n), 1) if options.top_n is not None else None,
         start_ts_ms=parse_operating_date_to_ts_ms(options.start, timezone_name=OPERATING_WINDOW_TIMEZONE),
         end_ts_ms=parse_operating_date_to_ts_ms(options.end, end_of_day=True, timezone_name=OPERATING_WINDOW_TIMEZONE),
-        markets=selected_markets,
+        markets=explicit_request_markets,
         batch_rows=max(int(options.batch_rows), 1),
     )
     dataset = load_feature_dataset(
@@ -346,6 +378,68 @@ def _load_panel_inference_dataset_window(
         drop_missing_targets=False,
     )
     return dataset, options, train_config
+
+
+def _panel_runtime_source_market_filter_id(markets: tuple[str, ...]) -> str:
+    normalized = [str(item).strip().upper() for item in markets if str(item).strip()]
+    if not normalized:
+        return "all_markets"
+    digest = hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return "markets_" + digest
+
+
+def _write_panel_runtime_source_dataset(
+    *,
+    run_dir: Path,
+    start: str,
+    end: str,
+    tf: str,
+    source_dataset_root: Path,
+    feature_columns: tuple[str, ...],
+    runtime_frame: pl.DataFrame,
+    requested_markets: tuple[str, ...],
+) -> Path:
+    window_id = f"{str(start).strip()}__{str(end).strip()}"
+    filter_id = _panel_runtime_source_market_filter_id(requested_markets)
+    output_root = run_dir / "_runtime_source_datasets" / window_id / filter_id
+    y_cls = np.zeros(runtime_frame.height, dtype=np.int8)
+    y_reg = np.full(runtime_frame.height, np.nan, dtype=np.float32)
+    y_rank = np.full(runtime_frame.height, np.nan, dtype=np.float32)
+    sample_weight = runtime_frame.get_column("sample_weight").to_numpy().astype(np.float32, copy=False)
+    x = runtime_frame.select(list(feature_columns)).to_numpy().astype(np.float32, copy=False)
+    markets = runtime_frame.get_column("market").to_numpy()
+    ts_ms = runtime_frame.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
+    write_runtime_feature_dataset(
+        output_root=output_root,
+        tf=str(tf).strip().lower() or "5m",
+        feature_columns=feature_columns,
+        markets=markets,
+        ts_ms=ts_ms,
+        x=x,
+        y_cls=y_cls,
+        y_reg=y_reg,
+        y_rank=y_rank,
+        sample_weight=sample_weight,
+    )
+    source_doc = {
+        "policy": "v5_panel_runtime_source_dataset_v1",
+        "source_dataset_root": str(Path(source_dataset_root).resolve()),
+        "requested_window": {"start": str(start).strip(), "end": str(end).strip()},
+        "requested_markets": [str(item).strip().upper() for item in requested_markets if str(item).strip()],
+        "selected_markets": sorted(
+            {
+                str(item).strip().upper()
+                for item in runtime_frame.get_column("market").to_list()
+                if str(item).strip()
+            }
+        ),
+        "rows": int(runtime_frame.height),
+    }
+    (output_root / "_meta" / "runtime_source_contract.json").write_text(
+        json.dumps(source_doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return output_root
 
 
 def _resolve_panel_runtime_export_dataset(
