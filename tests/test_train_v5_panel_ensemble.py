@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import polars as pl
 
 from autobot.models.registry import load_json
 from autobot.models.train_v5_panel_ensemble import (
@@ -626,3 +627,36 @@ def test_materialize_v5_panel_ensemble_runtime_export_resolves_common_runtime_un
     assert export["selected_markets_source"] == "acceptance_common_runtime_universe"
     assert export["fallback_reason"] == ""
     assert export["source_mode"] == "resolve_markets_only"
+
+
+def test_load_feature_dataset_can_keep_rows_with_missing_targets_for_runtime_export(tmp_path: Path) -> None:
+    from autobot.models.dataset_loader import DatasetRequest, load_feature_dataset
+
+    dataset_root = tmp_path / "features" / "features_v4"
+    meta_root = dataset_root / "_meta"
+    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=2026-03-30"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    (meta_root / "feature_spec.json").write_text(json.dumps({"feature_columns": ["feat_a"]}), encoding="utf-8")
+    (meta_root / "label_spec.json").write_text(json.dumps({}), encoding="utf-8")
+    (meta_root / "feature_dataset_certification.json").write_text(json.dumps({"pass": True, "quality_budget_summary": {}}), encoding="utf-8")
+    pl.DataFrame(
+        {
+            "market": ["KRW-BTC", "KRW-BTC"],
+            "ts_ms": [1_000, 2_000],
+            "feat_a": [0.1, 0.2],
+            "y_cls": [1, None],
+            "y_reg": [0.1, None],
+            "y_rank": [0.1, None],
+            "sample_weight": [1.0, 1.0],
+        }
+    ).write_parquet(part_dir / "part-000.parquet")
+
+    dataset = load_feature_dataset(
+        DatasetRequest(dataset_root=dataset_root, tf="5m", quote="KRW", markets=("KRW-BTC",)),
+        feature_columns=("feat_a",),
+        drop_missing_targets=False,
+    )
+
+    assert dataset.rows == 2
+    assert dataset.y_cls.tolist() == [1, 0]

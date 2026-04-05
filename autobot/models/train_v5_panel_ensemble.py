@@ -343,6 +343,7 @@ def _load_panel_inference_dataset_window(
         y_cls_column=str(train_config.get("y_cls_column") or "y_cls"),
         y_reg_column=str(train_config.get("y_reg_column") or "y_reg"),
         y_rank_column=str(train_config.get("y_rank_column") or "y_rank"),
+        drop_missing_targets=False,
     )
     return dataset, options, train_config
 

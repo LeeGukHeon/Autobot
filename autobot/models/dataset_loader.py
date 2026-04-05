@@ -162,6 +162,7 @@ def iter_feature_batches(
     y_cls_column: str = "y_cls",
     y_reg_column: str = "y_reg",
     y_rank_column: str = "y_rank",
+    drop_missing_targets: bool = True,
 ) -> Iterator[FeatureBatch]:
     feature_cols = feature_columns or feature_columns_from_spec(request.dataset_root)
     y_cls_name = str(y_cls_column).strip() or "y_cls"
@@ -181,9 +182,16 @@ def iter_feature_batches(
         )
         if frame.height <= 0:
             continue
-        frame = frame.drop_nulls(subset=["y_cls"])
-        if frame.height <= 0:
-            continue
+        if drop_missing_targets:
+            frame = frame.drop_nulls(subset=["y_cls"])
+            if frame.height <= 0:
+                continue
+        else:
+            frame = frame.with_columns(
+                pl.col("y_cls").fill_null(0).cast(pl.Int8).alias("y_cls"),
+                pl.col("y_reg").fill_null(float("nan")).cast(pl.Float32).alias("y_reg"),
+                pl.col("y_rank").fill_null(float("nan")).cast(pl.Float32).alias("y_rank"),
+            )
         total_rows = frame.height
         batch_rows = max(int(request.batch_rows), 1)
         for offset in range(0, total_rows, batch_rows):
@@ -218,6 +226,7 @@ def load_feature_dataset(
     y_cls_column: str = "y_cls",
     y_reg_column: str = "y_reg",
     y_rank_column: str = "y_rank",
+    drop_missing_targets: bool = True,
 ) -> FeatureDataset:
     feature_cols = feature_columns or feature_columns_from_spec(request.dataset_root)
     x_parts: list[np.ndarray] = []
@@ -236,6 +245,7 @@ def load_feature_dataset(
         y_cls_column=y_cls_column,
         y_reg_column=y_reg_column,
         y_rank_column=y_rank_column,
+        drop_missing_targets=drop_missing_targets,
     ):
         x_parts.append(batch.X)
         y_cls_parts.append(batch.y_cls)
