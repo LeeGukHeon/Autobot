@@ -171,6 +171,33 @@ def test_resolve_portfolio_risk_budget_uses_alpha_es_and_tradability_inputs(tmp_
     assert "PORTFOLIO_TRADABILITY_HAIRCUT" in payload["risk_reason_codes"]
 
 
+def test_resolve_portfolio_risk_budget_preserves_min_total_floor_under_soft_haircuts(tmp_path) -> None:
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        payload = resolve_portfolio_risk_budget(
+            store=store,
+            market="KRW-XRP",
+            side="bid",
+            target_notional_quote=5_000.0,
+            base_budget_quote=10_000.0,
+            quote_free=20_000.0,
+            min_total_krw=5_000.0,
+            effective_max_positions=2,
+            rollout_mode="live",
+            uncertainty=0.25,
+            expected_return_bps=8.0,
+            expected_es_bps=16.0,
+            tradability_prob=0.40,
+            alpha_lcb_bps=4.0,
+            runtime_model_run_id="run-live",
+        )
+
+    assert payload["allowed"] is True
+    assert payload["structural_resolved_notional_quote"] == 5_000.0
+    assert payload["diagnostic_resolved_notional_quote"] == 2_500.0
+    assert payload["resolved_notional_quote"] == 5_000.0
+    assert payload["soft_budget_clamped"] is True
+
+
 def test_resolve_portfolio_risk_budget_canary_enforces_soft_haircuts(tmp_path) -> None:
     with LiveStateStore(tmp_path / "live_state.db") as store:
         payload = resolve_portfolio_risk_budget(

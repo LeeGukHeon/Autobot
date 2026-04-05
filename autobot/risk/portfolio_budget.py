@@ -127,6 +127,14 @@ def resolve_portfolio_risk_budget(
     warning_only = False
     warning_reason_codes: list[str] = []
     resolved_notional_quote = float(diagnostic_resolved_notional_quote)
+    if (
+        min_total_value > 0.0
+        and target_quote >= min_total_value
+        and structural_resolved_notional_quote >= min_total_value
+        and resolved_notional_quote < min_total_value
+        and rollout_mode_value != "canary"
+    ):
+        resolved_notional_quote = float(min_total_value)
 
     allowed = bool(resolved_notional_quote >= max(min_total_value, 1.0))
     primary_reason_code = ""
