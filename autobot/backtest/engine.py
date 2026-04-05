@@ -3138,6 +3138,13 @@ def _safe_optional_float(value: Any) -> float | None:
     return number
 
 
+def _safe_optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _candidate_expected_edge_bps(meta_payload: dict[str, Any] | None) -> float | None:
     if not isinstance(meta_payload, dict):
         return None
