@@ -58,42 +58,49 @@ def build_risk_calibrated_entry_boundary(
     risk_model = _fit_logistic_risk_model(x, y)
     risk_prob = risk_model.predict_proba(x)[:, 1]
 
-    alpha_lcb_floor = 0.0
+    alpha_lcb_values = np.asarray(final_alpha_lcb, dtype=np.float64)
+    alpha_floor_candidates = sorted(
+        {
+            0.0,
+            *np.quantile(alpha_lcb_values, [0.1, 0.25, 0.5]).tolist(),
+        }
+    )
     tradability_candidates = sorted({0.0, *np.quantile(np.asarray(final_tradability, dtype=np.float64), [0.1, 0.25, 0.5]).tolist()})
     risk_candidates = sorted({1.0, *np.quantile(risk_prob, [0.25, 0.5, 0.75, 0.9]).tolist()})
 
     best: dict[str, Any] | None = None
     realized = np.asarray(realized_return, dtype=np.float64)
-    for tradability_threshold in tradability_candidates:
-        for risk_threshold in risk_candidates:
-            allowed_mask = (
-                (np.asarray(final_alpha_lcb, dtype=np.float64) > float(alpha_lcb_floor))
-                & (np.asarray(final_tradability, dtype=np.float64) >= float(tradability_threshold))
-                & (risk_prob <= float(risk_threshold))
-            )
-            accepted = realized[allowed_mask]
-            if accepted.size <= 0:
-                continue
-            severe_rate = float(np.mean(accepted <= -severe_loss_ratio_value))
-            nonpositive_rate = float(np.mean(accepted <= 0.0))
-            ev_mean = float(np.mean(accepted))
-            candidate = {
-                "alpha_lcb_floor": float(alpha_lcb_floor),
-                "tradability_threshold": float(tradability_threshold),
-                "severe_loss_risk_threshold": float(risk_threshold),
-                "accepted_rows": int(accepted.size),
-                "severe_loss_rate": severe_rate,
-                "nonpositive_rate": nonpositive_rate,
-                "ev_mean": ev_mean,
-            }
-            if severe_rate > float(target_max_severe_loss_rate):
-                continue
-            if best is None or (candidate["ev_mean"], -candidate["severe_loss_rate"], candidate["accepted_rows"]) > (
-                best["ev_mean"],
-                -best["severe_loss_rate"],
-                best["accepted_rows"],
-            ):
-                best = candidate
+    for alpha_lcb_floor in alpha_floor_candidates:
+        for tradability_threshold in tradability_candidates:
+            for risk_threshold in risk_candidates:
+                allowed_mask = (
+                    (alpha_lcb_values > float(alpha_lcb_floor))
+                    & (np.asarray(final_tradability, dtype=np.float64) >= float(tradability_threshold))
+                    & (risk_prob <= float(risk_threshold))
+                )
+                accepted = realized[allowed_mask]
+                if accepted.size <= 0:
+                    continue
+                severe_rate = float(np.mean(accepted <= -severe_loss_ratio_value))
+                nonpositive_rate = float(np.mean(accepted <= 0.0))
+                ev_mean = float(np.mean(accepted))
+                candidate = {
+                    "alpha_lcb_floor": float(alpha_lcb_floor),
+                    "tradability_threshold": float(tradability_threshold),
+                    "severe_loss_risk_threshold": float(risk_threshold),
+                    "accepted_rows": int(accepted.size),
+                    "severe_loss_rate": severe_rate,
+                    "nonpositive_rate": nonpositive_rate,
+                    "ev_mean": ev_mean,
+                }
+                if severe_rate > float(target_max_severe_loss_rate):
+                    continue
+                if best is None or (candidate["ev_mean"], -candidate["severe_loss_rate"], candidate["accepted_rows"]) > (
+                    best["ev_mean"],
+                    -best["severe_loss_rate"],
+                    best["accepted_rows"],
+                ):
+                    best = candidate
 
     if best is None:
         best = {

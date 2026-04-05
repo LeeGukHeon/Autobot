@@ -2063,6 +2063,9 @@ def _resolve_v5_strategy_expected_edge_bps(
         return float(trade_action_edge_bps)
     if not isinstance(row, dict):
         return None
+    final_expected_return = _safe_optional_float(row.get("final_expected_return"))
+    if final_expected_return is not None:
+        return float(final_expected_return) * 10_000.0
     final_alpha_lcb = _safe_optional_float(row.get("final_alpha_lcb"))
     if final_alpha_lcb is None:
         return None

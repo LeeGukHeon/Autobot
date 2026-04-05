@@ -48,3 +48,19 @@ def test_build_and_evaluate_entry_boundary_contract() -> None:
     assert allowed["allowed"] is True
     assert blocked["allowed"] is False
     assert "ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE" in blocked["reason_codes"]
+
+
+def test_entry_boundary_can_choose_negative_alpha_floor_when_loss_control_allows_it() -> None:
+    contract = build_risk_calibrated_entry_boundary(
+        final_rank_score=np.asarray([0.8, 0.7, 0.6, 0.5], dtype=np.float64),
+        final_expected_return=np.asarray([0.06, 0.05, 0.04, 0.03], dtype=np.float64),
+        final_expected_es=np.asarray([0.005, 0.005, 0.005, 0.005], dtype=np.float64),
+        final_tradability=np.asarray([0.9, 0.9, 0.9, 0.9], dtype=np.float64),
+        final_uncertainty=np.asarray([0.005, 0.005, 0.005, 0.005], dtype=np.float64),
+        final_alpha_lcb=np.asarray([-0.02, -0.01, 0.01, 0.02], dtype=np.float64),
+        realized_return=np.asarray([0.06, 0.05, 0.04, 0.03], dtype=np.float64),
+        severe_loss_ratio=0.05,
+        target_max_severe_loss_rate=0.5,
+    )
+
+    assert contract["alpha_lcb_floor"] < 0.0

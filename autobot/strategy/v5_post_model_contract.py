@@ -53,7 +53,10 @@ def resolve_v5_entry_gate(
     uncertainty = _safe_optional_float(final_uncertainty)
     reason_codes: list[str] = []
     boundary = dict(entry_boundary_decision or {})
-    if alpha_lcb is None or float(alpha_lcb) <= 0.0:
+    alpha_lcb_floor = _safe_optional_float(boundary.get("alpha_lcb_floor"))
+    if alpha_lcb_floor is None:
+        alpha_lcb_floor = 0.0
+    if alpha_lcb is None or float(alpha_lcb) <= float(alpha_lcb_floor):
         reason_codes.append(V5_ENTRY_GATE_ALPHA_LCB_REASON)
     tradability_threshold = _safe_optional_float(boundary.get("tradability_threshold"))
     if (
@@ -98,6 +101,7 @@ def resolve_v5_entry_gate(
         "final_tradability": tradability,
         "final_uncertainty": uncertainty,
         "final_alpha_lcb": alpha_lcb,
+        "alpha_lcb_floor": float(alpha_lcb_floor),
         "primary_reason_code": reason_codes[0] if reason_codes else "",
         "primary_reason_family": _classify_primary_reason_family(reason_codes[0] if reason_codes else ""),
         "market": str(market).strip().upper(),

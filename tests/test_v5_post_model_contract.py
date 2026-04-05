@@ -11,6 +11,7 @@ from autobot.strategy.v5_post_model_contract import (
     resolve_v5_exit_decision,
     resolve_v5_target_notional,
 )
+from autobot.strategy.model_alpha_v1 import _resolve_v5_strategy_expected_edge_bps
 
 
 def test_annotate_v5_runtime_recommendations_populates_contract_identity() -> None:
@@ -126,6 +127,38 @@ def test_resolve_v5_entry_gate_blocks_nonpositive_alpha_lcb_directly() -> None:
     assert payload["allowed"] is False
     assert payload["primary_reason_code"] == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
     assert payload["primary_reason_family"] == "entry_gate"
+
+
+def test_resolve_v5_entry_gate_respects_boundary_alpha_floor() -> None:
+    payload = resolve_v5_entry_gate(
+        market="KRW-BTC",
+        final_expected_return=0.01,
+        final_expected_es=0.002,
+        final_tradability=0.8,
+        final_uncertainty=0.01,
+        final_alpha_lcb=-0.002,
+        entry_boundary_decision={
+            "enabled": True,
+            "allowed": True,
+            "reason_codes": [],
+            "alpha_lcb_floor": -0.01,
+            "tradability_threshold": 0.0,
+        },
+        expected_net_edge_bps=10.0,
+    )
+
+    assert payload["allowed"] is True
+    assert payload["alpha_lcb_floor"] == -0.01
+    assert payload["reason_codes"] == []
+
+
+def test_v5_expected_edge_prefers_expected_return_before_alpha_lcb() -> None:
+    edge_bps = _resolve_v5_strategy_expected_edge_bps(
+        row={"final_expected_return": 0.01, "final_alpha_lcb": -0.02},
+        trade_action={},
+    )
+
+    assert edge_bps == 100.0
 
 
 def test_resolve_v5_exit_decision_prefers_continuation_controller() -> None:
