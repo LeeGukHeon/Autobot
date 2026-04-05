@@ -135,6 +135,26 @@ def _runtime_warmup_ms_v4(*, base_tf: str, high_tfs: tuple[str, ...], one_m_requ
     return max(base, one_m, high)
 
 
+def _derive_high_tf_close_candles_from_base(base_frame: pl.DataFrame, *, high_tf: str) -> pl.DataFrame:
+    if base_frame.height <= 0 or "ts_ms" not in base_frame.columns or "close" not in base_frame.columns:
+        return pl.DataFrame(schema={"ts_ms": pl.Int64, "close": pl.Float64})
+    interval_ms = expected_interval_ms(high_tf)
+    working = base_frame.select(["ts_ms", "close"]).sort("ts_ms")
+    bucketed = working.with_columns(
+        pl.when((pl.col("ts_ms") % int(interval_ms)) == 0)
+        .then(pl.col("ts_ms"))
+        .otherwise(((pl.col("ts_ms") // int(interval_ms)) * int(interval_ms)) + int(interval_ms))
+        .cast(pl.Int64)
+        .alias("__bucket_end_ts_ms")
+    )
+    return (
+        bucketed.group_by("__bucket_end_ts_ms")
+        .agg(pl.col("close").last().cast(pl.Float64).alias("close"))
+        .rename({"__bucket_end_ts_ms": "ts_ms"})
+        .sort("ts_ms")
+    )
+
+
 def build_runtime_feature_frame_v4_from_contract(
     *,
     dataset_root: Path,
@@ -232,13 +252,7 @@ def build_runtime_feature_frame_v4_from_contract(
             to_ts_ms=end_ts_ms,
         )
         high_frames = {
-            high_tf: _load_market_candles(
-                dataset_root=base_root,
-                tf=high_tf,
-                market=market,
-                from_ts_ms=extended_start_ts_ms,
-                to_ts_ms=end_ts_ms,
-            )
+            high_tf: _derive_high_tf_close_candles_from_base(base, high_tf=high_tf)
             for high_tf in high_tfs
         }
         micro, micro_tf_used = load_market_micro_for_base(
