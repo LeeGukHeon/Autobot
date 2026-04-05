@@ -46,7 +46,6 @@ from .registry import (
     update_latest_pointer,
 )
 from .research_acceptance import compare_balanced_pareto, summarize_walk_forward_windows
-from .runtime_feature_dataset import write_runtime_feature_dataset
 from .search_budget import resolve_v4_search_budget
 from .selection_calibration import build_selection_calibration_by_score_source, build_selection_calibration_from_oos_rows
 from .selection_optimizer import SelectionGridConfig, build_selection_recommendations_from_walk_forward, build_window_selection_objectives
@@ -402,25 +401,57 @@ def _write_panel_runtime_source_dataset(
     window_id = f"{str(start).strip()}__{str(end).strip()}"
     filter_id = _panel_runtime_source_market_filter_id(requested_markets)
     output_root = run_dir / "_runtime_source_datasets" / window_id / filter_id
-    y_cls = np.zeros(runtime_frame.height, dtype=np.int8)
-    y_reg = np.full(runtime_frame.height, np.nan, dtype=np.float32)
-    y_rank = np.full(runtime_frame.height, np.nan, dtype=np.float32)
-    sample_weight = runtime_frame.get_column("sample_weight").to_numpy().astype(np.float32, copy=False)
-    x = runtime_frame.select(list(feature_columns)).to_numpy().astype(np.float32, copy=False)
-    markets = runtime_frame.get_column("market").to_numpy()
-    ts_ms = runtime_frame.get_column("ts_ms").to_numpy().astype(np.int64, copy=False)
-    write_runtime_feature_dataset(
-        output_root=output_root,
-        tf=str(tf).strip().lower() or "5m",
-        feature_columns=feature_columns,
-        markets=markets,
-        ts_ms=ts_ms,
-        x=x,
-        y_cls=y_cls,
-        y_reg=y_reg,
-        y_rank=y_rank,
-        sample_weight=sample_weight,
+    meta_root = output_root / "_meta"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    frame = runtime_frame.select(["market", "ts_ms", *feature_columns, "sample_weight"]).with_columns(
+        pl.lit(0, dtype=pl.Int8).alias("y_cls"),
+        pl.lit(float("nan"), dtype=pl.Float32).alias("y_reg"),
+        pl.lit(float("nan"), dtype=pl.Float32).alias("y_rank"),
     )
+    manifest_rows: list[dict[str, Any]] = []
+    tf_value = str(tf).strip().lower() or "5m"
+    unique_markets = sorted({str(item).strip().upper() for item in frame.get_column("market").to_list() if str(item).strip()})
+    for market in unique_markets:
+        market_frame = frame.filter(pl.col("market") == market).sort("ts_ms")
+        working = market_frame.with_columns(pl.from_epoch("ts_ms", time_unit="ms").dt.date().cast(pl.Utf8).alias("__date"))
+        target_dir = output_root / f"tf={tf_value}" / f"market={market}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for date_value, part in working.partition_by("__date", as_dict=True).items():
+            label = date_value[0] if isinstance(date_value, tuple) else date_value
+            if label is None:
+                continue
+            date_dir = target_dir / f"date={label}"
+            date_dir.mkdir(parents=True, exist_ok=True)
+            output = part.drop("__date").sort("ts_ms")
+            part_path = date_dir / "part-000.parquet"
+            output.write_parquet(part_path, compression="zstd")
+        manifest_rows.append(
+            {
+                "tf": tf_value,
+                "market": market,
+                "rows": int(market_frame.height),
+                "start_ts_ms": int(market_frame.get_column("ts_ms").min()) if market_frame.height > 0 else None,
+                "end_ts_ms": int(market_frame.get_column("ts_ms").max()) if market_frame.height > 0 else None,
+                "part_path": str(target_dir),
+            }
+        )
+    (meta_root / "feature_spec.json").write_text(
+        json.dumps({"feature_columns": list(feature_columns), "tf": tf_value}, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (meta_root / "label_spec.json").write_text(
+        json.dumps(
+            {
+                "training_default_columns": {"y_cls": "y_cls", "y_reg": "y_reg", "y_rank": "y_rank"},
+                "label_columns": ["y_cls", "y_reg", "y_rank"],
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    pl.DataFrame(manifest_rows).write_parquet(meta_root / "manifest.parquet")
     source_doc = {
         "policy": "v5_panel_runtime_source_dataset_v1",
         "source_dataset_root": str(Path(source_dataset_root).resolve()),

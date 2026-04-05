@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 import json
 from pathlib import Path
 import time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -83,6 +84,7 @@ from .pipeline_v3 import (
 
 
 DEFAULT_FEATURES_V4_YAML = "features_v4.yaml"
+_RUNTIME_WINDOW_TIMEZONE_V4 = "Asia/Seoul"
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,16 @@ class FeaturesV4BuildConfig:
 
 def _default_runtime_high_tfs() -> tuple[str, ...]:
     return ("15m", "60m", "240m")
+
+
+def _parse_runtime_operating_date_to_ts_ms(value: str, *, end_of_day: bool = False) -> int:
+    parsed = date.fromisoformat(str(value).strip())
+    local_dt = datetime.combine(
+        parsed,
+        time(23, 59, 59, 999000) if end_of_day else time(0, 0, 0, 0),
+        tzinfo=ZoneInfo(_RUNTIME_WINDOW_TIMEZONE_V4),
+    )
+    return int(local_dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
 def _discover_runtime_markets_from_base_root(*, base_root: Path, tf: str, quote: str) -> list[str]:
@@ -225,8 +237,8 @@ def build_runtime_feature_frame_v4_from_contract(
     if not requested_markets:
         raise ValueError(f"runtime feature rebuild could not discover markets: {dataset_root}")
 
-    start_ts_ms = parse_date_to_ts_ms(start)
-    end_ts_ms = parse_date_to_ts_ms(end, end_of_day=True)
+    start_ts_ms = _parse_runtime_operating_date_to_ts_ms(start)
+    end_ts_ms = _parse_runtime_operating_date_to_ts_ms(end, end_of_day=True)
     if start_ts_ms is None or end_ts_ms is None:
         raise ValueError("runtime feature rebuild requires non-empty start/end")
     extended_start_ts_ms = start_ts_ms - _runtime_warmup_ms_v4(
