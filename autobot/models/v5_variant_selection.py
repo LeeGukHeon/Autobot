@@ -506,8 +506,9 @@ def _select_lob_winner(records: list[VariantRunRecord]) -> VariantRunRecord:
 def _select_fusion_winner(records: list[VariantRunRecord]) -> VariantRunRecord:
     baseline = next((item for item in records if item.variant_name == "linear"), None)
     chosen = _select_with_baseline(records, baseline_variant_name="linear")
-    if chosen.variant_name == "regime_moe" and baseline is not None:
-        if not _has_clear_fusion_edge(candidate=chosen, baseline=baseline):
+    valid_baseline = baseline if (baseline is not None and baseline.contract_pass) else None
+    if chosen.variant_name == "regime_moe" and valid_baseline is not None:
+        if not _has_clear_fusion_edge(candidate=chosen, baseline=valid_baseline):
             return baseline
     return chosen
 
@@ -573,6 +574,7 @@ def _build_variant_report_payload(
     selection_policy: str,
 ) -> dict[str, Any]:
     baseline = next((item for item in records if item.variant_name == baseline_variant_name), None)
+    offline_winner = sorted(records, key=_variant_sort_key, reverse=True)[0] if records else selected
     kept_baseline = bool(baseline and baseline.run_id == selected.run_id)
     if kept_baseline:
         chosen_reason_code = "BASELINE_RETAINED_NO_CLEAR_EDGE"
@@ -644,7 +646,7 @@ def _build_variant_report_payload(
             "primary_vs_aux_target_consistency": _build_lob_target_consistency(selected),
         }
     if trainer == "v5_fusion":
-        payload["offline_winner_variant_name"] = selected.variant_name
+        payload["offline_winner_variant_name"] = offline_winner.variant_name
         payload["default_eligible_variant_name"] = selected.variant_name
         payload["default_eligible"] = bool(selected.runtime_viability_pass)
         payload["runtime_viability_pass"] = bool(selected.runtime_viability_pass)
