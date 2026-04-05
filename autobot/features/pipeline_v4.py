@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time as dt_time, timezone
 import json
 from pathlib import Path
 import time
@@ -118,7 +118,7 @@ def _parse_runtime_operating_date_to_ts_ms(value: str, *, end_of_day: bool = Fal
     parsed = date.fromisoformat(str(value).strip())
     local_dt = datetime.combine(
         parsed,
-        time(23, 59, 59, 999000) if end_of_day else time(0, 0, 0, 0),
+        dt_time(23, 59, 59, 999000) if end_of_day else dt_time(0, 0, 0, 0),
         tzinfo=ZoneInfo(_RUNTIME_WINDOW_TIMEZONE_V4),
     )
     return int(local_dt.astimezone(timezone.utc).timestamp() * 1000)
