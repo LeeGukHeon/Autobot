@@ -11,7 +11,6 @@ from autobot.strategy.v5_post_model_contract import (
     resolve_v5_exit_decision,
     resolve_v5_target_notional,
 )
-from autobot.strategy.model_alpha_v1 import _resolve_v5_strategy_expected_edge_bps
 
 
 def test_annotate_v5_runtime_recommendations_populates_contract_identity() -> None:
@@ -153,6 +152,8 @@ def test_resolve_v5_entry_gate_respects_boundary_alpha_floor() -> None:
 
 
 def test_v5_expected_edge_prefers_expected_return_before_alpha_lcb() -> None:
+    from autobot.strategy.model_alpha_v1 import _resolve_v5_strategy_expected_edge_bps
+
     edge_bps = _resolve_v5_strategy_expected_edge_bps(
         row={"final_expected_return": 0.01, "final_alpha_lcb": -0.02},
         trade_action={},
