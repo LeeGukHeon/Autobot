@@ -2,6 +2,20 @@
 
 ## 0. Purpose
 
+Status update as of `2026-04-06` / `HEAD=d5609b2`:
+
+- `5.1 Runtime Source Contract Hardening`: implemented
+- `5.2 Runtime Viability Metrics`: implemented
+- `5.3 Variant Selection Hard Constraint`: implemented
+- `5.4 Acceptance Fail-Early`: implemented
+- `5.5 Backtest / Paper / Live parity checks`: implemented
+- `7. Server Validation Plan`: representative OCI rerun completed; latest result now fails at `runtime_viability` with rich diagnostics instead of falling through to late backtest/paper failure
+
+Current remaining work after this plan:
+
+- monitor and improve candidate quality so viable fusion candidates are produced more often
+- investigate OCI-only broad-suite instability observed in a handful of backtest/paper sizing tests under the full server bundle
+
 이 문서는 현재 `v5` 학습/acceptance 체인에서 드러난 두 가지 핵심 문제를 하나의 실행 계획으로 묶어 정리한다.
 
 1. `runtime_export gap`
@@ -376,6 +390,12 @@ runtime dataset direct calculation:
 
 ### 5.1 Runtime Source Contract Hardening
 
+Implementation status:
+
+- completed
+- runtime source rebuild no longer mutates `features_v4` semantics
+- panel runtime source contract / runtime-only source lineage path is now active in code and exercised in tests
+
 목표:
 
 - `features_v4` 의미를 training contract로 유지
@@ -416,6 +436,19 @@ runtime dataset direct calculation:
 
 ### 5.2 Runtime Viability Metrics
 
+Implementation status:
+
+- completed
+- `runtime_viability_report.json` is now a first-class fusion artifact
+- `runtime_recommendations.json`, `promotion_decision.json`, train report, acceptance artifact, and dashboard all surface the same viability summary fields
+- added rich diagnostics:
+  - `mean_final_expected_return`
+  - `mean_final_expected_es`
+  - `mean_final_uncertainty`
+  - `mean_final_alpha_lcb`
+  - `top_entry_gate_reason_codes`
+  - `sample_rows`
+
 목표:
 
 - fusion candidate가 runtime에서 실제로 거래 가능한지 수치화
@@ -453,6 +486,13 @@ runtime dataset direct calculation:
 
 
 ### 5.3 Variant Selection Hard Constraint
+
+Implementation status:
+
+- completed
+- zero-viability fusion candidates are rejected before offline score comparison wins are allowed to matter
+- family `latest` pointer is now published only for viable fusion runs
+- rejection reason codes are reflected in variant reporting
 
 목표:
 
@@ -495,6 +535,14 @@ runtime dataset direct calculation:
 
 ### 5.4 Acceptance Fail-Early
 
+Implementation status:
+
+- completed
+- acceptance now reads `runtime_viability_report.json` immediately after candidate train
+- zero-viability candidates fail at `failure_stage = runtime_viability`
+- backtest / runtime parity / paper are not started for those candidates
+- acceptance report now preserves rich viability diagnostics instead of dropping them
+
 목표:
 
 - runtime viability가 0인 후보를 backtest/paper까지 오래 태우지 않음
@@ -521,6 +569,20 @@ runtime dataset direct calculation:
 
 
 ### 5.5 Backtest / Paper / Live parity checks
+
+Implementation status:
+
+- completed
+- opportunity log rows now consistently expose:
+  - `alpha_lcb_floor`
+  - `final_alpha_lcb`
+  - `expected_net_edge_bps`
+  - `reason_codes`
+- backtest / paper / live summaries now expose `intent_created_count`
+- `LIVE_V5` feature-provider build stats now include runtime source lineage
+- orphan cleanup helper added:
+  - `autobot/ops/paper_alpha_process_guard.py`
+  - `scripts/cleanup_stale_live_v5_paper_alpha_processes.ps1`
 
 목표:
 
@@ -573,6 +635,16 @@ runtime dataset direct calculation:
 
 
 ## 7. Server Validation Plan
+
+Current status:
+
+- completed for the hardening scope
+- OCI was updated through `d5609b2`
+- representative governed acceptance rerun with `BatchDate 2026-04-04` now lands in `runtime_viability` with full diagnostics, which is the intended fail-fast behavior for zero-viability candidates
+- latest observed representative OCI result:
+  - `failure_stage = runtime_viability`
+  - `failure_code = FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY`
+  - rich mean / reason / sample diagnostics present in both acceptance artifact and candidate fusion artifacts
 
 순서 고정:
 
