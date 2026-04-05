@@ -342,6 +342,9 @@ def _load_panel_inference_dataset_window(
         tf=str(options.tf).strip().lower(),
         source_dataset_root=Path(options.dataset_root),
         feature_columns=feature_cols,
+        y_cls_column=str(train_config.get("y_cls_column") or "y_cls"),
+        y_reg_column=str(train_config.get("y_reg_column") or "y_reg"),
+        y_rank_column=str(train_config.get("y_rank_column") or "y_rank"),
         runtime_frame=runtime_frame,
         requested_markets=selected_markets_override if selected_markets_override is not None else selected_markets,
     )
@@ -395,6 +398,9 @@ def _write_panel_runtime_source_dataset(
     tf: str,
     source_dataset_root: Path,
     feature_columns: tuple[str, ...],
+    y_cls_column: str,
+    y_reg_column: str,
+    y_rank_column: str,
     runtime_frame: pl.DataFrame,
     requested_markets: tuple[str, ...],
 ) -> Path:
@@ -404,9 +410,9 @@ def _write_panel_runtime_source_dataset(
     meta_root = output_root / "_meta"
     meta_root.mkdir(parents=True, exist_ok=True)
     frame = runtime_frame.select(["market", "ts_ms", *feature_columns, "sample_weight"]).with_columns(
-        pl.lit(0, dtype=pl.Int8).alias("y_cls"),
-        pl.lit(float("nan"), dtype=pl.Float32).alias("y_reg"),
-        pl.lit(float("nan"), dtype=pl.Float32).alias("y_rank"),
+        pl.lit(0, dtype=pl.Int8).alias(str(y_cls_column).strip() or "y_cls"),
+        pl.lit(float("nan"), dtype=pl.Float32).alias(str(y_reg_column).strip() or "y_reg"),
+        pl.lit(float("nan"), dtype=pl.Float32).alias(str(y_rank_column).strip() or "y_rank"),
     )
     manifest_rows: list[dict[str, Any]] = []
     tf_value = str(tf).strip().lower() or "5m"
@@ -434,8 +440,16 @@ def _write_panel_runtime_source_dataset(
     (meta_root / "label_spec.json").write_text(
         json.dumps(
             {
-                "training_default_columns": {"y_cls": "y_cls", "y_reg": "y_reg", "y_rank": "y_rank"},
-                "label_columns": ["y_cls", "y_reg", "y_rank"],
+                "training_default_columns": {
+                    "y_cls": str(y_cls_column).strip() or "y_cls",
+                    "y_reg": str(y_reg_column).strip() or "y_reg",
+                    "y_rank": str(y_rank_column).strip() or "y_rank",
+                },
+                "label_columns": [
+                    str(y_cls_column).strip() or "y_cls",
+                    str(y_reg_column).strip() or "y_reg",
+                    str(y_rank_column).strip() or "y_rank",
+                ],
             },
             ensure_ascii=False,
             indent=2,
