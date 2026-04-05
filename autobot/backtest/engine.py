@@ -1734,6 +1734,11 @@ class BacktestRunEngine:
             ),
         )
         liquidation_policy_payload: dict[str, Any] = {}
+        snapshot = (
+            micro_snapshot_provider.get(candidate.market, int(ts_ms))
+            if micro_snapshot_provider is not None
+            else None
+        )
         if strategy_mode == "model_alpha_v1" and candidate_meta:
             is_v5_contract = str(candidate_meta.get("decision_contract_version") or "").strip() == "v5_post_model_contract_v1"
             strategy_exec_profile = candidate_meta.get("exec_profile")
@@ -1813,11 +1818,6 @@ class BacktestRunEngine:
             and bool(self._run_settings.model_alpha.execution.use_learned_recommendations)
         )
         policy_diagnostics: dict[str, Any] = {}
-        snapshot = (
-            micro_snapshot_provider.get(candidate.market, int(ts_ms))
-            if micro_snapshot_provider is not None
-            else None
-        )
         if micro_order_policy is not None:
             policy_decision = micro_order_policy.evaluate(
                 micro_snapshot=snapshot,
