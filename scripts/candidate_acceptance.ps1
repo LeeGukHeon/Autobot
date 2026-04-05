@@ -498,21 +498,23 @@ function Update-FusionVariantEvidenceArtifact {
         canary_non_regression = $canaryNonRegression
         promotion_safe = [bool]$CandidateDefaultEligible
     }
+    $defaultEligibleVariantName = if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }
+    $fusionEvidenceWinner = if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }
     if ($payload -is [System.Collections.IDictionary]) {
         $payload["selection_evidence"] = $selectionEvidence
         $payload["offline_winner_variant_name"] = $selectedVariantName
-        $payload["default_eligible_variant_name"] = if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }
+        $payload["default_eligible_variant_name"] = $defaultEligibleVariantName
         $payload["default_eligible"] = [bool]$CandidateDefaultEligible
         $payload["fusion_candidate_default_eligible"] = [bool]$CandidateDefaultEligible
-        $payload["fusion_evidence_winner"] = if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }
+        $payload["fusion_evidence_winner"] = $fusionEvidenceWinner
         $payload["fusion_evidence_reason_code"] = [string]$ReasonCode
     } else {
         $payload | Add-Member -NotePropertyName "selection_evidence" -NotePropertyValue $selectionEvidence -Force
         $payload | Add-Member -NotePropertyName "offline_winner_variant_name" -NotePropertyValue $selectedVariantName -Force
-        $payload | Add-Member -NotePropertyName "default_eligible_variant_name" -NotePropertyValue (if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }) -Force
+        $payload | Add-Member -NotePropertyName "default_eligible_variant_name" -NotePropertyValue $defaultEligibleVariantName -Force
         $payload | Add-Member -NotePropertyName "default_eligible" -NotePropertyValue ([bool]$CandidateDefaultEligible) -Force
         $payload | Add-Member -NotePropertyName "fusion_candidate_default_eligible" -NotePropertyValue ([bool]$CandidateDefaultEligible) -Force
-        $payload | Add-Member -NotePropertyName "fusion_evidence_winner" -NotePropertyValue (if ($CandidateDefaultEligible) { $FusionVariantName } else { "linear" }) -Force
+        $payload | Add-Member -NotePropertyName "fusion_evidence_winner" -NotePropertyValue $fusionEvidenceWinner -Force
         $payload | Add-Member -NotePropertyName "fusion_evidence_reason_code" -NotePropertyValue ([string]$ReasonCode) -Force
     }
     Write-JsonFile -PathValue $VariantReportPath -Payload $payload
