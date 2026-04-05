@@ -413,18 +413,10 @@ def _write_panel_runtime_source_dataset(
     unique_markets = sorted({str(item).strip().upper() for item in frame.get_column("market").to_list() if str(item).strip()})
     for market in unique_markets:
         market_frame = frame.filter(pl.col("market") == market).sort("ts_ms")
-        working = market_frame.with_columns(pl.from_epoch("ts_ms", time_unit="ms").dt.date().cast(pl.Utf8).alias("__date"))
         target_dir = output_root / f"tf={tf_value}" / f"market={market}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        for date_value, part in working.partition_by("__date", as_dict=True).items():
-            label = date_value[0] if isinstance(date_value, tuple) else date_value
-            if label is None:
-                continue
-            date_dir = target_dir / f"date={label}"
-            date_dir.mkdir(parents=True, exist_ok=True)
-            output = part.drop("__date").sort("ts_ms")
-            part_path = date_dir / "part-000.parquet"
-            output.write_parquet(part_path, compression="zstd")
+        part_path = target_dir / "part-000.parquet"
+        market_frame.write_parquet(part_path, compression="zstd")
         manifest_rows.append(
             {
                 "tf": tf_value,
@@ -432,7 +424,7 @@ def _write_panel_runtime_source_dataset(
                 "rows": int(market_frame.height),
                 "start_ts_ms": int(market_frame.get_column("ts_ms").min()) if market_frame.height > 0 else None,
                 "end_ts_ms": int(market_frame.get_column("ts_ms").max()) if market_frame.height > 0 else None,
-                "part_path": str(target_dir),
+                "part_path": str(part_path),
             }
         )
     (meta_root / "feature_spec.json").write_text(
