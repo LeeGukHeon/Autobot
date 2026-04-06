@@ -2051,6 +2051,7 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
     trade_action = dict(normalized.get("trade_action") or {})
     risk_control = dict(normalized.get("risk_control") or {})
     runtime_viability = dict(normalized.get("runtime_viability_summary") or {})
+    runtime_deploy_contract = dict(normalized.get("runtime_deploy_contract_summary") or {})
     trade_action_summary = {
         "status": trade_action.get("status"),
         "source": trade_action.get("source"),
@@ -2156,6 +2157,18 @@ def _summarize_runtime_recommendations(payload: dict[str, Any]) -> dict[str, Any
             "primary_reason_code": runtime_viability.get("primary_reason_code"),
             "top_entry_gate_reason_codes": list(runtime_viability.get("top_entry_gate_reason_codes") or []),
             "sample_rows": list(runtime_viability.get("sample_rows") or [])[:5],
+        },
+        "runtime_deploy_contract_ready": bool(normalized.get("runtime_deploy_contract_ready", False)),
+        "runtime_deploy_contract_readiness_path": normalized.get("runtime_deploy_contract_readiness_path"),
+        "runtime_deploy_contract": {
+            "evaluation_contract_id": runtime_deploy_contract.get("evaluation_contract_id"),
+            "evaluation_contract_role": runtime_deploy_contract.get("evaluation_contract_role"),
+            "decision_contract_version": runtime_deploy_contract.get("decision_contract_version"),
+            "pass": bool(runtime_deploy_contract.get("pass", False)),
+            "primary_reason_code": runtime_deploy_contract.get("primary_reason_code"),
+            "required_components": list(runtime_deploy_contract.get("required_components") or []),
+            "advisory_components": list(runtime_deploy_contract.get("advisory_components") or []),
+            "component_readiness": dict(runtime_deploy_contract.get("component_readiness") or {}),
         },
         "risk_control": {
             "status": risk_control.get("status"),
@@ -2371,6 +2384,10 @@ def _load_model_provenance(project_root: Path, run_id: str | None) -> dict[str, 
         "runtime_viability_entry_gate_allowed_count": _dig(
             runtime_recommendations, "runtime_viability_summary", "entry_gate_allowed_count"
         ),
+        "runtime_deploy_contract_ready": bool(runtime_recommendations.get("runtime_deploy_contract_ready", False)),
+        "runtime_deploy_contract_primary_reason_code": _dig(
+            runtime_recommendations, "runtime_deploy_contract_summary", "primary_reason_code"
+        ),
         "trade_action_status": _dig(runtime_recommendations, "trade_action", "status"),
         "recommended_exit_mode": _dig(runtime_recommendations, "exit", "recommended_exit_mode")
         or _dig(runtime_recommendations, "exit", "mode"),
@@ -2486,6 +2503,10 @@ def _load_model_family_latest_summary(project_root: Path, model_family: str) -> 
         "fusion_evidence_reason_code": runtime_recommendations.get("fusion_evidence_reason_code"),
         "fusion_offline_winner": runtime_recommendations.get("fusion_offline_winner"),
         "fusion_default_eligible_winner": runtime_recommendations.get("fusion_default_eligible_winner"),
+        "runtime_viability_pass": bool(runtime_recommendations.get("runtime_viability_pass", False)),
+        "runtime_viability_primary_reason_code": _dig(runtime_recommendations, "runtime_viability_summary", "primary_reason_code"),
+        "runtime_deploy_contract_ready": bool(runtime_recommendations.get("runtime_deploy_contract_ready", False)),
+        "runtime_deploy_contract_primary_reason_code": _dig(runtime_recommendations, "runtime_deploy_contract_summary", "primary_reason_code"),
         "domain_weighting_policy": domain_weighting_report.get("policy"),
         "domain_weighting_source_kind": _dig(domain_weighting_report, "domain_details", "source_kind"),
         "domain_weighting_enabled": bool(domain_weighting_report.get("domain_weighting_enabled", False)),

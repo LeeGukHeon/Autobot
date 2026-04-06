@@ -13,6 +13,7 @@ from autobot.dashboard_server import (
     _json_response,
     _load_dashboard_asset,
     _load_dashboard_ops_history,
+    _summarize_v5_readiness,
     _run_clear_live_breaker,
     _run_reset_live_suppressors,
     _unit_snapshot,
@@ -260,6 +261,23 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
                 "top_entry_gate_reason_codes": [{"reason_code": "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE", "count": 21298}],
                 "sample_rows": [{"market": "KRW-BTC", "final_alpha_lcb": -0.0625}],
             },
+            "runtime_deploy_contract_ready": False,
+            "runtime_deploy_contract_readiness_path": str(project_root / "models" / "registry" / "model_alpha_v1" / "run-123" / "runtime_deploy_contract_readiness.json"),
+            "runtime_deploy_contract_summary": {
+                "evaluation_contract_id": "runtime_deploy_contract_v1",
+                "evaluation_contract_role": "deploy_runtime",
+                "decision_contract_version": "v5_post_model_contract_v1",
+                "pass": False,
+                "primary_reason_code": "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY",
+                "required_components": ["exit", "execution"],
+                "advisory_components": ["trade_action", "risk_control"],
+                "component_readiness": {
+                    "exit": {"required": True, "ready": True, "reason_codes": []},
+                    "execution": {"required": True, "ready": False, "reason_codes": ["FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"]},
+                    "trade_action": {"required": False, "ready": True, "reason_codes": []},
+                    "risk_control": {"required": False, "ready": True, "reason_codes": []},
+                },
+            },
             "exit": {
                 "recommended_exit_mode": "hold",
                 "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
@@ -425,6 +443,9 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     assert runtime_recommendations["runtime_viability_pass"] is False
     assert runtime_recommendations["runtime_viability"]["mean_final_alpha_lcb"] == pytest.approx(-0.0625)
     assert runtime_recommendations["runtime_viability"]["top_entry_gate_reason_codes"][0]["reason_code"] == "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE"
+    assert runtime_recommendations["runtime_deploy_contract_ready"] is False
+    assert runtime_recommendations["runtime_deploy_contract"]["primary_reason_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
+    assert runtime_recommendations["runtime_deploy_contract"]["component_readiness"]["execution"]["ready"] is False
     assert exit_compare["hold"]["orders_filled"] == 8
     assert exit_compare["risk"]["slippage_bps_mean"] == 13.5
     assert exit_compare["summary_ko"]
@@ -440,6 +461,45 @@ def test_build_dashboard_snapshot_collects_core_sections(tmp_path: Path, monkeyp
     assert suppressor["active"] is True
     assert "EXECUTION_MISS_RATE_CS_BREACH" in suppressor["current_reason_codes"]
     assert suppressor["portfolio_budget"]["recent_loss_streak_active"] is True
+
+
+def test_summarize_v5_readiness_surfaces_v5_fusion_runtime_deploy_contract_summary(tmp_path: Path) -> None:
+    project_root = tmp_path
+    family_root = project_root / "models" / "registry" / "train_v5_fusion"
+    run_dir = family_root / "fusion-run-001"
+    _write_json(family_root / "latest.json", {"run_id": "fusion-run-001"})
+    _write_json(
+        run_dir / "train_config.yaml",
+        {
+            "trainer": "v5_fusion",
+            "run_scope": "scheduled_daily",
+            "task": "cls",
+            "start": "2026-04-01",
+            "end": "2026-04-04",
+        },
+    )
+    _write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "domain_weighting_enabled": True})
+    _write_json(
+        run_dir / "runtime_recommendations.json",
+        {
+            "runtime_viability_pass": True,
+            "runtime_viability_summary": {"primary_reason_code": "PASS"},
+            "runtime_deploy_contract_ready": False,
+            "runtime_deploy_contract_summary": {
+                "primary_reason_code": "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY",
+            },
+            "fusion_candidate_default_eligible": False,
+            "fusion_evidence_reason_code": "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY",
+        },
+    )
+
+    summary = _summarize_v5_readiness(project_root, data_platform={"datasets": {}})
+    family_summary = summary["families"]["train_v5_fusion"]
+
+    assert family_summary["runtime_viability_pass"] is True
+    assert family_summary["runtime_viability_primary_reason_code"] == "PASS"
+    assert family_summary["runtime_deploy_contract_ready"] is False
+    assert family_summary["runtime_deploy_contract_primary_reason_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
 
 
 def test_build_dashboard_snapshot_includes_paired_paper_latest_and_history(tmp_path: Path) -> None:
