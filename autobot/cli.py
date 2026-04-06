@@ -1303,6 +1303,13 @@ def build_parser() -> argparse.ArgumentParser:
     paper_alpha_parser.add_argument("--no-use_learned_execution_recommendations", dest="use_learned_execution_recommendations", action="store_false", help=argparse.SUPPRESS)
     paper_alpha_parser.add_argument("--evaluation-contract-id", help=argparse.SUPPRESS)
     paper_alpha_parser.add_argument("--evaluation-contract-role", help=argparse.SUPPRESS)
+    paper_alpha_parser.add_argument("--micro-order-policy", choices=("on", "off"), help=argparse.SUPPRESS)
+    paper_alpha_parser.add_argument("--micro-order-policy-mode", choices=("trade_only", "trade_and_book"), help=argparse.SUPPRESS)
+    paper_alpha_parser.add_argument(
+        "--micro-order-policy-on-missing",
+        choices=("static_fallback", "conservative", "abort"),
+        help=argparse.SUPPRESS,
+    )
     paper_alpha_parser.add_argument("--print-every-sec", type=float)
     paper_alpha_parser.add_argument("--starting-krw", type=float)
     paper_alpha_parser.add_argument("--per-trade-krw", type=float)
@@ -1420,6 +1427,13 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_alpha_parser.add_argument("--no-use_learned_execution_recommendations", dest="use_learned_execution_recommendations", action="store_false", help=argparse.SUPPRESS)
     backtest_alpha_parser.add_argument("--evaluation-contract-id", help=argparse.SUPPRESS)
     backtest_alpha_parser.add_argument("--evaluation-contract-role", help=argparse.SUPPRESS)
+    backtest_alpha_parser.add_argument("--micro-order-policy", choices=("on", "off"), help=argparse.SUPPRESS)
+    backtest_alpha_parser.add_argument("--micro-order-policy-mode", choices=("trade_only", "trade_and_book"), help=argparse.SUPPRESS)
+    backtest_alpha_parser.add_argument(
+        "--micro-order-policy-on-missing",
+        choices=("static_fallback", "conservative", "abort"),
+        help=argparse.SUPPRESS,
+    )
     backtest_alpha_parser.add_argument("--start", help="Start date YYYY-MM-DD (UTC day start).")
     backtest_alpha_parser.add_argument("--end", help="End date YYYY-MM-DD (UTC day end).")
     backtest_alpha_parser.add_argument("--from-ts-ms", type=int)

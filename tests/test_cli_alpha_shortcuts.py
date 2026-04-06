@@ -330,6 +330,46 @@ def test_build_parser_accepts_hidden_backtest_alpha_contract_args() -> None:
     assert args.use_learned_execution_recommendations is True
 
 
+def test_build_parser_accepts_hidden_backtest_alpha_micro_order_policy_args() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "backtest",
+            "alpha",
+            "--micro-order-policy",
+            "off",
+            "--micro-order-policy-mode",
+            "trade_only",
+            "--micro-order-policy-on-missing",
+            "static_fallback",
+        ]
+    )
+
+    assert args.micro_order_policy == "off"
+    assert args.micro_order_policy_mode == "trade_only"
+    assert args.micro_order_policy_on_missing == "static_fallback"
+
+
+def test_build_parser_accepts_hidden_paper_alpha_micro_order_policy_args() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "paper",
+            "alpha",
+            "--micro-order-policy",
+            "on",
+            "--micro-order-policy-mode",
+            "trade_only",
+            "--micro-order-policy-on-missing",
+            "static_fallback",
+        ]
+    )
+
+    assert args.micro_order_policy == "on"
+    assert args.micro_order_policy_mode == "trade_only"
+    assert args.micro_order_policy_on_missing == "static_fallback"
+
+
 def test_build_parser_supports_v4_selection_threshold_override() -> None:
     parser = build_parser()
     args = parser.parse_args(
