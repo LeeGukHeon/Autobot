@@ -42,40 +42,69 @@ class ModelAlphaEvaluationContract:
         return payload
 
 
+_CONTRACTS_BY_ID: dict[str, ModelAlphaEvaluationContract] = {
+    "acceptance_frozen_compare_v1": ModelAlphaEvaluationContract(
+        contract_id="acceptance_frozen_compare_v1",
+        contract_role="frozen_compare",
+        selection_policy_mode="raw_threshold",
+        use_learned_selection_recommendations=False,
+        use_learned_exit_mode=False,
+        use_learned_hold_bars=False,
+        use_learned_risk_recommendations=False,
+        use_trade_level_action_policy=False,
+        use_learned_execution_recommendations=False,
+        micro_order_policy="off",
+    ),
+    "runtime_deploy_contract_v1": ModelAlphaEvaluationContract(
+        contract_id="runtime_deploy_contract_v1",
+        contract_role="deploy_runtime",
+        selection_policy_mode="auto",
+        use_learned_selection_recommendations=True,
+        use_learned_exit_mode=True,
+        use_learned_hold_bars=True,
+        use_learned_risk_recommendations=True,
+        use_trade_level_action_policy=True,
+        use_learned_execution_recommendations=True,
+        micro_order_policy="on",
+        micro_order_policy_mode="trade_only",
+        micro_order_policy_on_missing="static_fallback",
+    ),
+    "paper_offline_contract_v1": ModelAlphaEvaluationContract(
+        contract_id="paper_offline_contract_v1",
+        contract_role="offline_runtime",
+        selection_policy_mode="auto",
+        use_learned_selection_recommendations=True,
+        use_learned_exit_mode=True,
+        use_learned_hold_bars=True,
+        use_learned_risk_recommendations=True,
+        use_trade_level_action_policy=True,
+        use_learned_execution_recommendations=True,
+    ),
+    "backtest_default_contract_v1": ModelAlphaEvaluationContract(
+        contract_id="backtest_default_contract_v1",
+        contract_role="config_default",
+    ),
+    "paper_default_contract_v1": ModelAlphaEvaluationContract(
+        contract_id="paper_default_contract_v1",
+        contract_role="config_default",
+    ),
+}
+
+
+def load_evaluation_contract(*, contract_id: str | None) -> ModelAlphaEvaluationContract | None:
+    key = str(contract_id or "").strip()
+    if not key:
+        return None
+    return _CONTRACTS_BY_ID.get(key)
+
+
 def resolve_backtest_evaluation_contract(*, preset: str) -> ModelAlphaEvaluationContract:
     name = str(preset).strip().lower() or "default"
     if name == "acceptance":
-        return ModelAlphaEvaluationContract(
-            contract_id="acceptance_frozen_compare_v1",
-            contract_role="frozen_compare",
-            selection_policy_mode="raw_threshold",
-            use_learned_selection_recommendations=False,
-            use_learned_exit_mode=False,
-            use_learned_hold_bars=False,
-            use_learned_risk_recommendations=False,
-            use_trade_level_action_policy=False,
-            use_learned_execution_recommendations=False,
-            micro_order_policy="off",
-        )
+        return _CONTRACTS_BY_ID["acceptance_frozen_compare_v1"]
     if name == "runtime_parity":
-        return ModelAlphaEvaluationContract(
-            contract_id="runtime_deploy_contract_v1",
-            contract_role="deploy_runtime",
-            selection_policy_mode="auto",
-            use_learned_selection_recommendations=True,
-            use_learned_exit_mode=True,
-            use_learned_hold_bars=True,
-            use_learned_risk_recommendations=True,
-            use_trade_level_action_policy=True,
-            use_learned_execution_recommendations=True,
-            micro_order_policy="on",
-            micro_order_policy_mode="trade_only",
-            micro_order_policy_on_missing="static_fallback",
-        )
-    return ModelAlphaEvaluationContract(
-        contract_id="backtest_default_contract_v1",
-        contract_role="config_default",
-    )
+        return _CONTRACTS_BY_ID["runtime_deploy_contract_v1"]
+    return _CONTRACTS_BY_ID["backtest_default_contract_v1"]
 
 
 def resolve_paper_evaluation_contract(*, preset: str) -> ModelAlphaEvaluationContract:
@@ -89,33 +118,7 @@ def resolve_paper_evaluation_contract(*, preset: str) -> ModelAlphaEvaluationCon
         "candidate_v5",
         "default",
     }:
-        return ModelAlphaEvaluationContract(
-            contract_id="runtime_deploy_contract_v1",
-            contract_role="deploy_runtime",
-            selection_policy_mode="auto",
-            use_learned_selection_recommendations=True,
-            use_learned_exit_mode=True,
-            use_learned_hold_bars=True,
-            use_learned_risk_recommendations=True,
-            use_trade_level_action_policy=True,
-            use_learned_execution_recommendations=True,
-            micro_order_policy="on",
-            micro_order_policy_mode="trade_only",
-            micro_order_policy_on_missing="static_fallback",
-        )
+        return _CONTRACTS_BY_ID["runtime_deploy_contract_v1"]
     if name in {"offline", "offline_v3", "offline_v4", "offline_v5"}:
-        return ModelAlphaEvaluationContract(
-            contract_id="paper_offline_contract_v1",
-            contract_role="offline_runtime",
-            selection_policy_mode="auto",
-            use_learned_selection_recommendations=True,
-            use_learned_exit_mode=True,
-            use_learned_hold_bars=True,
-            use_learned_risk_recommendations=True,
-            use_trade_level_action_policy=True,
-            use_learned_execution_recommendations=True,
-        )
-    return ModelAlphaEvaluationContract(
-        contract_id="paper_default_contract_v1",
-        contract_role="config_default",
-    )
+        return _CONTRACTS_BY_ID["paper_offline_contract_v1"]
+    return _CONTRACTS_BY_ID["paper_default_contract_v1"]

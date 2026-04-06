@@ -559,6 +559,69 @@ def test_normalize_backtest_alpha_args_runtime_parity_enables_learned_runtime_co
     assert normalized.selection_policy_mode == "auto"
 
 
+def test_normalize_backtest_alpha_args_explicit_contract_overrides_conflicting_manual_flags() -> None:
+    args = argparse.Namespace(
+        backtest_command="alpha",
+        preset="default",
+        dataset_name=None,
+        parquet_root=None,
+        tf=None,
+        market=None,
+        markets=None,
+        quote=None,
+        top_n=None,
+        universe_mode=None,
+        model_ref=None,
+        model_family=None,
+        feature_set=None,
+        evaluation_contract_id="acceptance_frozen_compare_v1",
+        evaluation_contract_role="deploy_runtime",
+        selection_policy_mode="auto",
+        use_learned_selection_recommendations=True,
+        use_learned_exit_mode=True,
+        use_learned_hold_bars=True,
+        use_learned_risk_recommendations=True,
+        use_trade_level_action_policy=True,
+        use_learned_execution_recommendations=True,
+        top_pct=None,
+        min_prob=None,
+        min_cands_per_ts=None,
+        exit_mode=None,
+        hold_bars=None,
+        tp_pct=None,
+        sl_pct=None,
+        trailing_pct=None,
+        cooldown_bars=None,
+        max_positions_total=None,
+        execution_price_mode=None,
+        execution_timeout_bars=None,
+        execution_replace_max=None,
+        start=None,
+        end=None,
+        from_ts_ms=None,
+        to_ts_ms=None,
+        days=7,
+        dense_grid=False,
+        starting_krw=None,
+        per_trade_krw=None,
+        max_positions=None,
+        micro_order_policy=None,
+        micro_order_policy_mode=None,
+        micro_order_policy_on_missing=None,
+    )
+    normalized = _normalize_backtest_alpha_args(args)
+    assert normalized.evaluation_contract_id == "acceptance_frozen_compare_v1"
+    assert normalized.evaluation_contract_role == "frozen_compare"
+    assert normalized.selection_policy_mode == "raw_threshold"
+    assert normalized.use_learned_selection_recommendations is False
+    assert normalized.use_learned_exit_mode is False
+    assert normalized.use_learned_hold_bars is False
+    assert normalized.use_learned_risk_recommendations is False
+    assert normalized.use_trade_level_action_policy is False
+    assert normalized.use_learned_execution_recommendations is False
+    assert normalized.micro_order_policy == "off"
+
+
 def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_path: Path) -> None:
     parser = build_parser()
     args = parser.parse_args(

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from autobot.strategy.model_alpha_evaluation_contract import (
+    load_evaluation_contract,
     resolve_backtest_evaluation_contract,
     resolve_paper_evaluation_contract,
 )
@@ -197,8 +198,8 @@ def normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
         "model_ref": getattr(args, "model_ref", None) or overrides.get("model_ref"),
         "model_family": getattr(args, "model_family", None) or overrides.get("model_family"),
         "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
-        "evaluation_contract_id": overrides.get("evaluation_contract_id"),
-        "evaluation_contract_role": overrides.get("evaluation_contract_role"),
+        "evaluation_contract_id": getattr(args, "evaluation_contract_id", None) or overrides.get("evaluation_contract_id"),
+        "evaluation_contract_role": getattr(args, "evaluation_contract_role", None) or overrides.get("evaluation_contract_role"),
         "selection_policy_mode": getattr(args, "selection_policy_mode", None) or overrides.get("selection_policy_mode"),
         "top_pct": (
             getattr(args, "top_pct", None)
@@ -259,6 +260,9 @@ def normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
     for key, value in vars(args).items():
         if key not in payload:
             payload[key] = value
+    explicit_contract = load_evaluation_contract(contract_id=payload.get("evaluation_contract_id"))
+    if explicit_contract is not None:
+        payload.update(explicit_contract.as_cli_overrides())
     return argparse.Namespace(**payload)
 
 
@@ -355,8 +359,8 @@ def normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespac
         "model_ref": getattr(args, "model_ref", None),
         "model_family": getattr(args, "model_family", None),
         "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
-        "evaluation_contract_id": overrides.get("evaluation_contract_id"),
-        "evaluation_contract_role": overrides.get("evaluation_contract_role"),
+        "evaluation_contract_id": getattr(args, "evaluation_contract_id", None) or overrides.get("evaluation_contract_id"),
+        "evaluation_contract_role": getattr(args, "evaluation_contract_role", None) or overrides.get("evaluation_contract_role"),
         "selection_policy_mode": getattr(args, "selection_policy_mode", None) or overrides.get("selection_policy_mode"),
         "entry": "top_pct",
         "top_pct": getattr(args, "top_pct", None),
@@ -425,6 +429,9 @@ def normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespac
     for key, value in vars(args).items():
         if key not in payload:
             payload[key] = value
+    explicit_contract = load_evaluation_contract(contract_id=payload.get("evaluation_contract_id"))
+    if explicit_contract is not None:
+        payload.update(explicit_contract.as_cli_overrides())
     return argparse.Namespace(**payload)
 
 
