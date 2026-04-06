@@ -1271,6 +1271,8 @@ class BacktestRunEngine:
             p90_time_to_complete_fill_ms=percentile(complete_fill_values, 0.90),
         )
         summary_payload = asdict(summary)
+        summary_payload["evaluation_contract_id"] = str(getattr(settings.model_alpha, "evaluation_contract_id", "")).strip()
+        summary_payload["evaluation_contract_role"] = str(getattr(settings.model_alpha, "evaluation_contract_role", "")).strip()
         summary_payload["opportunity_log_path"] = str(run_root / "opportunity_log.jsonl")
         summary_payload["counterfactual_action_log_path"] = str(run_root / "counterfactual_action_log.jsonl")
         summary_payload["execution_structure"] = summarize_fill_records(self._runtime_state.get("fill_records", []))

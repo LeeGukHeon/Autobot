@@ -1557,6 +1557,12 @@ class PaperRunEngine:
         )
         summary_payload = asdict(summary)
         summary_payload.update(runtime_metadata)
+        summary_payload["evaluation_contract_id"] = str(
+            getattr(self._run_settings.model_alpha, "evaluation_contract_id", "")
+        ).strip()
+        summary_payload["evaluation_contract_role"] = str(
+            getattr(self._run_settings.model_alpha, "evaluation_contract_role", "")
+        ).strip()
         summary_payload["opportunity_log_path"] = str(run_root / "opportunity_log.jsonl")
         summary_payload["counterfactual_action_log_path"] = str(run_root / "counterfactual_action_log.jsonl")
         summary_payload["run_completed_ts_ms"] = int(final_ts_ms)

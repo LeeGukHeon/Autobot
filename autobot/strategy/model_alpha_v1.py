@@ -117,6 +117,8 @@ class ModelAlphaSettings:
     model_ref: str = "champion_v4"
     model_family: str | None = "train_v4_crypto_cs"
     feature_set: str = "v4"
+    evaluation_contract_id: str = ""
+    evaluation_contract_role: str = ""
     selection: ModelAlphaSelectionSettings = field(default_factory=ModelAlphaSelectionSettings)
     position: ModelAlphaPositionSettings = field(default_factory=ModelAlphaPositionSettings)
     exit: ModelAlphaExitSettings = field(default_factory=ModelAlphaExitSettings)
@@ -184,6 +186,12 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
         ).strip()
         self._runtime_recommendation_state["exit_ownership"] = str(
             self._runtime_recommendations.get("exit_ownership", "")
+        ).strip()
+        self._runtime_recommendation_state["evaluation_contract_id"] = str(
+            getattr(self._settings, "evaluation_contract_id", "")
+        ).strip()
+        self._runtime_recommendation_state["evaluation_contract_role"] = str(
+            getattr(self._settings, "evaluation_contract_role", "")
         ).strip()
         self._interval_ms = max(int(interval_ms), 1)
         self._pending_group: FeatureTsGroup | None = None
@@ -332,6 +340,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     meta={
                         "selection_policy_mode": str(selection_mode),
                         "selection_policy_source": str(selection_policy_source),
+                        "evaluation_contract_id": str(getattr(self._settings, "evaluation_contract_id", "")).strip(),
+                        "evaluation_contract_role": str(getattr(self._settings, "evaluation_contract_role", "")).strip(),
                         "support_level": support_level or "full",
                         "support_size_multiplier": support_size_multiplier,
                         "notional_multiplier": notional_multiplier,
@@ -1017,6 +1027,8 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     "selection_min_candidates_source": str(min_candidates_source),
                     "selection_policy_mode": str(selection_mode),
                     "selection_policy_source": str(selection_policy_source),
+                    "evaluation_contract_id": str(getattr(self._settings, "evaluation_contract_id", "")).strip(),
+                    "evaluation_contract_role": str(getattr(self._settings, "evaluation_contract_role", "")).strip(),
                     "support_level": trade_action_support_level or "full",
                     "support_size_multiplier": float(trade_action_support_multiplier),
                     "support_size_haircut_applied": bool(float(trade_action_support_multiplier) < 1.0),
@@ -1803,6 +1815,8 @@ def build_model_alpha_exit_plan_payload(
             "use_learned_hold_bars": bool(settings.exit.use_learned_hold_bars),
             "use_learned_risk_recommendations": bool(settings.exit.use_learned_risk_recommendations),
             "use_trade_level_action_policy": bool(settings.exit.use_trade_level_action_policy),
+            "evaluation_contract_id": str(getattr(settings, "evaluation_contract_id", "")).strip(),
+            "evaluation_contract_role": str(getattr(settings, "evaluation_contract_role", "")).strip(),
             "path_risk": dict(exit_path_risk or {}) if isinstance(exit_path_risk, dict) else {},
             "continue_value_lcb": None,
             "exit_now_value_net": None,

@@ -198,6 +198,29 @@ function Load-RunStartedPayload {
     }
 }
 
+function Load-LastEventPayload {
+    param(
+        [string]$RunDir,
+        [string]$EventType
+    )
+    $eventsPath = Join-Path $RunDir "events.jsonl"
+    if (-not (Test-Path $eventsPath)) {
+        return @{}
+    }
+    $matchedLine = Get-Content -Path $eventsPath -Encoding UTF8 |
+        Where-Object { $_ -match ('"event_type":"' + [Regex]::Escape($EventType) + '"') } |
+        Select-Object -Last 1
+    if ([string]::IsNullOrWhiteSpace($matchedLine)) {
+        return @{}
+    }
+    try {
+        $eventObj = $matchedLine | ConvertFrom-Json
+        return Get-PropValue -ObjectValue $eventObj -Name "payload" -DefaultValue @{}
+    } catch {
+        return @{}
+    }
+}
+
 function Resolve-RunDirFromText {
     param([string]$TextValue)
     if ([string]::IsNullOrWhiteSpace($TextValue)) {
@@ -307,6 +330,8 @@ if (-not (Test-Path $summaryPath)) {
 $summary = Load-JsonOrEmpty -PathValue $summaryPath
 $policy = Load-JsonOrEmpty -PathValue (Join-Path $runDir "micro_order_policy_report.json")
 $runStartedPayload = Load-RunStartedPayload -RunDir $runDir
+$featureBuildPayload = Load-LastEventPayload -RunDir $runDir -EventType "LIVE_FEATURES_BUILT"
+$selectionPayload = Load-LastEventPayload -RunDir $runDir -EventType "MODEL_ALPHA_SELECTION"
 
 $microProvider = [string](Get-PropValue -ObjectValue $runStartedPayload -Name "micro_provider" -DefaultValue "")
 $microProviderInfo = Get-PropValue -ObjectValue $runStartedPayload -Name "micro_provider_info" -DefaultValue @{}
@@ -322,6 +347,13 @@ if ([string]::IsNullOrWhiteSpace($microProvider)) {
 }
 if ([string]::IsNullOrWhiteSpace($microProvider)) {
     $microProvider = "NA"
+}
+$resolvedPaperFeatureProvider = [string](Get-PropValue -ObjectValue $summary -Name "feature_provider" -DefaultValue "")
+if ([string]::IsNullOrWhiteSpace($resolvedPaperFeatureProvider)) {
+    $resolvedPaperFeatureProvider = [string]$PaperFeatureProvider
+}
+if ([string]::IsNullOrWhiteSpace($resolvedPaperFeatureProvider)) {
+    $resolvedPaperFeatureProvider = "NA"
 }
 
 $wsHealthPath = Join-Path $ProjectRoot "data/raw_ws/upbit/_meta/ws_public_health.json"
@@ -354,6 +386,33 @@ if ($warmupTradeEventsTotal -lt 0) {
 $microCacheMarketsWithSamples = To-Int64 (Get-PropValue -ObjectValue $summary -Name "micro_cache_markets_with_samples" -DefaultValue $null) -1
 if ($microCacheMarketsWithSamples -lt 0) {
     $microCacheMarketsWithSamples = To-Int64 (Get-PropValue -ObjectValue $microProviderInfo -Name "micro_cache_markets_with_samples" -DefaultValue 0) 0
+}
+$featureProviderBuiltRows = To-Int64 (Get-PropValue -ObjectValue $featureBuildPayload -Name "built_rows" -DefaultValue 0) 0
+$featureProviderSkipReasons = Get-PropValue -ObjectValue $featureBuildPayload -Name "skip_reasons" -DefaultValue @{}
+$featureProviderBaseStats = Get-PropValue -ObjectValue $featureBuildPayload -Name "base_provider_stats" -DefaultValue @{}
+$featureProviderBaseSkipReasons = Get-PropValue -ObjectValue $featureProviderBaseStats -Name "skip_reasons" -DefaultValue @{}
+$selectionScoredRows = To-Int64 (Get-PropValue -ObjectValue $selectionPayload -Name "scored_rows" -DefaultValue 0) 0
+$selectionReasons = Get-PropValue -ObjectValue $selectionPayload -Name "reasons" -DefaultValue @{}
+$featureBuildPayloadPresent = ($featureBuildPayload -is [System.Collections.IDictionary] -and $featureBuildPayload.Count -gt 0) -or ($featureBuildPayload.PSObject -and $featureBuildPayload.PSObject.Properties.Count -gt 0)
+$selectionPayloadPresent = ($selectionPayload -is [System.Collections.IDictionary] -and $selectionPayload.Count -gt 0) -or ($selectionPayload.PSObject -and $selectionPayload.PSObject.Properties.Count -gt 0)
+$featureProviderPreflightAttempted = $featureBuildPayloadPresent -or $selectionPayloadPresent
+$featureProviderReadyPass = if ($featureProviderPreflightAttempted) {
+    ($featureProviderBuiltRows -gt 0) -and ($selectionScoredRows -gt 0)
+} else {
+    $true
+}
+$featureProviderFailureReasons = @()
+if ($featureProviderPreflightAttempted -and (-not $featureProviderReadyPass)) {
+    $featureProviderFailureReasons += "FEATURE_PROVIDER_NOT_READY"
+    if ((To-Int64 (Get-PropValue -ObjectValue $featureProviderSkipReasons -Name "NO_BASE_FEATURE_ROW" -DefaultValue 0) 0) -gt 0) {
+        $featureProviderFailureReasons += "NO_BASE_FEATURE_ROW"
+    }
+    if ((To-Int64 (Get-PropValue -ObjectValue $featureProviderBaseSkipReasons -Name "NO_1M_HISTORY" -DefaultValue 0) 0) -gt 0) {
+        $featureProviderFailureReasons += "NO_1M_HISTORY"
+    }
+    if ((To-Int64 (Get-PropValue -ObjectValue $selectionReasons -Name "NO_FEATURE_ROWS_AT_TS" -DefaultValue 0) 0) -gt 0) {
+        $featureProviderFailureReasons += "NO_FEATURE_ROWS_AT_TS"
+    }
 }
 
 $ordersSubmitted = To-Int64 (Get-PropValue -ObjectValue $summary -Name "orders_submitted" -DefaultValue 0) 0
@@ -424,6 +483,9 @@ $gatePolicyEventsPass = $replaceCancelTimeoutTotal -ge $MinPolicyEvents
 $smokeConnectivityPass = $ordersSubmittedPass -and $gateFallbackPass
 $t151GatePass = $ordersSubmittedPass -and $gateFallbackPass -and $gateTierPass -and $gatePolicyEventsPass
 $gateFailures = @()
+if ($featureProviderPreflightAttempted -and (-not $featureProviderReadyPass)) {
+    $gateFailures += @($featureProviderFailureReasons)
+}
 if (-not $ordersSubmittedPass) {
     $gateFailures += "MIN_ORDERS_SUBMITTED"
 }
@@ -466,9 +528,19 @@ $payload = [ordered]@{
     tp_pct = [double]$TpPct
     sl_pct = [double]$SlPct
     trailing_pct = [double]$TrailingPct
-    paper_feature_provider = $PaperFeatureProvider
+    paper_feature_provider = $resolvedPaperFeatureProvider
     micro_provider = $microProvider
     micro_provider_info = $microProviderInfo
+    feature_provider_preflight = [ordered]@{
+        attempted = [bool]$featureProviderPreflightAttempted
+        pass = [bool]$featureProviderReadyPass
+        built_rows = [int64]$featureProviderBuiltRows
+        selection_scored_rows = [int64]$selectionScoredRows
+        skip_reasons = $featureProviderSkipReasons
+        base_provider_skip_reasons = $featureProviderBaseSkipReasons
+        selection_reasons = $selectionReasons
+        failure_reasons = @($featureProviderFailureReasons)
+    }
     warmup_elapsed_sec = [double]$warmupElapsedSec
     warmup_satisfied = [bool]$warmupSatisfied
     warmup_trade_events_total = [int64]$warmupTradeEventsTotal
@@ -511,6 +583,7 @@ $payload = [ordered]@{
         orders_submitted_pass = $ordersSubmittedPass
         fallback_ratio_evaluated = $fallbackRatioEvaluated
         smoke_connectivity_pass = $smokeConnectivityPass
+        feature_provider_ready_pass = [bool]$featureProviderReadyPass
         fallback_ratio_pass = $gateFallbackPass
         tier_diversity_pass = $gateTierPass
         policy_events_pass = $gatePolicyEventsPass
@@ -541,6 +614,8 @@ $payload | ConvertTo-Json -Depth 8 | Set-Content -Path $latestReportPath -Encodi
 
 Write-Host ("[paper-smoke] run_id={0}" -f $runId)
 Write-Host ("[paper-smoke] micro_provider={0}" -f $microProvider)
+Write-Host ("[paper-smoke] paper_feature_provider={0}" -f $resolvedPaperFeatureProvider)
+Write-Host ("[paper-smoke] feature_provider_ready_pass={0}" -f $featureProviderReadyPass)
 Write-Host ("[paper-smoke] orders_submitted={0}" -f $ordersSubmitted)
 Write-Host ("[paper-smoke] micro_missing_fallback_count={0}" -f $microMissingFallbackCount)
 Write-Host ("[paper-smoke] micro_missing_fallback_ratio={0:N6}" -f $microMissingFallbackRatio)

@@ -2425,6 +2425,7 @@ def test_backtest_model_alpha_run_generates_artifacts(tmp_path: Path) -> None:
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")
     assert summary_json["execution_ope_report_path"].endswith("execution_ope_report.json")
+    assert summary_json["evaluation_contract_id"] in {"", "backtest_default_contract_v1", "acceptance_frozen_compare_v1", "runtime_deploy_contract_v1"}
     assert summary_json["intent_created_count"] >= 1
     assert summary_json["entry_intent_created_count"] >= 1
     assert summary_json["exit_intent_created_count"] >= 0

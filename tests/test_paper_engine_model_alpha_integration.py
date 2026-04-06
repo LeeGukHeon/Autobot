@@ -277,6 +277,7 @@ def test_paper_engine_model_alpha_strategy_cycle(tmp_path: Path) -> None:
     assert summary_json["opportunity_log_path"].endswith("opportunity_log.jsonl")
     assert summary_json["counterfactual_action_log_path"].endswith("counterfactual_action_log.jsonl")
     assert summary_json["execution_ope_report_path"].endswith("execution_ope_report.json")
+    assert summary_json["evaluation_contract_id"] in {"", "runtime_deploy_contract_v1", "paper_offline_contract_v1", "paper_default_contract_v1"}
     assert summary_json["intent_created_count"] >= 1
     assert summary_json["entry_intent_created_count"] >= 1
     assert summary_json["exit_intent_created_count"] >= 0

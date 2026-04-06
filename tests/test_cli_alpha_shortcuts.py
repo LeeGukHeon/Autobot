@@ -87,6 +87,8 @@ def test_normalize_paper_alpha_args_defaults_to_live_v5() -> None:
     assert normalized.model_ref == "champion"
     assert normalized.model_family == "train_v5_fusion"
     assert normalized.feature_set == "v4"
+    assert normalized.evaluation_contract_id == "runtime_deploy_contract_v1"
+    assert normalized.selection_policy_mode == "auto"
 
 
 def test_normalize_paper_alpha_args_uses_live_v3_preset_defaults() -> None:
@@ -479,6 +481,8 @@ def test_normalize_backtest_alpha_args_acceptance_disables_micro_policy() -> Non
     assert normalized.micro_order_policy == "off"
     assert normalized.use_learned_selection_recommendations is False
     assert normalized.use_trade_level_action_policy is False
+    assert normalized.evaluation_contract_id == "acceptance_frozen_compare_v1"
+    assert normalized.selection_policy_mode == "raw_threshold"
 
 
 def test_normalize_backtest_alpha_args_runtime_parity_enables_learned_runtime_contract() -> None:
@@ -529,6 +533,8 @@ def test_normalize_backtest_alpha_args_runtime_parity_enables_learned_runtime_co
     assert normalized.use_learned_risk_recommendations is True
     assert normalized.use_trade_level_action_policy is True
     assert normalized.use_learned_execution_recommendations is True
+    assert normalized.evaluation_contract_id == "runtime_deploy_contract_v1"
+    assert normalized.selection_policy_mode == "auto"
 
 
 def test_handle_model_command_v4_train_uses_yaml_doc_loader(monkeypatch, tmp_path: Path) -> None:

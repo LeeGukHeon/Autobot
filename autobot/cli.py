@@ -3851,6 +3851,11 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
         selection_registry_threshold_key = str(
             model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")
         ).strip() or "top_5pct"
+        selection_policy_mode_value = str(
+            getattr(args, "selection_policy_mode", None)
+            if getattr(args, "selection_policy_mode", None) is not None
+            else model_alpha_selection_defaults.get("selection_policy_mode", "auto")
+        ).strip().lower() or "auto"
         position_max_total = int(
             getattr(args, "max_positions_total", None)
             if getattr(args, "max_positions_total", None) is not None
@@ -4008,12 +4013,15 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
                 model_family=model_family_value,
                 feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
+                evaluation_contract_id=str(getattr(args, "evaluation_contract_id", "") or "").strip(),
+                evaluation_contract_role=str(getattr(args, "evaluation_contract_role", "") or "").strip(),
                 selection=ModelAlphaSelectionSettings(
                     top_pct=max(min(selection_top_pct, 1.0), 0.0),
                     min_prob=selection_min_prob,
                     min_candidates_per_ts=max(selection_min_cands, 0),
                     registry_threshold_key=selection_registry_threshold_key,
                     use_learned_recommendations=selection_use_learned_recommendations,
+                    selection_policy_mode=selection_policy_mode_value,
                 ),
                 position=ModelAlphaPositionSettings(
                     max_positions_total=max(position_max_total, 1),
@@ -4294,6 +4302,11 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
         selection_registry_threshold_key = str(
             model_alpha_selection_defaults.get("registry_threshold_key", "top_5pct")
         ).strip() or "top_5pct"
+        selection_policy_mode_value = str(
+            getattr(args, "selection_policy_mode", None)
+            if getattr(args, "selection_policy_mode", None) is not None
+            else model_alpha_selection_defaults.get("selection_policy_mode", "auto")
+        ).strip().lower() or "auto"
         position_max_total = int(
             getattr(args, "max_positions_total", None)
             if getattr(args, "max_positions_total", None) is not None
@@ -4494,12 +4507,15 @@ def _handle_backtest_command(args: argparse.Namespace, config_dir: Path, base_co
                 or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
                 model_family=model_family_value,
                 feature_set=str(model_alpha_defaults.get("feature_set", feature_set_value)).strip().lower() or "v3",
+                evaluation_contract_id=str(getattr(args, "evaluation_contract_id", "") or "").strip(),
+                evaluation_contract_role=str(getattr(args, "evaluation_contract_role", "") or "").strip(),
                 selection=ModelAlphaSelectionSettings(
                     top_pct=max(min(selection_top_pct, 1.0), 0.0),
                     min_prob=selection_min_prob,
                     min_candidates_per_ts=max(selection_min_cands, 0),
                     registry_threshold_key=selection_registry_threshold_key,
                     use_learned_recommendations=selection_use_learned_recommendations,
+                    selection_policy_mode=selection_policy_mode_value,
                 ),
                 position=ModelAlphaPositionSettings(
                     max_positions_total=max(position_max_total, 1),

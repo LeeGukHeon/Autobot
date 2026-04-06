@@ -171,6 +171,8 @@ def resolve_runtime_model_alpha_settings(
         "exit_mode_source": "manual",
         "exit_hold_bars_source": "manual",
         "execution_source": "manual",
+        "evaluation_contract_id": str(getattr(settings, "evaluation_contract_id", "")).strip(),
+        "evaluation_contract_role": str(getattr(settings, "evaluation_contract_role", "")).strip(),
     }
     if not runtime_recommendations:
         return resolved, state

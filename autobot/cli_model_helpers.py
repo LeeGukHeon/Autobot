@@ -7,6 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from autobot.strategy.model_alpha_evaluation_contract import (
+    resolve_backtest_evaluation_contract,
+    resolve_paper_evaluation_contract,
+)
+
 
 DEFAULT_PRIMARY_MODEL_FAMILY = "train_v5_fusion"
 DEFAULT_PRIMARY_RUNTIME_REF = "champion"
@@ -18,9 +23,11 @@ DEFAULT_V4_CANDIDATE_REF = "latest_candidate_v4"
 
 def paper_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     name = str(preset).strip().lower() or DEFAULT_PAPER_ALPHA_PRESET
+    contract = resolve_paper_evaluation_contract(preset=name)
     overrides: dict[str, Any] = {
         "strategy": "model_alpha_v1",
         "feature_set": "v4",
+        **contract.as_cli_overrides(),
     }
     if name in {"default", "config"}:
         return overrides
@@ -190,6 +197,9 @@ def normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
         "model_ref": getattr(args, "model_ref", None) or overrides.get("model_ref"),
         "model_family": getattr(args, "model_family", None) or overrides.get("model_family"),
         "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
+        "evaluation_contract_id": overrides.get("evaluation_contract_id"),
+        "evaluation_contract_role": overrides.get("evaluation_contract_role"),
+        "selection_policy_mode": getattr(args, "selection_policy_mode", None) or overrides.get("selection_policy_mode"),
         "top_pct": (
             getattr(args, "top_pct", None)
             if getattr(args, "top_pct", None) is not None
@@ -206,6 +216,11 @@ def normalize_paper_alpha_args(args: argparse.Namespace) -> argparse.Namespace:
             else overrides.get("min_cands_per_ts")
         ),
         "use_learned_selection_recommendations": overrides.get("use_learned_selection_recommendations"),
+        "use_learned_exit_mode": getattr(args, "use_learned_exit_mode", None) if getattr(args, "use_learned_exit_mode", None) is not None else overrides.get("use_learned_exit_mode"),
+        "use_learned_hold_bars": getattr(args, "use_learned_hold_bars", None) if getattr(args, "use_learned_hold_bars", None) is not None else overrides.get("use_learned_hold_bars"),
+        "use_learned_risk_recommendations": getattr(args, "use_learned_risk_recommendations", None) if getattr(args, "use_learned_risk_recommendations", None) is not None else overrides.get("use_learned_risk_recommendations"),
+        "use_trade_level_action_policy": getattr(args, "use_trade_level_action_policy", None) if getattr(args, "use_trade_level_action_policy", None) is not None else overrides.get("use_trade_level_action_policy"),
+        "use_learned_execution_recommendations": getattr(args, "use_learned_execution_recommendations", None) if getattr(args, "use_learned_execution_recommendations", None) is not None else overrides.get("use_learned_execution_recommendations"),
         "max_positions_total": getattr(args, "max_positions_total", None),
         "cooldown_bars": getattr(args, "cooldown_bars", None),
         "exit_mode": getattr(args, "exit_mode", None),
@@ -284,9 +299,11 @@ def resolve_v4_runtime_model_ref_fallback(
 
 def backtest_alpha_preset_overrides(preset: str) -> dict[str, Any]:
     name = str(preset).strip().lower() or "default"
+    contract = resolve_backtest_evaluation_contract(preset=name)
     overrides: dict[str, Any] = {
         "strategy": "model_alpha_v1",
         "feature_set": "v3",
+        **contract.as_cli_overrides(),
     }
     if name == "default":
         return overrides
@@ -338,6 +355,9 @@ def normalize_backtest_alpha_args(args: argparse.Namespace) -> argparse.Namespac
         "model_ref": getattr(args, "model_ref", None),
         "model_family": getattr(args, "model_family", None),
         "feature_set": getattr(args, "feature_set", None) or overrides.get("feature_set"),
+        "evaluation_contract_id": overrides.get("evaluation_contract_id"),
+        "evaluation_contract_role": overrides.get("evaluation_contract_role"),
+        "selection_policy_mode": getattr(args, "selection_policy_mode", None) or overrides.get("selection_policy_mode"),
         "entry": "top_pct",
         "top_pct": getattr(args, "top_pct", None),
         "min_prob": getattr(args, "min_prob", None),
