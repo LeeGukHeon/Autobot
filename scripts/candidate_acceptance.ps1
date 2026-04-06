@@ -4590,6 +4590,8 @@ function Build-BacktestStepReport {
         cache_summary_path = [string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheSummaryPath" -DefaultValue "")
         cache_stat_validation_path = [string](Get-PropValue -ObjectValue $BacktestValue -Name "CacheStatValidationPath" -DefaultValue "")
         source_backtest_run_dir = [string](Get-PropValue -ObjectValue $BacktestValue -Name "SourceBacktestRunDir" -DefaultValue "")
+        evaluation_contract_id = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $BacktestValue -Name "Summary" -DefaultValue @{}) -Name "evaluation_contract_id" -DefaultValue "")
+        evaluation_contract_role = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $BacktestValue -Name "Summary" -DefaultValue @{}) -Name "evaluation_contract_role" -DefaultValue "")
         orders_submitted = [int64](Get-PropValue -ObjectValue $Evidence -Name "orders_submitted" -DefaultValue 0)
         orders_filled = [int64](Get-PropValue -ObjectValue $Evidence -Name "orders_filled" -DefaultValue 0)
         realized_pnl_quote = [double](Get-PropValue -ObjectValue $Evidence -Name "realized_pnl_quote" -DefaultValue 0.0)
@@ -5371,11 +5373,14 @@ function Build-ReportMarkdown {
     $lines.Add("- backtest_max_drawdown_pct: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'max_drawdown_pct' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_slippage_bps_mean: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'slippage_bps_mean' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_calmar_like_score: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'calmar_like_score' -DefaultValue ''))") | Out-Null
+    $lines.Add("- backtest_evaluation_contract_id: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- runtime_parity_evaluation_contract_id: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $steps -Name 'backtest_runtime_parity_candidate' -DefaultValue @{}) -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_orders_submitted: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_submitted' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_orders_filled: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_slippage_bps_mean: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'slippage_bps_mean' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_t15_gate_pass: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 't15_gate_pass' -DefaultValue ''))") | Out-Null
+    $lines.Add("- paper_evaluation_contract_id: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- promoted: $([string](Get-PropValue -ObjectValue $promoteStep -Name 'promoted' -DefaultValue ''))") | Out-Null
 
     $lines.Add("") | Out-Null
@@ -8895,6 +8900,8 @@ try {
             smoke_report_latest_path = $paperSmokeLatestPath
             smoke_report_source = if ($paperSmokeEffectivePath -eq $paperSmokeRunPath) { "run_report" } elseif (-not [string]::IsNullOrWhiteSpace($paperSmokeEffectivePath)) { "unexpected" } else { "missing" }
             run_id = [string](Get-PropValue -ObjectValue $paperSmoke -Name "run_id" -DefaultValue "")
+            evaluation_contract_id = [string](Get-PropValue -ObjectValue $paperSmoke -Name "evaluation_contract_id" -DefaultValue "")
+            evaluation_contract_role = [string](Get-PropValue -ObjectValue $paperSmoke -Name "evaluation_contract_role" -DefaultValue "")
             orders_submitted = [int64](To-Int64 (Get-PropValue -ObjectValue $paperSmoke -Name "orders_submitted" -DefaultValue 0) 0)
             orders_filled = $paperOrdersFilled
             fill_rate = [double](To-Double (Get-PropValue -ObjectValue $paperSmoke -Name "fill_rate" -DefaultValue 0.0) 0.0)
@@ -8926,6 +8933,7 @@ try {
             soft_failures = @((Get-PropValue -ObjectValue $paperEvidenceDecision -Name "soft_failures" -DefaultValue @()))
             evidence_components = (Get-PropValue -ObjectValue $paperEvidenceDecision -Name "evidence_components" -DefaultValue @{})
             learned_runtime = [bool]$PaperUseLearnedRuntime
+            feature_provider_preflight = (Get-PropValue -ObjectValue $paperSmoke -Name "feature_provider_preflight" -DefaultValue @{})
         }
         $report.gates.paper = [ordered]@{
             evaluated = $true
