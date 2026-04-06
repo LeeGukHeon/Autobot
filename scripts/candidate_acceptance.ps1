@@ -4281,6 +4281,8 @@ function New-AcceptanceBacktestContract {
     )
     $resolvedSnapshotId = Resolve-ModelRunSnapshotId -ModelRunDir $ModelRunDir -DefaultSnapshotId $script:dataPlatformReadySnapshotId
     $candidateOrChampion = if ([string]$StepName -match "champion") { "champion" } else { "candidate" }
+    $evaluationContractId = if ($Preset -eq "acceptance") { "acceptance_frozen_compare_v1" } else { "runtime_deploy_contract_v1" }
+    $evaluationContractRole = if ($Preset -eq "acceptance") { "frozen_compare" } else { "deploy_runtime" }
     return [ordered]@{
         version = 1
         policy = "candidate_acceptance_backtest_contract_v1"
@@ -4296,10 +4298,22 @@ function New-AcceptanceBacktestContract {
         top_n = [int]$BacktestTopN
         start = [string]$StartDate
         end = [string]$EndDate
+        evaluation_contract_id = $evaluationContractId
+        evaluation_contract_role = $evaluationContractRole
         top_pct = [double]$BacktestTopPct
         min_prob = [double]$BacktestMinProb
         min_candidates_per_ts = [int]$BacktestMinCandidatesPerTs
         hold_bars = [int]$HoldBars
+        selection_policy_mode = if ($Preset -eq "acceptance") { "raw_threshold" } else { "auto" }
+        use_learned_selection_recommendations = ($Preset -ne "acceptance")
+        use_learned_exit_mode = ($Preset -ne "acceptance")
+        use_learned_hold_bars = ($Preset -ne "acceptance")
+        use_learned_risk_recommendations = ($Preset -ne "acceptance")
+        use_trade_level_action_policy = ($Preset -ne "acceptance")
+        use_learned_execution_recommendations = ($Preset -ne "acceptance")
+        micro_order_policy = if ($Preset -eq "acceptance") { "off" } else { "on" }
+        micro_order_policy_mode = if ($Preset -eq "acceptance") { "" } else { "trade_only" }
+        micro_order_policy_on_missing = if ($Preset -eq "acceptance") { "" } else { "static_fallback" }
         backtest_runtime_parity_enabled = [bool]$BacktestRuntimeParityEnabled
         compare_required = [bool]$promotionPolicyConfig.backtest_compare_required
         compare_mode = [string]$promotionPolicyConfig.name

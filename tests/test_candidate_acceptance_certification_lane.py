@@ -857,6 +857,8 @@ def _make_fake_python_exe(
                 start_value = arg_value("--start")
                 end_value = arg_value("--end")
                 preset = arg_value("--preset")
+                evaluation_contract_id = arg_value("--evaluation-contract-id")
+                evaluation_contract_role = arg_value("--evaluation-contract-role")
                 append_log(
                     {{
                         "command": "backtest alpha",
@@ -879,6 +881,8 @@ def _make_fake_python_exe(
                         "slippage_bps_mean": 1.0,
                         "candidates_aborted_by_policy": CANDIDATE_CANDIDATES_ABORTED_BY_POLICY,
                         "execution_structure": CANDIDATE_EXECUTION_STRUCTURE,
+                        "evaluation_contract_id": evaluation_contract_id,
+                        "evaluation_contract_role": evaluation_contract_role,
                     }}
                 else:
                     payload = HISTORY_ANCHOR_BACKTEST_BY_WINDOW.get(f"{{start_value}}|{{end_value}}")
@@ -892,7 +896,13 @@ def _make_fake_python_exe(
                             "slippage_bps_mean": 1.4,
                             "candidates_aborted_by_policy": 0,
                             "execution_structure": CHAMPION_EXECUTION_STRUCTURE,
+                            "evaluation_contract_id": evaluation_contract_id,
+                            "evaluation_contract_role": evaluation_contract_role,
                         }}
+                    else:
+                        payload = dict(payload)
+                        payload["evaluation_contract_id"] = evaluation_contract_id
+                        payload["evaluation_contract_role"] = evaluation_contract_role
                 write_json(run_dir / "summary.json", payload)
                 print(json.dumps({{"run_dir": str(run_dir), "model_ref": model_ref}}))
                 sys.exit(0)
@@ -2397,10 +2407,12 @@ def test_candidate_acceptance_runs_runtime_parity_backtests_and_reports_gate(tmp
     assert [item["preset"] for item in backtests].count("runtime_parity") == 2
     assert report["steps"]["backtest_candidate"]["preset"] == "acceptance"
     assert report["steps"]["backtest_champion"]["preset"] == "acceptance"
+    assert report["steps"]["backtest_candidate"]["evaluation_contract_id"] == "acceptance_frozen_compare_v1"
     assert report["gates"]["runtime_parity"]["evaluated"] is True
     assert report["gates"]["runtime_parity"]["pass"] is True
     assert report["steps"]["backtest_runtime_parity_candidate"]["preset"] == "runtime_parity"
     assert report["steps"]["backtest_runtime_parity_champion"]["preset"] == "runtime_parity"
+    assert report["steps"]["backtest_runtime_parity_candidate"]["evaluation_contract_id"] == "runtime_deploy_contract_v1"
 
 
 def test_candidate_acceptance_rejects_bad_backtest_execution_structure(tmp_path: Path) -> None:
@@ -2542,4 +2554,6 @@ def test_candidate_acceptance_fails_fast_on_zero_runtime_viability(tmp_path: Pat
     assert "mean_final_alpha_lcb" in report["steps"]["runtime_viability_preflight"]
     assert "top_entry_gate_reason_codes" in report["candidate"]["runtime_viability_summary"]
     assert report["candidate"]["runtime_viability_pass"] is False
+    assert "backtest_candidate" not in report["steps"]
+    assert "backtest_runtime_parity_candidate" not in report["steps"]
     assert backtests == []

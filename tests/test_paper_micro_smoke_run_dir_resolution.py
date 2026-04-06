@@ -169,6 +169,8 @@ def test_paper_micro_smoke_uses_reported_run_dir_instead_of_latest_directory(tmp
 
     assert report["run_id"] == "paper-actual-001"
     assert report["run_dir"].endswith("paper-actual-001")
+    assert report["evaluation_contract_id"] == "runtime_deploy_contract_v1"
+    assert report["evaluation_contract_role"] == "deploy_runtime"
     assert report["orders_submitted"] == 5
     assert report["orders_filled"] == 3
     assert report["realized_pnl_quote"] == 42.0
