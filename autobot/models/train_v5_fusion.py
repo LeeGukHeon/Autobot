@@ -14,17 +14,25 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
-from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations, resolve_v5_entry_gate
+from autobot.strategy.model_alpha_evaluation_contract import load_evaluation_contract
+from autobot.strategy.v5_post_model_contract import (
+    V5_POST_MODEL_CONTRACT_VERSION,
+    annotate_v5_runtime_recommendations,
+    resolve_v5_entry_gate,
+)
 
 from .entry_boundary import build_risk_calibrated_entry_boundary
+from .execution_risk_control import normalize_execution_risk_control_payload
 from .metrics import classification_metrics, grouped_trading_metrics, trading_metrics
 from .model_card import render_model_card
 from .entry_boundary import evaluate_entry_boundary
 from .registry import RegistrySavePayload, load_json, load_model_bundle, make_run_id, save_run, update_artifact_status, update_latest_pointer
 from .runtime_feature_dataset import write_runtime_feature_dataset
+from .runtime_recommendation_contract import normalize_runtime_exit_payload
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
 from .split import compute_time_splits, split_masks
+from .trade_action_policy import normalize_trade_action_policy
 from .train_v1 import _build_thresholds, build_selection_recommendations
 from .train_v5_sequence import _parse_date_to_ts_ms, _sha256_file
 from .v5_expert_runtime_export import OPERATING_WINDOW_TIMEZONE, build_ts_date_coverage_payload, operating_date_range
@@ -1170,6 +1178,247 @@ def _build_runtime_viability_summary(report: dict[str, Any] | None) -> dict[str,
     }
 
 
+def _is_dependency_expert_only_runtime_doc(
+    payload: dict[str, Any] | None,
+    *,
+    parent_context: dict[str, Any] | None = None,
+) -> bool:
+    doc = dict(payload or {})
+    parent = dict(parent_context or {})
+    mode_candidates = (
+        doc.get("mode"),
+        doc.get("operating_mode"),
+        doc.get("tail_mode"),
+        parent.get("tail_mode"),
+    )
+    return bool(doc.get("dependency_expert_only", False)) or bool(parent.get("dependency_expert_only", False)) or any(
+        str(value or "").strip().lower() == "dependency_expert_only"
+        for value in mode_candidates
+    )
+
+
+def _build_fusion_execution_contract_readiness(
+    *,
+    payload: dict[str, Any] | None,
+    parent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    doc = dict(payload or {})
+    reason_codes: list[str] = []
+    seed_dependency_expert_only = _is_dependency_expert_only_runtime_doc(doc, parent_context=parent_context)
+    stages = [
+        dict(item)
+        for item in (doc.get("stages") or [])
+        if isinstance(item, dict) and str(item.get("stage", "")).strip()
+    ]
+    supported_stage_count = sum(1 for item in stages if bool(item.get("supported", False)))
+    if seed_dependency_expert_only:
+        reason_codes.append("PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED")
+    if not doc:
+        reason_codes.append("EXECUTION_DOC_MISSING")
+    elif supported_stage_count <= 0:
+        reason_codes.append("EXECUTION_FRONTIER_MISSING")
+    return {
+        "component": "execution",
+        "required": True,
+        "ready": len(reason_codes) == 0,
+        "reason_codes": reason_codes,
+        "seed_dependency_expert_only": seed_dependency_expert_only,
+        "stage_order": [str(value).strip().upper() for value in (doc.get("stage_order") or []) if str(value).strip()],
+        "supported_stage_count": int(supported_stage_count),
+        "recommended_price_mode": str(doc.get("recommended_price_mode") or "").strip().upper(),
+        "frontier_policy": str(doc.get("policy") or "").strip(),
+        "frontier_summary": dict(doc.get("frontier_summary") or {}),
+    }
+
+
+def _build_fusion_exit_contract_readiness(
+    *,
+    payload: dict[str, Any] | None,
+    parent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    doc = normalize_runtime_exit_payload(dict(payload or {})) if isinstance(payload, dict) else {}
+    reason_codes: list[str] = []
+    seed_dependency_expert_only = _is_dependency_expert_only_runtime_doc(doc, parent_context=parent_context)
+    contract_status = str(doc.get("contract_status") or "").strip().lower()
+    if seed_dependency_expert_only:
+        reason_codes.append("PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED")
+    if not doc:
+        reason_codes.append("EXIT_DOC_MISSING")
+    elif contract_status == "invalid":
+        reason_codes.append("EXIT_DOC_INVALID")
+    elif str(doc.get("recommended_exit_mode") or "").strip().lower() not in {"hold", "risk"}:
+        reason_codes.append("EXIT_MODE_MISSING")
+    return {
+        "component": "exit",
+        "required": True,
+        "ready": len(reason_codes) == 0,
+        "reason_codes": reason_codes,
+        "seed_dependency_expert_only": seed_dependency_expert_only,
+        "contract_status": str(doc.get("contract_status") or "").strip(),
+        "contract_issues": list(doc.get("contract_issues") or []),
+        "recommended_exit_mode": str(doc.get("recommended_exit_mode") or "").strip().lower(),
+        "recommended_hold_bars": int(doc.get("recommended_hold_bars") or 0) if doc.get("recommended_hold_bars") not in (None, "") else 0,
+        "family_compare_status": str(doc.get("family_compare_status") or "").strip(),
+    }
+
+
+def _build_fusion_trade_action_contract_readiness(
+    *,
+    payload: dict[str, Any] | None,
+    parent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    doc = normalize_trade_action_policy(dict(payload or {})) if isinstance(payload, dict) else {}
+    reason_codes: list[str] = []
+    seed_dependency_expert_only = _is_dependency_expert_only_runtime_doc(doc, parent_context=parent_context)
+    status = str(doc.get("status") or "").strip().lower()
+    if seed_dependency_expert_only:
+        reason_codes.append("PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED")
+    if not doc:
+        reason_codes.append("TRADE_ACTION_DOC_MISSING")
+    elif status not in {"ready"}:
+        reason_codes.append("TRADE_ACTION_NOT_READY")
+    return {
+        "component": "trade_action",
+        "required": False,
+        "ready": len(reason_codes) == 0,
+        "reason_codes": reason_codes,
+        "seed_dependency_expert_only": seed_dependency_expert_only,
+        "status": str(doc.get("status") or "").strip(),
+        "policy": str(doc.get("policy") or "").strip(),
+        "runtime_decision_source": str(doc.get("runtime_decision_source") or "").strip(),
+    }
+
+
+def _build_fusion_risk_control_contract_readiness(
+    *,
+    payload: dict[str, Any] | None,
+    parent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    doc = normalize_execution_risk_control_payload(dict(payload or {})) if isinstance(payload, dict) else {}
+    reason_codes: list[str] = []
+    seed_dependency_expert_only = _is_dependency_expert_only_runtime_doc(doc, parent_context=parent_context)
+    contract_status = str(doc.get("contract_status") or "").strip().lower()
+    status = str(doc.get("status") or "").strip().lower()
+    if seed_dependency_expert_only:
+        reason_codes.append("PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED")
+    if not doc:
+        reason_codes.append("RISK_CONTROL_DOC_MISSING")
+    elif contract_status == "invalid":
+        reason_codes.append("RISK_CONTROL_DOC_INVALID")
+    elif status in {"", "missing", "skipped"}:
+        reason_codes.append("RISK_CONTROL_NOT_READY")
+    return {
+        "component": "risk_control",
+        "required": False,
+        "ready": len(reason_codes) == 0,
+        "reason_codes": reason_codes,
+        "seed_dependency_expert_only": seed_dependency_expert_only,
+        "contract_status": str(doc.get("contract_status") or "").strip(),
+        "contract_issues": list(doc.get("contract_issues") or []),
+        "status": str(doc.get("status") or "").strip(),
+        "operating_mode": str(doc.get("operating_mode") or "").strip(),
+        "live_gate_enabled": bool((doc.get("live_gate") or {}).get("enabled", False)),
+    }
+
+
+def _build_runtime_deploy_contract_readiness_summary(report: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(report or {})
+    component_readiness = dict(payload.get("component_readiness") or {})
+    return {
+        "evaluation_contract_id": str(payload.get("evaluation_contract_id") or "").strip(),
+        "evaluation_contract_role": str(payload.get("evaluation_contract_role") or "").strip(),
+        "decision_contract_version": str(payload.get("decision_contract_version") or "").strip(),
+        "pass": bool(payload.get("pass", False)),
+        "primary_reason_code": str(payload.get("primary_reason_code") or "").strip(),
+        "required_components": list(payload.get("required_components") or []),
+        "advisory_components": list(payload.get("advisory_components") or []),
+        "component_readiness": {
+            name: {
+                "required": bool(dict(doc or {}).get("required", False)),
+                "ready": bool(dict(doc or {}).get("ready", False)),
+                "reason_codes": list(dict(doc or {}).get("reason_codes") or []),
+            }
+            for name, doc in component_readiness.items()
+        },
+    }
+
+
+def _build_runtime_deploy_contract_readiness(
+    *,
+    runtime_recommendations: dict[str, Any],
+    input_contract: dict[str, Any],
+) -> dict[str, Any]:
+    evaluation_contract = load_evaluation_contract(contract_id="runtime_deploy_contract_v1")
+    if evaluation_contract is None:
+        return {
+            "policy": "v5_runtime_deploy_contract_readiness_v1",
+            "evaluation_contract_id": "runtime_deploy_contract_v1",
+            "evaluation_contract_role": "deploy_runtime",
+            "decision_contract_version": str(runtime_recommendations.get("decision_contract_version") or "").strip(),
+            "pass": False,
+            "primary_reason_code": "RUNTIME_DEPLOY_EVALUATION_CONTRACT_UNRESOLVED",
+            "required_components": [],
+            "advisory_components": [],
+            "component_readiness": {},
+        }
+    upstream_inputs = dict(input_contract.get("inputs") or {})
+    panel_runtime_context = dict(((upstream_inputs.get("panel") or {}).get("runtime_recommendations")) or {})
+    decision_contract_version = str(runtime_recommendations.get("decision_contract_version") or "").strip()
+    required_components: list[str] = []
+    advisory_components: list[str] = []
+    if bool(evaluation_contract.use_learned_exit_mode) or bool(evaluation_contract.use_learned_hold_bars) or bool(
+        evaluation_contract.use_learned_risk_recommendations
+    ):
+        required_components.append("exit")
+    if bool(evaluation_contract.use_learned_execution_recommendations):
+        required_components.append("execution")
+    if bool(evaluation_contract.use_trade_level_action_policy):
+        if decision_contract_version == V5_POST_MODEL_CONTRACT_VERSION:
+            advisory_components.extend(["trade_action", "risk_control"])
+        else:
+            required_components.extend(["trade_action", "risk_control"])
+    component_readiness = {
+        "exit": _build_fusion_exit_contract_readiness(
+            payload=runtime_recommendations.get("exit"),
+            parent_context=panel_runtime_context,
+        ),
+        "execution": _build_fusion_execution_contract_readiness(
+            payload=runtime_recommendations.get("execution"),
+            parent_context=panel_runtime_context,
+        ),
+        "trade_action": _build_fusion_trade_action_contract_readiness(
+            payload=runtime_recommendations.get("trade_action"),
+            parent_context=panel_runtime_context,
+        ),
+        "risk_control": _build_fusion_risk_control_contract_readiness(
+            payload=runtime_recommendations.get("risk_control"),
+            parent_context=panel_runtime_context,
+        ),
+    }
+    primary_reason_code = "PASS"
+    for component_name in required_components:
+        component = dict(component_readiness.get(component_name) or {})
+        if not bool(component.get("ready", False)):
+            reason_codes = [str(item).strip() for item in (component.get("reason_codes") or []) if str(item).strip()]
+            primary_reason_code = (
+                f"FUSION_RUNTIME_DEPLOY_CONTRACT_{str(component_name).strip().upper()}_NOT_READY"
+                if not reason_codes
+                else str(reason_codes[0])
+            )
+            break
+    return {
+        "policy": "v5_runtime_deploy_contract_readiness_v1",
+        "evaluation_contract_id": str(evaluation_contract.contract_id).strip(),
+        "evaluation_contract_role": str(evaluation_contract.contract_role).strip(),
+        "decision_contract_version": decision_contract_version,
+        "required_components": list(dict.fromkeys(required_components)),
+        "advisory_components": list(dict.fromkeys(advisory_components)),
+        "component_readiness": component_readiness,
+        "pass": primary_reason_code == "PASS",
+        "primary_reason_code": primary_reason_code,
+    }
+
+
 def _build_v5_fusion_tail_context(
     *,
     run_id: str,
@@ -1267,6 +1516,7 @@ def _run_fusion_tail(
     promotion_payload: dict[str, Any],
     entry_boundary: dict[str, Any],
     runtime_viability_report_path: Path,
+    runtime_deploy_contract_readiness_path: Path,
     resumed: bool,
 ) -> tuple[dict[str, Any], Path]:
     tail_started_at = time.time()
@@ -1332,11 +1582,17 @@ def _run_fusion_tail(
             "runtime_viability_report_path": str(runtime_viability_report_path),
             "runtime_viability_pass": bool(runtime_recommendations.get("runtime_viability_pass", False)),
             "runtime_viability_summary": dict(runtime_recommendations.get("runtime_viability_summary") or {}),
+            "runtime_deploy_contract_readiness_path": str(runtime_deploy_contract_readiness_path),
+            "runtime_deploy_contract_ready": bool(runtime_recommendations.get("runtime_deploy_contract_ready", False)),
+            "runtime_deploy_contract_summary": dict(runtime_recommendations.get("runtime_deploy_contract_summary") or {}),
         },
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         resumed=resumed,
         tail_started_at=tail_started_at,
-        publish_family_latest=bool(runtime_recommendations.get("runtime_viability_pass", False)),
+        publish_family_latest=bool(
+            runtime_recommendations.get("runtime_viability_pass", False)
+            and runtime_recommendations.get("runtime_deploy_contract_ready", False)
+        ),
         publish_global_latest=(str(options.run_scope).strip().lower() == "scheduled_daily"),
     )
     return runtime_artifacts, report_path
@@ -1865,22 +2121,51 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         json.dumps(runtime_viability_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    runtime_deploy_contract_readiness = _build_runtime_deploy_contract_readiness(
+        runtime_recommendations=runtime_recommendations,
+        input_contract=train_input_bundle.input_contract,
+    )
+    runtime_deploy_contract_readiness_path = run_dir / "runtime_deploy_contract_readiness.json"
+    runtime_deploy_contract_readiness_path.write_text(
+        json.dumps(runtime_deploy_contract_readiness, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     runtime_recommendations["runtime_viability_report_path"] = str(runtime_viability_report_path)
     runtime_recommendations["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
     runtime_recommendations["runtime_viability_summary"] = _build_runtime_viability_summary(
         runtime_viability_report
     )
-    runtime_recommendations["fusion_candidate_default_eligible"] = bool(runtime_viability_report.get("pass", False))
-    runtime_recommendations["fusion_default_eligible_winner"] = stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
-    runtime_recommendations["fusion_evidence_winner"] = stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
+    runtime_recommendations["runtime_deploy_contract_readiness_path"] = str(runtime_deploy_contract_readiness_path)
+    runtime_recommendations["runtime_deploy_contract_ready"] = bool(runtime_deploy_contract_readiness.get("pass", False))
+    runtime_recommendations["runtime_deploy_contract_summary"] = _build_runtime_deploy_contract_readiness_summary(
+        runtime_deploy_contract_readiness
+    )
+    candidate_default_eligible = bool(runtime_viability_report.get("pass", False)) and bool(
+        runtime_deploy_contract_readiness.get("pass", False)
+    )
+    runtime_recommendations["fusion_candidate_default_eligible"] = candidate_default_eligible
+    runtime_recommendations["fusion_default_eligible_winner"] = stacker_family if candidate_default_eligible else "linear"
+    runtime_recommendations["fusion_evidence_winner"] = stacker_family if candidate_default_eligible else "linear"
     runtime_recommendations["fusion_evidence_reason_code"] = (
         "RUNTIME_VIABILITY_PASS"
-        if bool(runtime_viability_report.get("pass", False))
-        else str(runtime_viability_report.get("primary_reason_code") or "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+        if candidate_default_eligible
+        else (
+            str(runtime_viability_report.get("primary_reason_code") or "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+            if not bool(runtime_viability_report.get("pass", False))
+            else str(
+                runtime_deploy_contract_readiness.get("primary_reason_code")
+                or "FUSION_RUNTIME_DEPLOY_CONTRACT_NOT_READY"
+            )
+        )
     )
     promotion_payload["runtime_viability_report_path"] = str(runtime_viability_report_path)
     promotion_payload["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
     promotion_payload["runtime_viability_summary"] = dict(runtime_recommendations["runtime_viability_summary"])
+    promotion_payload["runtime_deploy_contract_readiness_path"] = str(runtime_deploy_contract_readiness_path)
+    promotion_payload["runtime_deploy_contract_ready"] = bool(runtime_deploy_contract_readiness.get("pass", False))
+    promotion_payload["runtime_deploy_contract_summary"] = dict(
+        runtime_recommendations["runtime_deploy_contract_summary"]
+    )
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_id,
@@ -1896,6 +2181,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         promotion_payload=promotion_payload,
         entry_boundary=entry_boundary,
         runtime_viability_report_path=runtime_viability_report_path,
+        runtime_deploy_contract_readiness_path=runtime_deploy_contract_readiness_path,
         resumed=False,
     )
     return TrainV5FusionResult(
@@ -2049,22 +2335,51 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         json.dumps(runtime_viability_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    runtime_deploy_contract_readiness = _build_runtime_deploy_contract_readiness(
+        runtime_recommendations=runtime_recommendations,
+        input_contract=input_bundle.input_contract,
+    )
+    runtime_deploy_contract_readiness_path = run_dir / "runtime_deploy_contract_readiness.json"
+    runtime_deploy_contract_readiness_path.write_text(
+        json.dumps(runtime_deploy_contract_readiness, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     runtime_recommendations["runtime_viability_report_path"] = str(runtime_viability_report_path)
     runtime_recommendations["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
     runtime_recommendations["runtime_viability_summary"] = _build_runtime_viability_summary(
         runtime_viability_report
     )
-    runtime_recommendations["fusion_candidate_default_eligible"] = bool(runtime_viability_report.get("pass", False))
-    runtime_recommendations["fusion_default_eligible_winner"] = options.stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
-    runtime_recommendations["fusion_evidence_winner"] = options.stacker_family if bool(runtime_viability_report.get("pass", False)) else "linear"
+    runtime_recommendations["runtime_deploy_contract_readiness_path"] = str(runtime_deploy_contract_readiness_path)
+    runtime_recommendations["runtime_deploy_contract_ready"] = bool(runtime_deploy_contract_readiness.get("pass", False))
+    runtime_recommendations["runtime_deploy_contract_summary"] = _build_runtime_deploy_contract_readiness_summary(
+        runtime_deploy_contract_readiness
+    )
+    candidate_default_eligible = bool(runtime_viability_report.get("pass", False)) and bool(
+        runtime_deploy_contract_readiness.get("pass", False)
+    )
+    runtime_recommendations["fusion_candidate_default_eligible"] = candidate_default_eligible
+    runtime_recommendations["fusion_default_eligible_winner"] = options.stacker_family if candidate_default_eligible else "linear"
+    runtime_recommendations["fusion_evidence_winner"] = options.stacker_family if candidate_default_eligible else "linear"
     runtime_recommendations["fusion_evidence_reason_code"] = (
         "RUNTIME_VIABILITY_PASS"
-        if bool(runtime_viability_report.get("pass", False))
-        else str(runtime_viability_report.get("primary_reason_code") or "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+        if candidate_default_eligible
+        else (
+            str(runtime_viability_report.get("primary_reason_code") or "FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
+            if not bool(runtime_viability_report.get("pass", False))
+            else str(
+                runtime_deploy_contract_readiness.get("primary_reason_code")
+                or "FUSION_RUNTIME_DEPLOY_CONTRACT_NOT_READY"
+            )
+        )
     )
     promotion_payload["runtime_viability_report_path"] = str(runtime_viability_report_path)
     promotion_payload["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
     promotion_payload["runtime_viability_summary"] = dict(runtime_recommendations["runtime_viability_summary"])
+    promotion_payload["runtime_deploy_contract_readiness_path"] = str(runtime_deploy_contract_readiness_path)
+    promotion_payload["runtime_deploy_contract_ready"] = bool(runtime_deploy_contract_readiness.get("pass", False))
+    promotion_payload["runtime_deploy_contract_summary"] = dict(
+        runtime_recommendations["runtime_deploy_contract_summary"]
+    )
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -2080,6 +2395,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         promotion_payload=promotion_payload,
         entry_boundary=entry_boundary,
         runtime_viability_report_path=runtime_viability_report_path,
+        runtime_deploy_contract_readiness_path=runtime_deploy_contract_readiness_path,
         resumed=True,
     )
     return TrainV5FusionResult(

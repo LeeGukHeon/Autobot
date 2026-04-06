@@ -4835,6 +4835,77 @@ function Test-CandidateRuntimeViability {
     }
 }
 
+function Resolve-CandidateRuntimeDeployContractArtifact {
+    param(
+        [string]$CandidateRunDir
+    )
+    if ([string]::IsNullOrWhiteSpace($CandidateRunDir)) {
+        return @{}
+    }
+    $reportPath = Join-Path $CandidateRunDir "runtime_deploy_contract_readiness.json"
+    $runtimeRecommendationsPath = Join-Path $CandidateRunDir "runtime_recommendations.json"
+    $payload = Load-JsonOrEmpty -PathValue $reportPath
+    $runtimeRecommendations = Load-JsonOrEmpty -PathValue $runtimeRecommendationsPath
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $payload) {
+        $summary = Get-PropValue -ObjectValue $runtimeRecommendations -Name "runtime_deploy_contract_summary" -DefaultValue @{}
+        if (-not (Test-IsEffectivelyEmptyObject -ObjectValue $summary)) {
+            $payload = [ordered]@{
+                policy = "v5_runtime_deploy_contract_readiness_v1"
+                evaluation_contract_id = [string](Get-PropValue -ObjectValue $summary -Name "evaluation_contract_id" -DefaultValue "")
+                evaluation_contract_role = [string](Get-PropValue -ObjectValue $summary -Name "evaluation_contract_role" -DefaultValue "")
+                decision_contract_version = [string](Get-PropValue -ObjectValue $summary -Name "decision_contract_version" -DefaultValue "")
+                pass = [bool](Get-PropValue -ObjectValue $summary -Name "pass" -DefaultValue $false)
+                primary_reason_code = [string](Get-PropValue -ObjectValue $summary -Name "primary_reason_code" -DefaultValue "")
+                required_components = @((Get-PropValue -ObjectValue $summary -Name "required_components" -DefaultValue @()))
+                advisory_components = @((Get-PropValue -ObjectValue $summary -Name "advisory_components" -DefaultValue @()))
+                component_readiness = (Get-PropValue -ObjectValue $summary -Name "component_readiness" -DefaultValue @{})
+            }
+        }
+    }
+    $exists = (Test-Path $reportPath) -or (-not (Test-IsEffectivelyEmptyObject -ObjectValue $payload))
+    return [ordered]@{
+        report_path = $reportPath
+        exists = $exists
+        payload = $payload
+        pass = To-Bool (Get-PropValue -ObjectValue $payload -Name "pass" -DefaultValue $false) $false
+        primary_reason_code = [string](Get-PropValue -ObjectValue $payload -Name "primary_reason_code" -DefaultValue "")
+        evaluation_contract_id = [string](Get-PropValue -ObjectValue $payload -Name "evaluation_contract_id" -DefaultValue "")
+        evaluation_contract_role = [string](Get-PropValue -ObjectValue $payload -Name "evaluation_contract_role" -DefaultValue "")
+        decision_contract_version = [string](Get-PropValue -ObjectValue $payload -Name "decision_contract_version" -DefaultValue "")
+        required_components = @((Get-PropValue -ObjectValue $payload -Name "required_components" -DefaultValue @()))
+        advisory_components = @((Get-PropValue -ObjectValue $payload -Name "advisory_components" -DefaultValue @()))
+        component_readiness = (Get-PropValue -ObjectValue $payload -Name "component_readiness" -DefaultValue @{})
+    }
+}
+
+function Test-CandidateRuntimeDeployContract {
+    param(
+        $RuntimeContract
+    )
+    if (Test-IsEffectivelyEmptyObject -ObjectValue $RuntimeContract) {
+        return [ordered]@{
+            pass = $false
+            reason = "FUSION_RUNTIME_DEPLOY_CONTRACT_REPORT_MISSING"
+        }
+    }
+    if (-not [bool](Get-PropValue -ObjectValue $RuntimeContract -Name "exists" -DefaultValue $false)) {
+        return [ordered]@{
+            pass = $false
+            reason = "FUSION_RUNTIME_DEPLOY_CONTRACT_REPORT_MISSING"
+        }
+    }
+    if (-not [bool](Get-PropValue -ObjectValue $RuntimeContract -Name "pass" -DefaultValue $false)) {
+        return [ordered]@{
+            pass = $false
+            reason = [string](Get-PropValue -ObjectValue $RuntimeContract -Name "primary_reason_code" -DefaultValue "FUSION_RUNTIME_DEPLOY_CONTRACT_NOT_READY")
+        }
+    }
+    return [ordered]@{
+        pass = $true
+        reason = "FUSION_RUNTIME_DEPLOY_CONTRACT_READY"
+    }
+}
+
 function Get-PaperHistoryEvidence {
     param(
         [string]$DirectoryPath,
@@ -5389,6 +5460,8 @@ function Build-ReportMarkdown {
     $lines.Add("- backtest_calmar_like_score: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'calmar_like_score' -DefaultValue ''))") | Out-Null
     $lines.Add("- backtest_evaluation_contract_id: $([string](Get-PropValue -ObjectValue $backtestCandidate -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- runtime_parity_evaluation_contract_id: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $steps -Name 'backtest_runtime_parity_candidate' -DefaultValue @{}) -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
+    $lines.Add("- runtime_deploy_contract_ready: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'runtime_deploy_contract_ready' -DefaultValue ''))") | Out-Null
+    $lines.Add("- runtime_deploy_contract_reason: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'runtime_deploy_contract_summary' -DefaultValue @{}) -Name 'primary_reason_code' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_orders_submitted: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_submitted' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_orders_filled: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
@@ -7908,6 +7981,62 @@ try {
         }
     } else {
         $report.steps.runtime_viability_preflight = [ordered]@{
+            attempted = $false
+            reason = "NOT_REQUIRED_FOR_TRAINER"
+        }
+    }
+
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion" -and (-not $isDuplicateCandidate)) {
+        $runtimeDeployContract = Resolve-CandidateRuntimeDeployContractArtifact -CandidateRunDir $candidateRunDir
+        $runtimeDeployContractGate = Test-CandidateRuntimeDeployContract -RuntimeContract $runtimeDeployContract
+        $report.steps.runtime_deploy_contract_preflight = [ordered]@{
+            attempted = $true
+            report_path = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "report_path" -DefaultValue "")
+            exists = [bool](Get-PropValue -ObjectValue $runtimeDeployContract -Name "exists" -DefaultValue $false)
+            evaluation_contract_id = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "evaluation_contract_id" -DefaultValue "")
+            evaluation_contract_role = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "evaluation_contract_role" -DefaultValue "")
+            decision_contract_version = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "decision_contract_version" -DefaultValue "")
+            required_components = @((Get-PropValue -ObjectValue $runtimeDeployContract -Name "required_components" -DefaultValue @()))
+            advisory_components = @((Get-PropValue -ObjectValue $runtimeDeployContract -Name "advisory_components" -DefaultValue @()))
+            component_readiness = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "component_readiness" -DefaultValue @{})
+            pass = [bool](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "pass" -DefaultValue $false)
+            reason = [string](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "reason" -DefaultValue "")
+        }
+        $report.candidate.runtime_deploy_contract_readiness_path = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "report_path" -DefaultValue "")
+        $report.candidate.runtime_deploy_contract_ready = [bool](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "pass" -DefaultValue $false)
+        $report.candidate.runtime_deploy_contract_summary = [ordered]@{
+            evaluation_contract_id = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "evaluation_contract_id" -DefaultValue "")
+            evaluation_contract_role = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "evaluation_contract_role" -DefaultValue "")
+            decision_contract_version = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "decision_contract_version" -DefaultValue "")
+            required_components = @((Get-PropValue -ObjectValue $runtimeDeployContract -Name "required_components" -DefaultValue @()))
+            advisory_components = @((Get-PropValue -ObjectValue $runtimeDeployContract -Name "advisory_components" -DefaultValue @()))
+            component_readiness = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "component_readiness" -DefaultValue @{})
+            primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "primary_reason_code" -DefaultValue "")
+        }
+        if (-not [bool](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "pass" -DefaultValue $false)) {
+            $runtimeDeployFailureCode = [string](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "reason" -DefaultValue "FUSION_RUNTIME_DEPLOY_CONTRACT_NOT_READY")
+            $report.reasons = @($runtimeDeployFailureCode)
+            $report.gates.overall_pass = $false
+            Set-ReportFailure -Stage "runtime_contract" -Code $runtimeDeployFailureCode -ReportPath ([string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "report_path" -DefaultValue ""))
+            Update-RunArtifactStatus `
+                -RunDir $candidateRunDir `
+                -RunId $candidateRunId `
+                -Status "acceptance_incomplete" `
+                -AcceptanceCompleted $false `
+                -CandidateAdoptable $false `
+                -CandidateAdopted $false `
+                -Promoted $false | Out-Null
+            $paths = Save-Report
+            Write-ReportPointers -LogTag $LogTag -Paths $paths -OverallPass $false
+            exit 2
+        }
+    } elseif (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        $report.steps.runtime_deploy_contract_preflight = [ordered]@{
+            attempted = $false
+            reason = "DUPLICATE_CANDIDATE"
+        }
+    } else {
+        $report.steps.runtime_deploy_contract_preflight = [ordered]@{
             attempted = $false
             reason = "NOT_REQUIRED_FOR_TRAINER"
         }

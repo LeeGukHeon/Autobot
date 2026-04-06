@@ -54,6 +54,9 @@ def _make_fake_python_exe(
     candidate_candidates_aborted_by_policy: int = 0,
     profile_candidate_min_orders_filled: int = 30,
     write_runtime_viability_report: bool = True,
+    write_runtime_deploy_contract_report: bool = True,
+    candidate_runtime_deploy_contract_ready: bool = True,
+    candidate_runtime_deploy_contract_reason: str = "PASS",
     candidate_runtime_rows_total: int = 100,
     candidate_rows_above_alpha_floor: int = 10,
     candidate_entry_gate_allowed_count: int = 10,
@@ -94,6 +97,9 @@ def _make_fake_python_exe(
             CANDIDATE_CANDIDATES_ABORTED_BY_POLICY = {int(candidate_candidates_aborted_by_policy)}
             PROFILE_CANDIDATE_MIN_ORDERS_FILLED = {int(profile_candidate_min_orders_filled)}
             WRITE_RUNTIME_VIABILITY_REPORT = {str(write_runtime_viability_report)}
+            WRITE_RUNTIME_DEPLOY_CONTRACT_REPORT = {str(write_runtime_deploy_contract_report)}
+            CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY = {str(candidate_runtime_deploy_contract_ready)}
+            CANDIDATE_RUNTIME_DEPLOY_CONTRACT_REASON = {candidate_runtime_deploy_contract_reason!r}
             CANDIDATE_RUNTIME_ROWS_TOTAL = {int(candidate_runtime_rows_total)}
             CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR = {int(candidate_rows_above_alpha_floor)}
             CANDIDATE_ENTRY_GATE_ALLOWED_COUNT = {int(candidate_entry_gate_allowed_count)}
@@ -557,6 +563,22 @@ def _make_fake_python_exe(
                             "fusion_candidate_default_eligible": True,
                             "fusion_evidence_winner": "linear",
                             "fusion_evidence_reason_code": "LINEAR_BASELINE_WINNER",
+                            "runtime_deploy_contract_ready": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY,
+                            "runtime_deploy_contract_summary": {{
+                                "evaluation_contract_id": "runtime_deploy_contract_v1",
+                                "evaluation_contract_role": "deploy_runtime",
+                                "decision_contract_version": "v5_post_model_contract_v1",
+                                "pass": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY,
+                                "primary_reason_code": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_REASON,
+                                "required_components": ["exit", "execution"],
+                                "advisory_components": ["trade_action", "risk_control"],
+                                "component_readiness": {{
+                                    "exit": {{"required": True, "ready": True, "reason_codes": []}},
+                                    "execution": {{"required": True, "ready": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY, "reason_codes": ([] if CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY else [CANDIDATE_RUNTIME_DEPLOY_CONTRACT_REASON])}},
+                                    "trade_action": {{"required": False, "ready": True, "reason_codes": []}},
+                                    "risk_control": {{"required": False, "ready": True, "reason_codes": []}},
+                                }},
+                            }},
                             "lob_backbone_name": "deeplob_v1",
                             "tradability_source_run_id": "tradability-run-fixture",
                             "fusion_stacker_family": "linear",
@@ -606,6 +628,26 @@ def _make_fake_python_exe(
                                 "primary_reason_code": ("PASS" if (CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR > 0 and CANDIDATE_ENTRY_GATE_ALLOWED_COUNT > 0) else ("FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY" if CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR <= 0 else "FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY")),
                                 "top_entry_gate_reason_codes": [{{"reason_code": "ENTRY_GATE_ALPHA_LCB_NOT_POSITIVE", "count": CANDIDATE_RUNTIME_ROWS_TOTAL}}],
                                 "sample_rows": [{{"market": "KRW-BTC", "final_alpha_lcb": -0.0625}}],
+                            }},
+                        )
+                    if WRITE_RUNTIME_DEPLOY_CONTRACT_REPORT:
+                        write_json(
+                            candidate_dir / "runtime_deploy_contract_readiness.json",
+                            {{
+                                "policy": "v5_runtime_deploy_contract_readiness_v1",
+                                "evaluation_contract_id": "runtime_deploy_contract_v1",
+                                "evaluation_contract_role": "deploy_runtime",
+                                "decision_contract_version": "v5_post_model_contract_v1",
+                                "pass": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY,
+                                "primary_reason_code": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_REASON,
+                                "required_components": ["exit", "execution"],
+                                "advisory_components": ["trade_action", "risk_control"],
+                                "component_readiness": {{
+                                    "exit": {{"required": True, "ready": True, "reason_codes": []}},
+                                    "execution": {{"required": True, "ready": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY, "reason_codes": ([] if CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY else [CANDIDATE_RUNTIME_DEPLOY_CONTRACT_REASON])}},
+                                    "trade_action": {{"required": False, "ready": True, "reason_codes": []}},
+                                    "risk_control": {{"required": False, "ready": True, "reason_codes": []}},
+                                }},
                             }},
                         )
                     write_json(
@@ -2554,6 +2596,44 @@ def test_candidate_acceptance_fails_fast_on_zero_runtime_viability(tmp_path: Pat
     assert "mean_final_alpha_lcb" in report["steps"]["runtime_viability_preflight"]
     assert "top_entry_gate_reason_codes" in report["candidate"]["runtime_viability_summary"]
     assert report["candidate"]["runtime_viability_pass"] is False
+    assert "backtest_candidate" not in report["steps"]
+    assert "backtest_runtime_parity_candidate" not in report["steps"]
+    assert backtests == []
+
+
+def test_candidate_acceptance_fails_fast_on_runtime_deploy_contract_not_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v4_crypto_cs" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+
+    python_exe = _make_fake_python_exe(
+        tmp_path,
+        write_decision_surface=True,
+        candidate_runtime_deploy_contract_ready=False,
+        candidate_runtime_deploy_contract_reason="FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY",
+    )
+    daily_pipeline_script = _make_fake_daily_pipeline_script(tmp_path)
+    result = _run_acceptance(project_root, python_exe, daily_pipeline_script)
+
+    assert result.returncode == 2, result.stdout + "\n" + result.stderr
+
+    report = json.loads((project_root / "logs" / "test_acceptance" / "latest.json").read_text(encoding="utf-8-sig"))
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    backtests = [item for item in invocations if item["command"] == "backtest alpha"]
+
+    assert report["failure_stage"] == "runtime_contract"
+    assert report["failure_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
+    assert report["steps"]["runtime_viability_preflight"]["pass"] is True
+    assert report["steps"]["runtime_deploy_contract_preflight"]["pass"] is False
+    assert report["candidate"]["runtime_deploy_contract_ready"] is False
+    assert report["candidate"]["runtime_deploy_contract_summary"]["primary_reason_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
     assert "backtest_candidate" not in report["steps"]
     assert "backtest_runtime_parity_candidate" not in report["steps"]
     assert backtests == []

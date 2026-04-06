@@ -35,6 +35,9 @@ class VariantRunRecord:
     runtime_viability_report_path: str
     runtime_viability: dict[str, Any]
     runtime_viability_pass: bool
+    runtime_deploy_contract_readiness_path: str
+    runtime_deploy_contract_readiness: dict[str, Any]
+    runtime_deploy_contract_ready: bool
 
 
 SEQUENCE_VARIANTS: tuple[dict[str, Any], ...] = (
@@ -326,6 +329,7 @@ def _collect_variant_run_record(
     leaderboard_row = load_json(resolved_run_dir / "leaderboard_row.json")
     contract_artifacts = _collect_contract_artifacts(run_dir=resolved_run_dir, trainer=trainer)
     runtime_viability = load_json(resolved_run_dir / "runtime_viability_report.json")
+    runtime_deploy_contract_readiness = load_json(resolved_run_dir / "runtime_deploy_contract_readiness.json")
     contract_pass, rejection_reasons = _validate_variant_contracts(
         trainer=trainer,
         run_dir=resolved_run_dir,
@@ -349,6 +353,11 @@ def _collect_variant_run_record(
         runtime_viability_report_path=str(resolved_run_dir / "runtime_viability_report.json"),
         runtime_viability=(runtime_viability if isinstance(runtime_viability, dict) else {}),
         runtime_viability_pass=bool((runtime_viability or {}).get("pass", False)),
+        runtime_deploy_contract_readiness_path=str(resolved_run_dir / "runtime_deploy_contract_readiness.json"),
+        runtime_deploy_contract_readiness=(
+            runtime_deploy_contract_readiness if isinstance(runtime_deploy_contract_readiness, dict) else {}
+        ),
+        runtime_deploy_contract_ready=bool((runtime_deploy_contract_readiness or {}).get("pass", False)),
     )
 
 
@@ -357,7 +366,13 @@ def _collect_contract_artifacts(*, run_dir: Path, trainer: str) -> dict[str, str
     for artifact_name in {
         "v5_sequence": ("sequence_pretrain_contract.json", "sequence_pretrain_report.json", "domain_weighting_report.json"),
         "v5_lob": ("lob_backbone_contract.json", "lob_target_contract.json", "domain_weighting_report.json"),
-        "v5_fusion": ("fusion_model_contract.json", "runtime_recommendations.json", "domain_weighting_report.json", "runtime_viability_report.json"),
+        "v5_fusion": (
+            "fusion_model_contract.json",
+            "runtime_recommendations.json",
+            "domain_weighting_report.json",
+            "runtime_viability_report.json",
+            "runtime_deploy_contract_readiness.json",
+        ),
     }.get(trainer, ()):
         artifacts[artifact_name] = str(run_dir / artifact_name)
     return artifacts
@@ -426,10 +441,17 @@ def _validate_variant_contracts(*, trainer: str, run_dir: Path, contract_artifac
             reasons.append("DOMAIN_WEIGHTING_INVALID")
         if str(viability.get("policy") or "") != "v5_runtime_viability_report_v1":
             reasons.append("FUSION_RUNTIME_VIABILITY_REPORT_INVALID")
+        readiness = load_json(run_dir / "runtime_deploy_contract_readiness.json")
+        if str(readiness.get("policy") or "") != "v5_runtime_deploy_contract_readiness_v1":
+            reasons.append("FUSION_RUNTIME_DEPLOY_CONTRACT_READINESS_INVALID")
         if _safe_int(viability.get("rows_above_alpha_floor")) <= 0:
             reasons.append("FUSION_RUNTIME_ALPHA_LCB_ZERO_VIABILITY")
         if _safe_int(viability.get("entry_gate_allowed_count")) <= 0:
             reasons.append("FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY")
+        if not bool(readiness.get("pass", False)):
+            reasons.append(
+                str(readiness.get("primary_reason_code") or "FUSION_RUNTIME_DEPLOY_CONTRACT_NOT_READY")
+            )
     return len(reasons) == 0, reasons
 
 
@@ -648,20 +670,24 @@ def _build_variant_report_payload(
     if trainer == "v5_fusion":
         payload["offline_winner_variant_name"] = offline_winner.variant_name
         payload["default_eligible_variant_name"] = selected.variant_name
-        payload["default_eligible"] = bool(selected.runtime_viability_pass)
+        payload["default_eligible"] = bool(selected.runtime_viability_pass and selected.runtime_deploy_contract_ready)
         payload["runtime_viability_pass"] = bool(selected.runtime_viability_pass)
         payload["runtime_viability_report_path"] = selected.runtime_viability_report_path
         payload["runtime_viability_summary"] = dict(selected.runtime_viability or {})
+        payload["runtime_deploy_contract_ready"] = bool(selected.runtime_deploy_contract_ready)
+        payload["runtime_deploy_contract_readiness_path"] = selected.runtime_deploy_contract_readiness_path
+        payload["runtime_deploy_contract_summary"] = dict(selected.runtime_deploy_contract_readiness or {})
         payload["selection_evidence"] = {
             "utility_edge_vs_linear": 0.0,
             "execution_structure_non_regression": None,
             "paper_non_regression": None,
             "paired_non_regression": None,
             "canary_non_regression": None,
-            "promotion_safe": bool(selected.runtime_viability_pass),
+            "promotion_safe": bool(selected.runtime_viability_pass and selected.runtime_deploy_contract_ready),
             "rows_above_alpha_floor": _safe_int((selected.runtime_viability or {}).get("rows_above_alpha_floor")),
             "entry_gate_allowed_count": _safe_int((selected.runtime_viability or {}).get("entry_gate_allowed_count")),
             "runtime_viability_pass": bool(selected.runtime_viability_pass),
+            "runtime_deploy_contract_ready": bool(selected.runtime_deploy_contract_ready),
         }
     return payload
 
@@ -710,6 +736,10 @@ def _matrix_result_payload(
         payload["default_eligible"] = bool(report_payload.get("default_eligible", True))
         payload["runtime_viability_pass"] = bool(report_payload.get("runtime_viability_pass", False))
         payload["runtime_viability_report_path"] = str(report_payload.get("runtime_viability_report_path") or selected.runtime_viability_report_path)
+        payload["runtime_deploy_contract_ready"] = bool(report_payload.get("runtime_deploy_contract_ready", False))
+        payload["runtime_deploy_contract_readiness_path"] = str(
+            report_payload.get("runtime_deploy_contract_readiness_path") or selected.runtime_deploy_contract_readiness_path
+        )
     if extra:
         payload.update(dict(extra))
     return payload
@@ -772,6 +802,9 @@ def _build_variant_summary(*, record: VariantRunRecord) -> dict[str, Any]:
         "runtime_viability_report_path": record.runtime_viability_report_path,
         "runtime_viability_pass": record.runtime_viability_pass,
         "runtime_viability_summary": dict(record.runtime_viability or {}),
+        "runtime_deploy_contract_readiness_path": record.runtime_deploy_contract_readiness_path,
+        "runtime_deploy_contract_ready": record.runtime_deploy_contract_ready,
+        "runtime_deploy_contract_summary": dict(record.runtime_deploy_contract_readiness or {}),
         "utility_summary": {
             "test_ev_net_top5": _safe_float(leaderboard_row.get("test_ev_net_top5")),
             "test_precision_top5": _safe_float(leaderboard_row.get("test_precision_top5")),

@@ -56,6 +56,29 @@ def _write_expert_run(
                         "recommended_exit_mode_reason_code": "TEST_PANEL_RUNTIME",
                     },
                     "execution": {
+                        "policy": "empirical_fill_frontier_v1",
+                        "stage_decision_mode": "sequential_positive_net_edge_v1",
+                        "stage_order": ["PASSIVE_MAKER", "JOIN", "CROSS_1T"],
+                        "stages": [
+                            {
+                                "stage": "JOIN",
+                                "supported": True,
+                                "validation_comparable": True,
+                                "recommended_price_mode": "JOIN",
+                                "recommended_timeout_bars": 2,
+                                "recommended_replace_max": 1,
+                                "expected_fill_probability": 0.8,
+                                "expected_slippage_bps": 4.0,
+                                "expected_cleanup_cost_bps": 7.0,
+                                "expected_miss_cost_bps": 8.0,
+                            }
+                        ],
+                        "frontier_summary": {
+                            "supported_stage_count": 1,
+                            "best_stage_by_objective": "JOIN",
+                            "best_stage_by_fill_probability": "JOIN",
+                            "best_stage_by_time_to_fill": "JOIN",
+                        },
                         "recommended_price_mode": "JOIN",
                         "recommended_timeout_bars": 2,
                         "recommended_replace_max": 1,
@@ -308,6 +331,9 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert runtime_recommendations["execution"]["recommended_price_mode"] == "JOIN"
     assert runtime_recommendations["risk_control"]["operating_mode"] == "test_panel_runtime"
     assert runtime_recommendations["runtime_viability_report_path"].endswith("runtime_viability_report.json")
+    assert runtime_recommendations["runtime_deploy_contract_readiness_path"].endswith("runtime_deploy_contract_readiness.json")
+    assert runtime_recommendations["runtime_deploy_contract_ready"] is True
+    assert runtime_recommendations["runtime_deploy_contract_summary"]["primary_reason_code"] == "PASS"
     assert "rows_above_alpha_floor" in runtime_recommendations["runtime_viability_summary"]
     assert "mean_final_alpha_lcb" in runtime_recommendations["runtime_viability_summary"]
     assert "top_entry_gate_reason_codes" in runtime_recommendations["runtime_viability_summary"]
@@ -317,6 +343,7 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert float(report["tail_duration_sec"]) >= 0.0
     assert report["runtime_viability_pass"] == runtime_recommendations["runtime_viability_pass"]
     assert report["runtime_viability_summary"]["rows_above_alpha_floor"] == runtime_recommendations["runtime_viability_summary"]["rows_above_alpha_floor"]
+    assert report["runtime_deploy_contract_ready"] == runtime_recommendations["runtime_deploy_contract_ready"]
     artifact_status = load_json(result.run_dir / "artifact_status.json")
     assert artifact_status["tail_context_written"] is True
     assert artifact_status["runtime_recommendations_complete"] is True
@@ -328,6 +355,9 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert "mean_final_expected_return" in runtime_viability
     assert "mean_final_alpha_lcb" in runtime_viability
     assert "top_entry_gate_reason_codes" in runtime_viability
+    readiness = load_json(result.run_dir / "runtime_deploy_contract_readiness.json")
+    assert readiness["policy"] == "v5_runtime_deploy_contract_readiness_v1"
+    assert readiness["pass"] is True
     assert (tmp_path / "registry" / "train_v5_fusion" / "latest.json").exists()
     assert not (tmp_path / "registry" / "latest.json").exists()
 
@@ -637,6 +667,91 @@ def test_train_v5_fusion_backfills_missing_trade_action_doc(tmp_path: Path) -> N
 
     runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
     assert runtime_recommendations["trade_action"]["policy"] == "fusion_advisory_trade_action_backfill_v1"
+
+
+def test_train_v5_fusion_marks_dependency_expert_only_panel_contract_not_ready(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-dependency-expert-only-001"
+    base_rows = _base_rows()
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-dependency-expert-only-001",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "final_rank_score": 0.5, "final_expected_return": 0.1, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.03} for row in base_rows],
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-dependency-expert-only-001",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.5, "sequence_uncertainty_primary": 0.04} for row in base_rows],
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-dependency-expert-only-001",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.1, "micro_alpha_5s": 0.1, "micro_alpha_30s": 0.1, "micro_uncertainty": 0.03} for row in base_rows],
+    )
+    tradability_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_tradability",
+        run_id="tradability-run-dependency-expert-only-001",
+        trainer="v5_tradability",
+        snapshot_id=snapshot_id,
+        rows=_tradability_rows(base_rows),
+    )
+    (panel_path.parent / "runtime_recommendations.json").write_text(
+        json.dumps(
+            {
+                "status": "trainer_runtime_contract_ready",
+                "source_family": "train_v5_panel_ensemble",
+                "data_platform_ready_snapshot_id": snapshot_id,
+                "dependency_expert_only": True,
+                "tail_mode": "dependency_expert_only",
+                "entry": {"mode": "dependency_expert_only"},
+                "exit": {"mode": "dependency_expert_only"},
+                "execution": {"mode": "dependency_expert_only"},
+                "risk_control": {"operating_mode": "dependency_expert_only"},
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=panel_path,
+            sequence_input_path=sequence_path,
+            lob_input_path=lob_path,
+            tradability_input_path=tradability_path,
+            registry_root=registry_root,
+            logs_root=tmp_path / "logs",
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=7,
+        )
+    )
+
+    readiness = load_json(result.run_dir / "runtime_deploy_contract_readiness.json")
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+
+    assert readiness["pass"] is False
+    assert readiness["primary_reason_code"] == "PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED"
+    assert readiness["component_readiness"]["execution"]["ready"] is False
+    assert readiness["component_readiness"]["exit"]["ready"] is False
+    assert runtime_recommendations["runtime_deploy_contract_ready"] is False
+    assert runtime_recommendations["fusion_candidate_default_eligible"] is False
+    assert runtime_recommendations["fusion_evidence_reason_code"] == "PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED"
+    assert not (tmp_path / "registry" / "train_v5_fusion" / "latest.json").exists()
 
 
 def test_train_v5_fusion_uses_panel_as_canonical_label_anchor(tmp_path: Path) -> None:

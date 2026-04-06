@@ -10,6 +10,7 @@ Status update as of `2026-04-06` / `HEAD=d5609b2`:
 - `5.4 Acceptance Fail-Early`: implemented
 - `5.5 Backtest / Paper / Live parity checks`: implemented
 - `7. Server Validation Plan`: representative OCI rerun completed; latest result now fails at `runtime_viability` with rich diagnostics instead of falling through to late backtest/paper failure
+- follow-up hardening after `d5609b2`: `runtime_deploy_contract_readiness.json` is now a first-class fusion artifact, fusion default-eligibility now requires both runtime viability and deploy-contract readiness, and acceptance now fail-closes at `failure_stage = runtime_contract` when a fusion candidate inherits `dependency_expert_only` panel runtime stubs instead of deploy-grade execution/exit docs
 
 Current remaining work after this plan:
 

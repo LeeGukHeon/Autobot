@@ -221,6 +221,8 @@ def normalize_runtime_recommendations_payload(payload: dict[str, Any] | None) ->
         for field_name, issue_code in provenance_fields.items():
             if not str(normalized.get(field_name) or "").strip():
                 issues.append(issue_code)
+        if not bool(normalized.get("runtime_deploy_contract_ready", False)):
+            issues.append("RUNTIME_RECOMMENDATIONS_DEPLOY_CONTRACT_NOT_READY")
     normalized["contract_backfilled_fields"] = list(dict.fromkeys(backfilled_fields))
     normalized["contract_issues"] = list(dict.fromkeys(issues))
     if normalized["contract_issues"]:

@@ -192,6 +192,7 @@ def resolve_runtime_model_alpha_settings(
                 "RUNTIME_RECOMMENDATIONS_EXECUTION_DOC_MISSING",
                 "RUNTIME_RECOMMENDATIONS_RISK_CONTROL_DOC_MISSING",
                 "RUNTIME_RECOMMENDATIONS_TRADE_ACTION_DOC_MISSING",
+                "RUNTIME_RECOMMENDATIONS_DEPLOY_CONTRACT_NOT_READY",
             }
             for issue in runtime_contract_issues
         ):
