@@ -465,8 +465,9 @@ function Update-FusionVariantEvidenceArtifact {
     $selectedUtility = To-Double (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $selectedVariant -Name "utility_summary" -DefaultValue @{}) -Name "test_ev_net_top5" -DefaultValue 0.0) 0.0
     $utilityEdge = $selectedUtility - $baselineUtility
     $executionNonRegression = if ([string]::Equals($FusionVariantName, "regime_moe", [System.StringComparison]::OrdinalIgnoreCase)) {
-        To-Bool (Get-PropValue -ObjectValue $BacktestGate -Name "candidate_execution_structure_evaluated" -DefaultValue $false) $false -and
-        To-Bool (Get-PropValue -ObjectValue $BacktestGate -Name "pass" -DefaultValue $false) $false
+        $candidateExecutionStructureEvaluated = To-Bool (Get-PropValue -ObjectValue $BacktestGate -Name "candidate_execution_structure_evaluated" -DefaultValue $false) $false
+        $backtestGatePass = To-Bool (Get-PropValue -ObjectValue $BacktestGate -Name "pass" -DefaultValue $false) $false
+        ($candidateExecutionStructureEvaluated -and $backtestGatePass)
     } else {
         $true
     }
