@@ -743,7 +743,7 @@ function Invoke-DependencyTrainerChain {
                 $trainArgs += @($argName, [string]$entry.Value)
             }
         }
-        if ([string]::Equals($trainerName, "v5_panel_ensemble", [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (Test-ShouldUsePanelDependencyExpertOnly -DependencyTrainerName $trainerName) {
             $trainArgs += "--dependency-expert-only"
         }
         $trainExec = Invoke-CommandCapture -Exe $PythonPath -ArgList $trainArgs
@@ -1651,6 +1651,21 @@ function Resolve-DependencyTrainerTailMode {
     return "standard"
 }
 
+function Test-ShouldUsePanelDependencyExpertOnly {
+    param(
+        [string]$DependencyTrainerName
+    )
+    $normalizedDependencyTrainer = ([string]$DependencyTrainerName).Trim().ToLowerInvariant()
+    if ($normalizedDependencyTrainer -ne "v5_panel_ensemble") {
+        return $false
+    }
+    $normalizedMainTrainer = ([string]$Trainer).Trim().ToLowerInvariant()
+    if ($normalizedMainTrainer -eq "v5_fusion") {
+        return $false
+    }
+    return $true
+}
+
 function Test-DependencyTrainerRunReusable {
     param(
         [string]$RunDir,
@@ -1729,8 +1744,13 @@ function Test-DependencyTrainerRunReusable {
 
     if (([string]$TrainerName).Trim().ToLowerInvariant() -eq "v5_panel_ensemble") {
         $dependencyExpertOnly = To-Bool (Get-PropValue -ObjectValue $trainConfig -Name "dependency_expert_only" -DefaultValue $false) $false
-        if (-not $dependencyExpertOnly) {
+        $panelDependencyExpertOnlyRequired = Test-ShouldUsePanelDependencyExpertOnly -DependencyTrainerName $TrainerName
+        if ($panelDependencyExpertOnlyRequired -and (-not $dependencyExpertOnly)) {
             $result.reason = "PANEL_DEPENDENCY_EXPERT_ONLY_REQUIRED"
+            return $result
+        }
+        if ((-not $panelDependencyExpertOnlyRequired) -and $dependencyExpertOnly) {
+            $result.reason = "PANEL_FULL_RUNTIME_CONTRACT_REQUIRED"
             return $result
         }
     }

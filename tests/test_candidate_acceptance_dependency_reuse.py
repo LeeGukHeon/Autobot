@@ -541,7 +541,7 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
     assert all(item["reused"] is True for item in results)
     assert all(item["source_mode"] == "existing_run" for item in results)
     assert all(item["required_artifacts_complete"] is True for item in results)
-    assert results[0]["tail_mode"] == "dependency_expert_only"
+    assert results[0]["tail_mode"] == "full"
     assert results[1]["tail_mode"] == "expert_tail"
     assert results[2]["tail_mode"] == "expert_tail"
     assert results[3]["tail_mode"] == "expert_tail"

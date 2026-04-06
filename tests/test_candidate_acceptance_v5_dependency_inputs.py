@@ -676,7 +676,7 @@ def test_candidate_acceptance_passes_dependency_expert_tables_to_fusion(tmp_path
         "v5_fusion",
     ]
     assert [row for row in invocations if row.get("command") == "features build"] == []
-    assert "--dependency-expert-only" in train_calls[0]["args"]
+    assert "--dependency-expert-only" not in train_calls[0]["args"]
     assert "--dependency-expert-only" not in train_calls[1]["args"]
     assert "--dependency-expert-only" not in train_calls[2]["args"]
     export_calls = [row for row in invocations if row.get("command") == "model export-expert-table"]
