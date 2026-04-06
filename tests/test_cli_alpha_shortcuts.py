@@ -308,6 +308,28 @@ def test_build_parser_supports_backtest_alpha_shortcut() -> None:
     assert args.preset == "default"
 
 
+def test_build_parser_accepts_hidden_backtest_alpha_contract_args() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "backtest",
+            "alpha",
+            "--start",
+            "2026-03-01",
+            "--end",
+            "2026-03-05",
+            "--evaluation-contract-id",
+            "runtime_deploy_contract_v1",
+            "--selection-policy-mode",
+            "auto",
+            "--use_learned_execution_recommendations",
+        ]
+    )
+    assert args.evaluation_contract_id == "runtime_deploy_contract_v1"
+    assert args.selection_policy_mode == "auto"
+    assert args.use_learned_execution_recommendations is True
+
+
 def test_build_parser_supports_v4_selection_threshold_override() -> None:
     parser = build_parser()
     args = parser.parse_args(

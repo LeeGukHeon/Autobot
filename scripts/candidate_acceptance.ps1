@@ -5153,11 +5153,36 @@ function Invoke-BacktestAndLoadSummary {
     )
     if ($Preset -eq "acceptance") {
         $args += @(
+            "--evaluation-contract-id", "acceptance_frozen_compare_v1",
+            "--evaluation-contract-role", "frozen_compare",
+            "--selection-policy-mode", "raw_threshold",
+            "--no-use_learned_selection_recommendations",
+            "--no-use_learned_exit_mode",
+            "--no-use_learned_hold_bars",
+            "--no-use_learned_risk_recommendations",
+            "--no-use_trade_level_action_policy",
+            "--no-use_learned_execution_recommendations",
+            "--micro-order-policy", "off",
             "--top-pct", $BacktestTopPct,
             "--min-prob", $BacktestMinProb,
             "--min-cands-per-ts", $BacktestMinCandidatesPerTs,
             "--exit-mode", "hold",
             "--hold-bars", $HoldBars
+        )
+    } elseif ($Preset -eq "runtime_parity") {
+        $args += @(
+            "--evaluation-contract-id", "runtime_deploy_contract_v1",
+            "--evaluation-contract-role", "deploy_runtime",
+            "--selection-policy-mode", "auto",
+            "--use_learned_selection_recommendations",
+            "--use_learned_exit_mode",
+            "--use_learned_hold_bars",
+            "--use_learned_risk_recommendations",
+            "--use_trade_level_action_policy",
+            "--use_learned_execution_recommendations",
+            "--micro-order-policy", "on",
+            "--micro-order-policy-mode", "trade_only",
+            "--micro-order-policy-on-missing", "static_fallback"
         )
     }
     $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args

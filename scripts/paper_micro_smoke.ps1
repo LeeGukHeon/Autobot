@@ -263,7 +263,19 @@ $args = @(
     "--micro-order-policy-on-missing", "static_fallback",
     "--paper-micro-provider", $PaperMicroProvider,
     "--paper-micro-warmup-sec", $WarmupSec,
-    "--paper-micro-warmup-min-trade-events-per-market", $WarmupMinTradeEventsPerMarket
+    "--paper-micro-warmup-min-trade-events-per-market", $WarmupMinTradeEventsPerMarket,
+    "--evaluation-contract-id", "runtime_deploy_contract_v1",
+    "--evaluation-contract-role", "deploy_runtime",
+    "--selection-policy-mode", "auto",
+    "--use_learned_selection_recommendations",
+    "--use_learned_exit_mode",
+    "--use_learned_hold_bars",
+    "--use_learned_risk_recommendations",
+    "--use_trade_level_action_policy",
+    "--use_learned_execution_recommendations",
+    "--micro-order-policy", "on",
+    "--micro-order-policy-mode", "trade_only",
+    "--micro-order-policy-on-missing", "static_fallback"
 )
 if (-not [string]::IsNullOrWhiteSpace($Strategy)) {
     $args += @("--strategy", $Strategy)
