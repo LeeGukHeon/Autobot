@@ -117,7 +117,7 @@ def publish_ready_snapshot(
             project_root=resolved_project_root,
         )
         target_root = snapshot_root / relative_target
-        _copytree_hardlink(src=source_root, dst=target_root)
+        _copytree_snapshot(src=source_root, dst=target_root)
         _materialize_snapshot_validate_report(
             target_root=target_root,
             validate_report_source_path=Path(str(requirements["validate_report_source_path"])),
@@ -153,23 +153,13 @@ def publish_ready_snapshot(
     }
 
 
-def _copytree_hardlink(*, src: Path, dst: Path) -> None:
+def _copytree_snapshot(*, src: Path, dst: Path) -> None:
     if dst.exists():
         shutil.rmtree(dst)
-    for root, dirs, files in os.walk(src):
-        root_path = Path(root)
-        rel = root_path.relative_to(src)
-        target_dir = dst / rel
-        target_dir.mkdir(parents=True, exist_ok=True)
-        for name in dirs:
-            (target_dir / name).mkdir(parents=True, exist_ok=True)
-        for name in files:
-            source_file = root_path / name
-            target_file = target_dir / name
-            try:
-                os.link(source_file, target_file)
-            except OSError:
-                shutil.copy2(source_file, target_file)
+    # Ready snapshots are used as frozen provenance anchors for downstream
+    # training/runtime contracts, so they must not share mutable file inodes
+    # with the live working tree.
+    shutil.copytree(src, dst, copy_function=shutil.copy2)
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:

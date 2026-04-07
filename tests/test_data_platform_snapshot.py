@@ -111,3 +111,28 @@ def test_publish_ready_snapshot_accepts_collect_meta_validate_reports_for_collec
     assert (snapshot_root / "data" / "parquet" / "candles_second_v1" / "_meta" / "validate_report.json").exists()
     assert (snapshot_root / "data" / "parquet" / "ws_candle_v1" / "_meta" / "validate_report.json").exists()
     assert (snapshot_root / "data" / "parquet" / "lob30_v1" / "_meta" / "validate_report.json").exists()
+
+
+def test_publish_ready_snapshot_freezes_snapshot_contents_independent_from_source(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    for name in ("candles_second_v1", "ws_candle_v1", "lob30_v1", "sequence_v1", "private_execution_v1", "candles_api_v1", "features_v4"):
+        _write_dataset(project_root, name)
+
+    result = publish_ready_snapshot(project_root=project_root)
+    snapshot_root = Path(result["snapshot_root"])
+
+    source_cert = project_root / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+    frozen_cert = snapshot_root / "data" / "features" / "features_v4" / "_meta" / "feature_dataset_certification.json"
+    source_part = project_root / "data" / "parquet" / "sequence_v1" / "market=KRW-BTC" / "date=2026-03-30" / "part-000.parquet"
+    frozen_part = snapshot_root / "data" / "parquet" / "sequence_v1" / "market=KRW-BTC" / "date=2026-03-30" / "part-000.parquet"
+
+    source_cert.write_text(
+        json.dumps({"status": "FAIL", "pass": False}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    pl.DataFrame({"value": [999]}).write_parquet(source_part)
+
+    frozen_cert_payload = json.loads(frozen_cert.read_text(encoding="utf-8"))
+    assert frozen_cert_payload["status"] == "PASS"
+    assert frozen_cert_payload["pass"] is True
+    assert pl.read_parquet(frozen_part).get_column("value").to_list() == [1]
