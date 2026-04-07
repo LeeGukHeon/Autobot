@@ -852,11 +852,15 @@
     document.getElementById("generated-at").textContent = fmtDateTime(snapshot.generated_at);
     document.getElementById("project-root").textContent = snapshot.project_root || "-";
     const system = snapshot.system || {};
-    const projectGb = Number(system.project_used_bytes || 0) / (1024 ** 3);
     const fsUsedGb = Number(system.used_bytes || 0) / (1024 ** 3);
     const totalGb = Number(system.total_bytes || 0) / (1024 ** 3);
+    const rawProjectBytes = system.project_used_bytes;
+    const hasProjectSize = rawProjectBytes !== null && rawProjectBytes !== undefined && Number(rawProjectBytes) >= 0;
+    const projectPrefix = hasProjectSize
+      ? `프로젝트 ${fmtNumber(Number(rawProjectBytes) / (1024 ** 3), 1)} GB`
+      : "프로젝트 계산 지연";
     document.getElementById("storage-summary").textContent =
-      `프로젝트 ${fmtNumber(projectGb, 1)} GB · 전체 ${fmtNumber(fsUsedGb, 1)} / ${fmtNumber(totalGb, 1)} GB`;
+      `${projectPrefix} · 전체 ${fmtNumber(fsUsedGb, 1)} / ${fmtNumber(totalGb, 1)} GB`;
   }
 
   function renderOverview(snapshot) {

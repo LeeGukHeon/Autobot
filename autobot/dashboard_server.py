@@ -50,6 +50,9 @@ _DASHBOARD_OPS_TOKEN_ENV = "AUTOBOT_DASHBOARD_OPS_TOKEN"
 _DASHBOARD_OPS_HISTORY_DIRNAME = "dashboard_ops"
 _DASHBOARD_OPS_HISTORY_FILENAME = "ops_history.jsonl"
 _DASHBOARD_OPS_LOCK = threading.Lock()
+_PROJECT_SIZE_LOCK = threading.Lock()
+_PROJECT_SIZE_STALE_CACHE_MAX_AGE_SEC = 15 * 60
+_PROJECT_SIZE_STALE_CACHE: dict[str, tuple[int, float]] = {}
 _PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_fusion"
 _CANDIDATE_LOG_ROOTS = (Path("logs") / "model_v5_candidate", Path("logs") / "model_v4_challenger")
 _CANDIDATE_LIVE_UNITS = ("autobot-live-alpha-canary.service", "autobot-live-alpha-candidate.service")
@@ -169,38 +172,80 @@ def _cached_project_size(project_root_str: str, bucket: int) -> int:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=10,
+                timeout=8,
             )
             if completed.returncode == 0:
                 first = str(completed.stdout).strip().split()[0]
                 value = int(first)
                 if value >= 0:
+                    _remember_project_size_value(project_root_str, value)
                     return value
         except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
             pass
-    total = 0
-    for path in project_root.rglob("*"):
-        try:
-            if path.is_file():
-                total += path.stat().st_size
-        except OSError:
-            continue
+        cached_value = _load_recent_project_size_value(project_root_str)
+        if cached_value is not None:
+            return cached_value
+        return -1
+    total = _walk_project_size_bytes(project_root)
+    _remember_project_size_value(project_root_str, total)
     return total
 
 
 def _project_size_bytes(project_root: Path) -> int:
-    bucket = int(time.time() // 30)
+    bucket = int(time.time() // 300)
     return _cached_project_size(str(project_root), bucket)
 
 
 def _filesystem_usage(project_root: Path) -> dict[str, Any]:
     usage = shutil.disk_usage(project_root)
+    project_used_bytes = _project_size_bytes(project_root)
     return {
         "total_bytes": int(usage.total),
         "used_bytes": int(usage.used),
         "free_bytes": int(usage.free),
-        "project_used_bytes": int(_project_size_bytes(project_root)),
+        "project_used_bytes": (int(project_used_bytes) if project_used_bytes >= 0 else None),
+        "project_used_bytes_status": ("ok" if project_used_bytes >= 0 else "unavailable"),
     }
+
+
+def _remember_project_size_value(project_root_str: str, value: int) -> None:
+    if int(value) < 0:
+        return
+    with _PROJECT_SIZE_LOCK:
+        _PROJECT_SIZE_STALE_CACHE[str(project_root_str)] = (int(value), time.time())
+
+
+def _load_recent_project_size_value(project_root_str: str) -> int | None:
+    with _PROJECT_SIZE_LOCK:
+        payload = _PROJECT_SIZE_STALE_CACHE.get(str(project_root_str))
+    if not payload:
+        return None
+    value, captured_at = payload
+    if (time.time() - float(captured_at)) > float(_PROJECT_SIZE_STALE_CACHE_MAX_AGE_SEC):
+        return None
+    return int(value)
+
+
+def _walk_project_size_bytes(project_root: Path) -> int:
+    total = 0
+    seen_files: set[tuple[int, int]] = set()
+    for root, _, files in os.walk(project_root):
+        root_path = Path(root)
+        for name in files:
+            path = root_path / name
+            try:
+                stat_result = path.stat()
+            except OSError:
+                continue
+            inode = int(getattr(stat_result, "st_ino", 0) or 0)
+            device = int(getattr(stat_result, "st_dev", 0) or 0)
+            if inode > 0:
+                key = (device, inode)
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+            total += int(stat_result.st_size)
+    return total
 
 
 @lru_cache(maxsize=16)

@@ -1,7 +1,9 @@
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import time
 
 import pytest
@@ -24,6 +26,50 @@ from autobot.dashboard_server import (
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_cached_project_size_returns_recent_value_when_du_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autobot.dashboard_server as dashboard_server_module
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    dashboard_server_module._cached_project_size.cache_clear()
+    dashboard_server_module._PROJECT_SIZE_STALE_CACHE.clear()
+    monkeypatch.setattr(dashboard_server_module.shutil, "which", lambda name: "/usr/bin/du" if name == "du" else None)
+
+    call_count = {"value": 0}
+
+    def fake_run(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            return subprocess.CompletedProcess(args[0], 0, "123\n", "")
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(dashboard_server_module.subprocess, "run", fake_run)
+
+    assert dashboard_server_module._cached_project_size(str(project_root), 1) == 123
+    assert dashboard_server_module._cached_project_size(str(project_root), 2) == 123
+
+
+def test_cached_project_size_fallback_dedupes_hardlinked_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autobot.dashboard_server as dashboard_server_module
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    source = project_root / "a.bin"
+    source.write_bytes(b"x" * 16)
+    linked = project_root / "b.bin"
+    try:
+        os.link(source, linked)
+    except OSError:
+        pytest.skip("hardlink creation is not available in this environment")
+
+    dashboard_server_module._cached_project_size.cache_clear()
+    dashboard_server_module._PROJECT_SIZE_STALE_CACHE.clear()
+    monkeypatch.setattr(dashboard_server_module.shutil, "which", lambda _name: None)
+
+    assert dashboard_server_module._cached_project_size(str(project_root), 1) == 16
 
 
 def _init_live_db(path: Path) -> None:
