@@ -331,6 +331,7 @@ def test_build_sequence_tensor_store_skips_past_date_market_load_when_ready_tail
                 "micro_coverage_ratio": 1.0,
                 "lob_coverage_ratio": 1.0,
                 "built_at_ms": 1577923200000,
+                "cache_validity_signature": "sig-ready",
             },
             {
                 "market": "KRW-BTC",
@@ -346,6 +347,7 @@ def test_build_sequence_tensor_store_skips_past_date_market_load_when_ready_tail
                 "micro_coverage_ratio": 1.0,
                 "lob_coverage_ratio": 1.0,
                 "built_at_ms": 1577923260000,
+                "cache_validity_signature": "sig-ready",
             },
         ]
     )
@@ -383,6 +385,7 @@ def test_build_sequence_tensor_store_skips_past_date_market_load_when_ready_tail
         raise AssertionError("_load_market_source_frames should not be called")
 
     monkeypatch.setattr(sequence_module, "_load_market_source_frames", _boom)
+    monkeypatch.setattr(sequence_module, "_resolve_tensor_cache_validity_signature", lambda **kwargs: "sig-ready")
 
     options = SequenceTensorBuildOptions(
         parquet_root=parquet_root,
@@ -397,6 +400,54 @@ def test_build_sequence_tensor_store_skips_past_date_market_load_when_ready_tail
 
     assert summary.built_anchors == 0
     assert summary.selected_markets == 1
+
+
+def test_build_sequence_tensor_store_rebuilds_when_cache_validity_signature_changes(tmp_path: Path, monkeypatch) -> None:
+    parquet_root = tmp_path / "parquet"
+    market = "KRW-BTC"
+    date_value = "2026-03-27"
+    anchor_ts_ms = 1_774_569_660_000
+
+    _write_second_candles(
+        parquet_root / "candles_second_v1" / "tf=1s" / f"market={market}" / "part-000.parquet",
+        start_ts_ms=anchor_ts_ms - 3_000,
+        count=4,
+    )
+    _write_minute_candles(
+        parquet_root / "ws_candle_v1" / "tf=1m" / f"market={market}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_micro_rows(
+        parquet_root / "micro_v1" / "tf=1m" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms],
+    )
+    _write_lob_rows(
+        parquet_root / "lob30_v1" / f"market={market}" / f"date={date_value}" / "part-000.parquet",
+        ts_values=[anchor_ts_ms - 2_000, anchor_ts_ms - 1_000, anchor_ts_ms],
+    )
+
+    options = SequenceTensorBuildOptions(
+        parquet_root=parquet_root,
+        out_dataset="sequence_v1",
+        markets=(market,),
+        date=date_value,
+        max_anchors_per_market=1,
+        second_lookback_steps=4,
+        minute_lookback_steps=1,
+        micro_lookback_steps=1,
+        lob_lookback_steps=3,
+    )
+
+    first_summary = build_sequence_tensor_store(options)
+    assert first_summary.built_anchors == 1
+
+    monkeypatch.setattr(sequence_module, "_resolve_tensor_cache_validity_signature", lambda **kwargs: "different-signature")
+    second_summary = build_sequence_tensor_store(options)
+
+    assert second_summary.built_anchors == 1
+    manifest = pl.read_parquet(parquet_root / "sequence_v1" / "_meta" / "manifest.parquet")
+    assert manifest.height == 1
+    assert manifest.item(0, "cache_validity_signature") == "different-signature"
 
 
 def test_build_sequence_tensor_store_writes_explicit_source_lineage(tmp_path: Path) -> None:

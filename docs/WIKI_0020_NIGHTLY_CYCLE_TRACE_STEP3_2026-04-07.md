@@ -992,6 +992,215 @@ Current judgment:
 - real contract difference
 - not yet proven to be an immediate operating bug
 
+### F5. Step 3 tensor refresh is operationally too heavy
+
+Current behavior in `training_critical` mode is expensive for structural reasons:
+
+- one tensor step per date across the whole training-critical window
+- effective tensor market count expands to `max(TensorMaxMarkets, TopN)` and becomes `50`
+- anchor cap is raised to `64`
+- `collect tensors` is called with `--skip-existing-ready false`
+
+That last point matters most.
+
+`sequence_tensor_store.py` does support reuse when:
+
+- `skip_existing_ready = true`
+- enough ready anchors already exist for `(market, date)`
+
+But current Step 3 explicitly disables that reuse.
+
+Why this likely exists:
+
+- current `sequence_v1` cache validity does **not** carry source fingerprint invalidation at the anchor level
+- cached tensors do not prove that the current upstream
+  - `candles_second_v1`
+  - `ws_candle_v1`
+  - `micro_v1`
+  - `lob30_v1`
+  state is still the same as when the cache file was built
+
+So blindly flipping to `skip_existing_ready=true` would make Step 3 faster, but it would also risk stale tensor reuse under refreshed upstream inputs.
+
+Current judgment:
+
+- this is a real Step 3 performance issue
+- but not a one-line safe fix
+- the real missing piece is a tensor-cache validity contract, not just a reuse flag change
+
+Current implementation status:
+
+- `2026-04-07` patch added a first validity contract:
+  - `cache_validity_signature`
+  - source-manifest signature based reuse
+  - fallback file-hash signature when source manifests are missing
+- `training_critical` tensor steps now call `collect tensors` with `--skip-existing-ready true`
+- existing cache rows without the new signature are intentionally treated as stale and rebuilt once
+- this should materially improve repeated Step 3 runs after the first post-migration rebuild
+
+Recommended future direction:
+
+1. define per-anchor or per-date tensor cache source fingerprinting
+2. allow reuse only when upstream source identity is unchanged
+3. then re-enable `skip_existing_ready=true` for valid cache windows
+
+
+## 15. Step 3 Tensor Performance Proper-Fix Tickets
+
+### T3-T01. Tensor cache validity contract
+
+Goal:
+
+- make `sequence_v1` cache reuse safe
+
+Why:
+
+- current cache rows only prove that a cache file exists
+- they do not prove that upstream source state is unchanged
+
+Files to change:
+
+- `autobot/data/collect/sequence_tensor_store.py`
+
+Expected implementation:
+
+- extend manifest rows with a source-validity fingerprint such as:
+  - source dataset run ids
+  - source contract ids
+  - selected build option signature
+  - date / market / lookback contract
+- store a deterministic `cache_validity_signature`
+- make reuse depend on:
+  - cache file exists
+  - status not fail
+  - signature matches current source signature
+
+Required checks after change:
+
+- if upstream source run ids change, affected tensor rows rebuild
+- if upstream source run ids do not change, valid cache rows reuse
+- existing manifest rows without the new signature are treated as stale and rebuilt once
+
+Implementation status:
+
+- implemented
+
+### T3-T02. Safe reuse enablement in Step 3
+
+Goal:
+
+- actually turn on reuse in the Step 3 training-critical path
+
+Why:
+
+- current nightly path explicitly forces `--skip-existing-ready false`
+- this disables the only current reuse path
+
+Files to change:
+
+- `scripts/refresh_data_platform_layers.ps1`
+
+Expected implementation:
+
+- after `T3-T01` lands, change training-critical tensor steps to:
+  - `--skip-existing-ready true`
+- keep rebuild behavior for rows whose validity signature mismatches
+
+Required checks after change:
+
+- repeated Step 3 runs over unchanged sources show large `reused_anchors`
+- changed upstream datasets still trigger rebuild for affected anchors
+- no silent stale-cache reuse under refreshed micro/ws/lob inputs
+
+Implementation status:
+
+- implemented
+
+### T3-T03. Dirty-date / dirty-window narrowing
+
+Goal:
+
+- stop rebuilding the whole training-critical window when only a smaller suffix changed
+
+Why:
+
+- current Step 3 emits one tensor step per date across the whole coverage window
+- that is operationally too expensive for daily close
+
+Files to change:
+
+- `scripts/refresh_data_platform_layers.ps1`
+- possibly `autobot/data/collect/sequence_tensor_store.py`
+
+Expected implementation:
+
+- compute a dirty-date window from current upstream source identities
+- run tensor regeneration only for:
+  - new dates
+  - dates whose source signature changed
+  - dates whose cache validity is missing
+
+Required checks after change:
+
+- stable historical dates are skipped entirely
+- newly refreshed dates are rebuilt
+- build report clearly distinguishes `dirty_dates`, `rebuilt_dates`, and `reused_dates`
+
+### T3-T04. Cache layout / small-file pressure reduction
+
+Goal:
+
+- reduce pathological small-file overhead in `sequence_v1/cache`
+
+Why:
+
+- current cache count is already very high
+- per-anchor `.npz` files create metadata and directory traversal pressure
+
+Files to change:
+
+- `autobot/data/collect/sequence_tensor_store.py`
+
+Expected implementation candidates:
+
+- keep manifest-level contract stable but move cache storage toward:
+  - per-date bundles
+  - per-market-date shards
+  - or another coarser-grained immutable cache layout
+
+Required checks after change:
+
+- file count falls materially
+- validate still works
+- downstream sequence/lob loaders still resolve anchor payloads deterministically
+
+### T3-T05. Operator observability for tensor refresh
+
+Goal:
+
+- make Step 3 long-running tensor work understandable during execution
+
+Why:
+
+- current operator view does not tell enough about remaining dates / anchors / reuse
+
+Files to change:
+
+- `scripts/refresh_data_platform_layers.ps1`
+- `autobot/dashboard_server.py`
+
+Expected implementation:
+
+- expose in-progress tensor date
+- expose total dates / completed dates
+- expose built vs reused anchors
+- expose current cache/root sizes where cheap to compute
+
+Required checks after change:
+
+- dashboard can show meaningful progress instead of only “train snapshot close running”
+- no extra heavy filesystem scans on hot path
+
 
 ## 15. Alignment With Blueprint / 2026-04-06 Intent
 

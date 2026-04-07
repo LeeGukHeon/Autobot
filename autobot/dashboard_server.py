@@ -53,6 +53,9 @@ _DASHBOARD_OPS_LOCK = threading.Lock()
 _PROJECT_SIZE_LOCK = threading.Lock()
 _PROJECT_SIZE_STALE_CACHE_MAX_AGE_SEC = 15 * 60
 _PROJECT_SIZE_STALE_CACHE: dict[str, tuple[int, float]] = {}
+_TREE_COUNT_LOCK = threading.Lock()
+_TREE_FILE_COUNT_CACHE: dict[str, tuple[int, float]] = {}
+_TREE_FILE_COUNT_CACHE_MAX_AGE_SEC = 15 * 60
 _PRIMARY_RUNTIME_MODEL_FAMILY = "train_v5_fusion"
 _CANDIDATE_LOG_ROOTS = (Path("logs") / "model_v5_candidate", Path("logs") / "model_v4_challenger")
 _CANDIDATE_LIVE_UNITS = ("autobot-live-alpha-canary.service", "autobot-live-alpha-candidate.service")
@@ -246,6 +249,30 @@ def _walk_project_size_bytes(project_root: Path) -> int:
                 seen_files.add(key)
             total += int(stat_result.st_size)
     return total
+
+
+def _cached_tree_file_count(root: Path, *, suffix: str) -> int | None:
+    resolved = str(root.resolve())
+    with _TREE_COUNT_LOCK:
+        payload = _TREE_FILE_COUNT_CACHE.get(resolved)
+    if payload:
+        value, captured_at = payload
+        if (time.time() - float(captured_at)) <= float(_TREE_FILE_COUNT_CACHE_MAX_AGE_SEC):
+            return int(value)
+    if not root.exists():
+        return 0
+    try:
+        count = 0
+        for current_root, _, files in os.walk(root):
+            if suffix:
+                count += sum(1 for name in files if str(name).endswith(suffix))
+            else:
+                count += len(files)
+    except OSError:
+        return None
+    with _TREE_COUNT_LOCK:
+        _TREE_FILE_COUNT_CACHE[resolved] = (int(count), time.time())
+    return int(count)
 
 
 @lru_cache(maxsize=16)
@@ -582,6 +609,32 @@ def _summarize_training_activity_legacy_unused(
             "detail_builder": lambda command: (
                 f"{_command_flag_value(command, '--start') or '?'}부터 {_command_flag_value(command, '--end') or '?'}까지 "
                 "호가 expert table을 다시 만드는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "collect", "tensors"),
+            "stage_key": "sequence_tensor_refresh",
+            "stage_label_ko": "시퀀스 텐서 갱신",
+            "progress_pct": 34,
+            "headline_ko": "시퀀스/호가 텐서를 갱신하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"기준 날짜 {_command_flag_value(command, '--date') or '?'} "
+                f"시장을 최대 {_command_flag_value(command, '--max-markets') or '?'}개까지 "
+                f"anchor {_command_flag_value(command, '--max-anchors-per-market') or '?'}개 상한으로 "
+                "재사용 가능한 캐시는 재검증 후 건너뛰고 필요한 텐서만 갱신하는 단계입니다."
+            ),
+        },
+        {
+            "match": ("autobot.cli", "collect", "tensors"),
+            "stage_key": "sequence_tensor_refresh",
+            "stage_label_ko": "시퀀스 텐서 갱신",
+            "progress_pct": 34,
+            "headline_ko": "시퀀스/호가 텐서를 갱신하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"기준 날짜 {_command_flag_value(command, '--date') or '?'} "
+                f"시장을 최대 {_command_flag_value(command, '--max-markets') or '?'}개까지 "
+                f"anchor {_command_flag_value(command, '--max-anchors-per-market') or '?'}개 상한으로 "
+                "재사용 가능한 캐시는 재검증 후 건너뛰고 필요한 텐서만 갱신하는 단계입니다."
             ),
         },
         {
@@ -2609,7 +2662,17 @@ def _summarize_data_platform_dataset(
             dataset_root=dataset_root,
             validate_report=validate_report,
         )
-    cache_file_count = len(list((dataset_root / "cache").rglob("*.npz"))) if (dataset_root / "cache").exists() else 0
+    build_reused_anchors = _coerce_int(build_report.get("reused_anchors"))
+    build_built_anchors = _coerce_int(build_report.get("built_anchors"))
+    cache_file_count = None
+    cache_root = dataset_root / "cache"
+    if str(dataset_name).strip().lower() == "sequence_v1":
+        cache_file_count = (
+            _coerce_int(build_report.get("manifest_rows_total"))
+            or _coerce_int(validate_report.get("checked_files"))
+        )
+    if cache_file_count is None and cache_root.exists():
+        cache_file_count = _cached_tree_file_count(cache_root, suffix=".npz")
     return {
         "dataset_name": dataset_name,
         "dataset_root": str(dataset_root),
@@ -2620,6 +2683,8 @@ def _summarize_data_platform_dataset(
         "validate_generated_at": validate_report.get("generated_at") or _path_mtime_iso(validate_path),
         "build_summary": build_summary,
         "validate_summary": validate_summary,
+        "build_reused_anchors": build_reused_anchors,
+        "build_built_anchors": build_built_anchors,
         "support_level_counts": support_level_counts,
         "current_window_support": current_window_support,
         "legacy_window_support": legacy_window_support,
@@ -3854,6 +3919,19 @@ def _summarize_training_activity(
             ),
         },
         {
+            "match": ("autobot.cli", "collect", "tensors"),
+            "stage_key": "sequence_tensor_refresh",
+            "stage_label_ko": "시퀀스 텐서 갱신",
+            "progress_pct": 34,
+            "headline_ko": "시퀀스/호가 텐서를 갱신하고 있습니다.",
+            "detail_builder": lambda command: (
+                f"기준 날짜 {_command_flag_value(command, '--date') or '?'} "
+                f"시장을 최대 {_command_flag_value(command, '--max-markets') or '?'}개까지 "
+                f"anchor {_command_flag_value(command, '--max-anchors-per-market') or '?'}개 상한으로 "
+                "재사용 가능한 캐시는 재검증 후 건너뛰고 필요한 텐서만 갱신하는 단계입니다."
+            ),
+        },
+        {
             "match": ("close_v5_train_ready_snapshot.ps1",),
             "stage_key": "train_snapshot_close",
             "stage_label_ko": "학습 스냅샷 확정",
@@ -3976,6 +4054,7 @@ def _summarize_training_activity(
             "run_raw_ticks_daily.ps1",
             "close_v5_train_ready_snapshot.ps1",
             "autobot.ops.live_feature_parity_report",
+            "autobot.cli collect tensors",
             "autobot.cli model export-expert-table",
             "daily_champion_challenger_v5_for_server.ps1",
             "candidate_acceptance.ps1",

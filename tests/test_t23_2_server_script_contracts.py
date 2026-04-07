@@ -273,6 +273,7 @@ def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_excludes_
     assert "[data-platform-refresh] step=plan_candles_second" in stdout
     assert "[data-platform-refresh] step=aggregate_micro_current_window" in stdout
     assert "[data-platform-refresh] step=collect_sequence_tensors" in stdout
+    assert "--skip-existing-ready' 'true" in stdout or '--skip-existing-ready" "true' in stdout or "--skip-existing-ready true" in stdout
     assert "[data-platform-refresh] step=plan_ws_candles" not in stdout
     assert "[data-platform-refresh] step=collect_ws_candles" not in stdout
     assert "[data-platform-refresh] step=publish_data_platform_snapshot" not in stdout

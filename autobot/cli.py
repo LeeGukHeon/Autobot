@@ -2138,7 +2138,8 @@ def _handle_collect_tensors(args: argparse.Namespace, base_config: dict[str, Any
     print(
         "[collect][tensors] "
         f"markets={summary.selected_markets} discovered_anchors={summary.discovered_anchors} "
-        f"built={summary.built_anchors} ok={summary.ok_anchors} warn={summary.warn_anchors} fail={summary.fail_anchors}"
+        f"built={summary.built_anchors} reused={summary.reused_anchors} "
+        f"ok={summary.ok_anchors} warn={summary.warn_anchors} fail={summary.fail_anchors}"
     )
     print(f"[collect][tensors] manifest={summary.manifest_file}")
     print(f"[collect][tensors] build_report={summary.build_report_file}")

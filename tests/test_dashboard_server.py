@@ -1867,6 +1867,37 @@ def test_build_dashboard_snapshot_detects_manual_training_process_when_spawn_ser
     assert activity["process_pid"] == 9992
 
 
+def test_build_dashboard_snapshot_detects_manual_sequence_tensor_refresh_when_spawn_service_is_inactive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path
+    _write_json(project_root / "logs" / "model_v4_acceptance" / "latest.json", {"generated_at": "2026-03-21T01:00:00Z"})
+    _write_json(project_root / "logs" / "model_v5_candidate" / "latest.json", {"steps": {}})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest.json", {})
+    _write_json(project_root / "logs" / "model_v4_rank_shadow_cycle" / "latest_governance_action.json", {})
+    _write_json(project_root / "logs" / "live_rollout" / "latest.json", {})
+
+    monkeypatch.setattr("autobot.dashboard_server._systemctl_show", lambda unit_name, *properties: {})
+    monkeypatch.setattr(
+        "autobot.dashboard_server._list_process_rows",
+        lambda: [
+            {
+                "pid": 7001,
+                "ppid": 1,
+                "args": "/home/ubuntu/MyApps/Autobot/.venv/bin/python -m autobot.cli collect tensors --out-dataset sequence_v1 --date 2026-03-12 --max-markets 50 --max-anchors-per-market 64 --skip-existing-ready true",
+            },
+        ],
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+    activity = snapshot["training"]["current_activity"]
+    assert activity["active"] is True
+    assert activity["stage_key"] == "sequence_tensor_refresh"
+    assert activity["process_pid"] == 7001
+    assert "2026-03-12" in str(activity["detail_ko"])
+
+
 def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_machine(tmp_path: Path) -> None:
     project_root = tmp_path
     _write_json(
@@ -1897,6 +1928,16 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
                 {"market": "KRW-BTC", "anchor_ts_ms": 2000, "support_level": "reduced_context"},
                 {"market": "KRW-BTC", "anchor_ts_ms": 3000, "support_level": "reduced_context"},
             ],
+        },
+    )
+    _write_json(
+        sequence_meta / "build_report.json",
+        {
+            "generated_at": "2026-03-27T00:30:00Z",
+            "reused_anchors": 12,
+            "built_anchors": 3,
+            "manifest_rows_total": 3,
+            "summary": {"ok_targets": 1},
         },
     )
     pl.DataFrame(
@@ -1933,6 +1974,8 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
     assert snapshot["data_platform"]["datasets"]["sequence_v1"]["registry_present"] is True
     assert snapshot["data_platform"]["datasets"]["sequence_v1"]["current_window_support"]["support_level_counts"]["strict_full"] == 1
     assert snapshot["data_platform"]["datasets"]["sequence_v1"]["legacy_window_support"]["support_level_counts"]["reduced_context"] == 1
+    assert snapshot["data_platform"]["datasets"]["sequence_v1"]["build_reused_anchors"] == 12
+    assert snapshot["data_platform"]["datasets"]["sequence_v1"]["cache_file_count"] == 3
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["run_id"] == "v5-seq-001"
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["sequence_pretrain_method"] == "none"
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["ood_status"] == "informative_ready"
