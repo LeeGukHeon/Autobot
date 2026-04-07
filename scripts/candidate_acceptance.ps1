@@ -1989,6 +1989,28 @@ function Resolve-TrainSnapshotCloseContract {
     }
 }
 
+function Test-ShouldUseTrainSnapshotArtifacts {
+    $snapshotRoot = [string](Get-PropValue -ObjectValue $script:trainSnapshotCloseContract -Name "snapshot_root" -DefaultValue "")
+    $snapshotPass = To-Bool (Get-PropValue -ObjectValue $script:trainSnapshotCloseContract -Name "pass" -DefaultValue $false) $false
+    return (
+        $snapshotPass -and
+        (-not [string]::IsNullOrWhiteSpace($snapshotRoot)) -and
+        (Test-Path $snapshotRoot)
+    )
+}
+
+function Resolve-TrainSnapshotArtifactPath {
+    param([string]$RelativePath)
+    if (-not (Test-ShouldUseTrainSnapshotArtifacts)) {
+        return ""
+    }
+    $snapshotRoot = [string](Get-PropValue -ObjectValue $script:trainSnapshotCloseContract -Name "snapshot_root" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($snapshotRoot) -or [string]::IsNullOrWhiteSpace($RelativePath)) {
+        return ""
+    }
+    return (Join-Path $snapshotRoot $RelativePath)
+}
+
 function Test-DateWindowContains {
     param(
         [string]$OuterStartDate,
@@ -5795,6 +5817,36 @@ function Set-ReportFailure {
     }
 }
 
+function Resolve-UnhandledAcceptanceFailureStage {
+    param([string]$ExceptionMessage)
+    $message = [string]$ExceptionMessage
+    if ($message -like "*dependency runtime export*") {
+        return [ordered]@{ stage = "runtime_export"; code = "DEPENDENCY_RUNTIME_EXPORT_FAILED" }
+    }
+    if ($message -like "*TRAIN_SNAPSHOT_CLOSE*") {
+        return [ordered]@{ stage = "data_close"; code = "TRAIN_SNAPSHOT_CLOSE_FAILED" }
+    }
+    if ($message -like "*backtest_runtime_parity*") {
+        return [ordered]@{ stage = "runtime_parity"; code = "RUNTIME_PARITY_BACKTEST_FAILED" }
+    }
+    if ($message -like "*backtest_candidate*") {
+        return [ordered]@{ stage = "acceptance_backtest"; code = "BACKTEST_ACCEPTANCE_FAILED" }
+    }
+    if ($message -like "*paper*" -or $message -like "*paper_micro_smoke*") {
+        return [ordered]@{ stage = "paper"; code = "PAPER_SOAK_FAILED" }
+    }
+    if ($message -like "*promote*") {
+        return [ordered]@{ stage = "promote"; code = "PROMOTE_FAILED" }
+    }
+    if ($message -like "*FUSION_RUNTIME_*") {
+        return [ordered]@{ stage = "fusion_train"; code = "UNHANDLED_EXCEPTION" }
+    }
+    if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        return [ordered]@{ stage = "fusion_train"; code = "UNHANDLED_EXCEPTION" }
+    }
+    return [ordered]@{ stage = "acceptance_gate"; code = "UNHANDLED_EXCEPTION" }
+}
+
 function Sync-WindowRampState {
     param($WindowRampValue)
     $script:windowRamp = $WindowRampValue
@@ -6183,6 +6235,11 @@ function Invoke-FeaturesBuildAndLoadReport {
     $reportPath = Join-Path $resolvedProjectRoot ("data/features/features_" + $FeatureSet + "/_meta/build_report.json")
     $reportDoc = if (Test-Path $reportPath) { Load-JsonOrEmpty -PathValue $reportPath } else { @{} }
     $closeFeaturesEffectiveEnd = [string](Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "features_v4_effective_end" -DefaultValue "")
+    $snapshotReportPath = Resolve-TrainSnapshotArtifactPath -RelativePath ("data/features/features_" + $FeatureSet + "/_meta/build_report.json")
+    if (-not [string]::IsNullOrWhiteSpace($snapshotReportPath) -and (Test-Path $snapshotReportPath)) {
+        $reportPath = $snapshotReportPath
+        $reportDoc = Load-JsonOrEmpty -PathValue $reportPath
+    }
     $useFrozenCloseFeatures = (
         (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") -and
         (To-Bool (Get-PropValue -ObjectValue $trainSnapshotCloseContract -Name "pass" -DefaultValue $false) $false) -and
@@ -6280,6 +6337,33 @@ function Invoke-FeaturesValidateAndLoadReport {
         [string]$StartDate,
         [string]$EndDate
     )
+    $snapshotReportPath = Resolve-TrainSnapshotArtifactPath -RelativePath ("data/features/features_" + $FeatureSet + "/_meta/validate_report.json")
+    if (-not [string]::IsNullOrWhiteSpace($snapshotReportPath) -and (Test-Path $snapshotReportPath)) {
+        $reportDoc = Load-JsonOrEmpty -PathValue $snapshotReportPath
+        $checkedFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "checked_files" -DefaultValue 0) 0)
+        $okFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "ok_files" -DefaultValue 0) 0)
+        $warnFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "warn_files" -DefaultValue 0) 0)
+        $failFiles = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "fail_files" -DefaultValue 0) 0)
+        $schemaOk = To-Bool (Get-PropValue -ObjectValue $reportDoc -Name "schema_ok" -DefaultValue $false) $false
+        $leakageSmoke = [string](Get-PropValue -ObjectValue $reportDoc -Name "leakage_smoke" -DefaultValue "")
+        $usable = ($checkedFiles -gt 0) -and ($failFiles -eq 0) -and ($schemaOk) -and ($leakageSmoke -eq "PASS")
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ""
+                Command = "[frozen-close-contract] features_validate"
+            }
+            ReportPath = $snapshotReportPath
+            Report = $reportDoc
+            CheckedFiles = $checkedFiles
+            OkFiles = $okFiles
+            WarnFiles = $warnFiles
+            FailFiles = $failFiles
+            SchemaOk = [bool]$schemaOk
+            LeakageSmoke = $leakageSmoke
+            Usable = [bool]$usable
+        }
+    }
     $args = @(
         "-m", "autobot.cli",
         "features", "validate",
@@ -6337,6 +6421,28 @@ function Invoke-FeaturesValidateAndLoadReport {
 
 function Invoke-DataContractRegistryAndLoadReport {
     param([string]$PythonPath)
+    $snapshotRegistryPath = Resolve-TrainSnapshotArtifactPath -RelativePath "data/_meta/data_contract_registry.json"
+    if (-not [string]::IsNullOrWhiteSpace($snapshotRegistryPath) -and (Test-Path $snapshotRegistryPath)) {
+        $registryDoc = Load-JsonOrEmpty -PathValue $snapshotRegistryPath
+        $entries = @(Get-PropValue -ObjectValue $registryDoc -Name "entries" -DefaultValue @())
+        $entryCount = $entries.Count
+        $summary = Get-PropValue -ObjectValue $registryDoc -Name "summary" -DefaultValue @{}
+        $contractCount = [int](To-Int64 (Get-PropValue -ObjectValue $summary -Name "contract_count" -DefaultValue 0) 0)
+        if ($contractCount -le 0) {
+            $contractCount = [int](To-Int64 $entryCount 0)
+        }
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ""
+                Command = "[frozen-close-contract] data_contract_registry"
+            }
+            RegistryPath = $snapshotRegistryPath
+            Registry = $registryDoc
+            ContractCount = $contractCount
+            Usable = [bool]($contractCount -gt 0)
+        }
+    }
     $args = @(
         "-m", "autobot.ops.data_contract_registry",
         "--project-root", $resolvedProjectRoot
@@ -6379,6 +6485,31 @@ function Invoke-DataContractRegistryAndLoadReport {
 
 function Invoke-LiveFeatureParityAndLoadReport {
     param([string]$PythonPath)
+    $snapshotReportPath = Resolve-TrainSnapshotArtifactPath -RelativePath ("data/features/features_" + $FeatureSet + "/_meta/live_feature_parity_report.json")
+    if (-not [string]::IsNullOrWhiteSpace($snapshotReportPath) -and (Test-Path $snapshotReportPath)) {
+        $reportDoc = Load-JsonOrEmpty -PathValue $snapshotReportPath
+        $sampledPairs = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "sampled_pairs" -DefaultValue 0) 0)
+        $comparedPairs = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "compared_pairs" -DefaultValue 0) 0)
+        $passingPairs = [int](To-Int64 (Get-PropValue -ObjectValue $reportDoc -Name "passing_pairs" -DefaultValue 0) 0)
+        $acceptable = To-Bool (Get-PropValue -ObjectValue $reportDoc -Name "acceptable" -DefaultValue $false) $false
+        $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
+        $usable = ($sampledPairs -gt 0) -and ($acceptable) -and ($status -eq "PASS")
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ""
+                Command = "[frozen-close-contract] live_feature_parity"
+            }
+            ReportPath = $snapshotReportPath
+            Report = $reportDoc
+            SampledPairs = $sampledPairs
+            ComparedPairs = $comparedPairs
+            PassingPairs = $passingPairs
+            Acceptable = [bool]$acceptable
+            Status = $status
+            Usable = [bool]$usable
+        }
+    }
     $args = @(
         "-m", "autobot.ops.live_feature_parity_report",
         "--project-root", $resolvedProjectRoot,
@@ -6427,6 +6558,26 @@ function Invoke-LiveFeatureParityAndLoadReport {
 
 function Invoke-FeatureDatasetCertificationAndLoadReport {
     param([string]$PythonPath)
+    $snapshotReportPath = Resolve-TrainSnapshotArtifactPath -RelativePath ("data/features/features_" + $FeatureSet + "/_meta/feature_dataset_certification.json")
+    if (-not [string]::IsNullOrWhiteSpace($snapshotReportPath) -and (Test-Path $snapshotReportPath)) {
+        $reportDoc = Load-JsonOrEmpty -PathValue $snapshotReportPath
+        $status = [string](Get-PropValue -ObjectValue $reportDoc -Name "status" -DefaultValue "")
+        $pass = To-Bool (Get-PropValue -ObjectValue $reportDoc -Name "pass" -DefaultValue $false) $false
+        $reasons = @((Get-PropValue -ObjectValue $reportDoc -Name "reasons" -DefaultValue @()))
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ""
+                Command = "[frozen-close-contract] feature_dataset_certification"
+            }
+            ReportPath = $snapshotReportPath
+            Report = $reportDoc
+            Status = $status
+            Pass = [bool]$pass
+            Reasons = @($reasons)
+            Usable = [bool]($pass -and ($status -eq "PASS"))
+        }
+    }
     $args = @(
         "-m", "autobot.ops.feature_dataset_certification",
         "--project-root", $resolvedProjectRoot,
@@ -6468,6 +6619,38 @@ function Invoke-FeatureDatasetCertificationAndLoadReport {
 
 function Invoke-PrivateExecutionLabelStoreAndLoadReport {
     param([string]$PythonPath)
+    $snapshotBuildReportPath = Resolve-TrainSnapshotArtifactPath -RelativePath "data/parquet/private_execution_v1/_meta/build_report.json"
+    $snapshotValidateReportPath = Resolve-TrainSnapshotArtifactPath -RelativePath "data/parquet/private_execution_v1/_meta/validate_report.json"
+    if (
+        (-not [string]::IsNullOrWhiteSpace($snapshotBuildReportPath)) -and
+        (-not [string]::IsNullOrWhiteSpace($snapshotValidateReportPath)) -and
+        (Test-Path $snapshotBuildReportPath) -and
+        (Test-Path $snapshotValidateReportPath)
+    ) {
+        $buildReport = Load-JsonOrEmpty -PathValue $snapshotBuildReportPath
+        $validateReport = Load-JsonOrEmpty -PathValue $snapshotValidateReportPath
+        $rowsWrittenTotal = [int](To-Int64 (Get-PropValue -ObjectValue $buildReport -Name "rows_written_total" -DefaultValue 0) 0)
+        $status = [string](Get-PropValue -ObjectValue $validateReport -Name "status" -DefaultValue "")
+        $pass = To-Bool (Get-PropValue -ObjectValue $validateReport -Name "pass" -DefaultValue $false) $false
+        $reasons = @((Get-PropValue -ObjectValue $validateReport -Name "reasons" -DefaultValue @()))
+        $usable = ($rowsWrittenTotal -gt 0) -and ($pass) -and ($status -eq "PASS")
+        return [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = ""
+                Command = "[frozen-close-contract] private_execution_label_store"
+            }
+            BuildReportPath = $snapshotBuildReportPath
+            BuildReport = $buildReport
+            ValidateReportPath = $snapshotValidateReportPath
+            ValidateReport = $validateReport
+            RowsWrittenTotal = [int]$rowsWrittenTotal
+            Status = $status
+            Pass = [bool]$pass
+            Reasons = @($reasons)
+            Usable = [bool]$usable
+        }
+    }
     $args = @(
         "-m", "autobot.ops.private_execution_label_store",
         "--project-root", $resolvedProjectRoot
@@ -9491,18 +9674,11 @@ try {
         script_stack_trace = [string]$_.ScriptStackTrace
     }
     if ([string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
-        $defaultStage = "acceptance_gate"
-        $defaultCode = "UNHANDLED_EXCEPTION"
-        if ($exceptionMessage -like "*dependency runtime export*") {
-            $defaultStage = "runtime_export"
-            $defaultCode = "DEPENDENCY_RUNTIME_EXPORT_FAILED"
-        } elseif ($exceptionMessage -like "*FUSION_RUNTIME_*" -or (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion")) {
-            $defaultStage = "fusion_train"
-        } elseif ($exceptionMessage -like "*TRAIN_SNAPSHOT_CLOSE*") {
-            $defaultStage = "data_close"
-            $defaultCode = "TRAIN_SNAPSHOT_CLOSE_FAILED"
-        }
-        Set-ReportFailure -Stage $defaultStage -Code $defaultCode -ReportPath $candidateRunDir
+        $resolvedUnhandledFailure = Resolve-UnhandledAcceptanceFailureStage -ExceptionMessage $exceptionMessage
+        Set-ReportFailure `
+            -Stage ([string](Get-PropValue -ObjectValue $resolvedUnhandledFailure -Name "stage" -DefaultValue "acceptance_gate")) `
+            -Code ([string](Get-PropValue -ObjectValue $resolvedUnhandledFailure -Name "code" -DefaultValue "UNHANDLED_EXCEPTION")) `
+            -ReportPath $candidateRunDir
     }
     Update-RunArtifactStatus `
         -RunDir $candidateRunDir `

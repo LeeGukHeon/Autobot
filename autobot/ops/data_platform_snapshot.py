@@ -32,6 +32,11 @@ SNAPSHOT_VALIDATE_REPORT_FALLBACKS: dict[str, Path] = {
     "candles_api_v1": Path("data/collect/_meta/candle_validate_report.json"),
 }
 
+SNAPSHOT_META_ARTIFACTS: tuple[Path, ...] = (
+    Path("data") / "_meta" / "data_contract_registry.json",
+    Path("data") / "_meta" / "dataset_retention_registry.json",
+)
+
 
 def ready_snapshot_pointer_path(*, project_root: Path) -> Path:
     return project_root / "data" / "_meta" / "data_platform_ready_snapshot.json"
@@ -133,6 +138,16 @@ def publish_ready_snapshot(
             "requirements": requirements,
         }
 
+    meta_artifacts_payload: dict[str, str] = {}
+    for relative_path in SNAPSHOT_META_ARTIFACTS:
+        source_path = resolved_project_root / relative_path
+        if not source_path.exists():
+            continue
+        target_path = snapshot_root / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        meta_artifacts_payload[str(relative_path)] = str(target_path)
+
     summary = {
         "policy": "data_platform_ready_snapshot_v1",
         "snapshot_id": snapshot_id,
@@ -140,6 +155,7 @@ def publish_ready_snapshot(
         "project_root": str(resolved_project_root),
         "snapshot_root": str(snapshot_root),
         "datasets": dataset_payload,
+        "meta_artifacts": meta_artifacts_payload,
     }
     summary_path = summary_root / "summary.json"
     _write_json_atomic(summary_path, summary)
@@ -150,6 +166,7 @@ def publish_ready_snapshot(
         "summary_path": str(summary_path),
         "pointer_path": str(ready_snapshot_pointer_path(project_root=resolved_project_root)),
         "datasets": dataset_payload,
+        "meta_artifacts": meta_artifacts_payload,
     }
 
 

@@ -160,6 +160,13 @@ def _make_fake_python_exe(tmp_path: Path) -> Path:
                 print(f"[ops][feature-dataset-certification] path={report_path}")
                 sys.exit(0)
 
+            if tuple(args[:2]) == ("-m", "autobot.ops.private_execution_label_store"):
+                build_path = ROOT / "data" / "parquet" / "private_execution_v1" / "_meta" / "build_report.json"
+                write_json(build_path, {"rows_written_total": 12, "status": "PASS"})
+                write_json(build_path.parent / "validate_report.json", {"status": "PASS", "pass": True, "reasons": []})
+                print(str(build_path))
+                sys.exit(0)
+
             if command_key == ("-m", "autobot.cli", "model", "inspect-runtime-dataset"):
                 dataset_root = Path(arg_value("--dataset-root"))
                 contract_path = dataset_root.parent / "fusion_runtime_input_contract.json"
@@ -250,7 +257,9 @@ def test_candidate_acceptance_reuses_backtest_and_stat_validation_cache(tmp_path
     project_root.mkdir()
     _write_json(project_root / "data" / "_meta" / "data_platform_ready_snapshot.json", {"snapshot_id": "snapshot-cache-001"})
     _seed_train_snapshot_close_contract(project_root)
-    _write_json(project_root / "models" / "registry" / "train_v5_fusion" / "champion.json", {"run_id": "champion-run-000"})
+    model_family = "train_v5_panel_ensemble"
+    trainer_name = "v5_panel_ensemble"
+    _write_json(project_root / "models" / "registry" / model_family / "champion.json", {"run_id": "champion-run-000"})
     python_exe = _make_fake_python_exe(tmp_path)
     wrapper_script = tmp_path / "run_acceptance_once.ps1"
     wrapper_script.write_text(
@@ -266,7 +275,7 @@ def test_candidate_acceptance_reuses_backtest_and_stat_validation_cache(tmp_path
             + " -BatchDate "
             + json.dumps("2026-03-08")
             + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
-            + "-ModelFamily train_v5_fusion -Trainer v5_fusion\n"
+            + f"-ModelFamily {model_family} -Trainer {trainer_name}\n"
         ),
         encoding="utf-8",
     )
@@ -305,6 +314,6 @@ def test_candidate_acceptance_reuses_backtest_and_stat_validation_cache(tmp_path
     assert report["steps"]["backtest_champion"]["reused"] is True
     assert report["steps"]["backtest_runtime_parity_candidate"]["reused"] is True
     assert report["steps"]["backtest_runtime_parity_champion"]["reused"] is True
-    cache_root = project_root / "models" / "registry" / "train_v5_fusion" / "_acceptance_backtest_cache"
+    cache_root = project_root / "models" / "registry" / model_family / "_acceptance_backtest_cache"
     assert cache_root.exists()
     assert any((cache_root / entry).is_dir() for entry in os.listdir(cache_root))

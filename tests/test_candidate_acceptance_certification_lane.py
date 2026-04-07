@@ -2637,3 +2637,4 @@ def test_candidate_acceptance_fails_fast_on_runtime_deploy_contract_not_ready(tm
     assert "backtest_candidate" not in report["steps"]
     assert "backtest_runtime_parity_candidate" not in report["steps"]
     assert backtests == []
+
