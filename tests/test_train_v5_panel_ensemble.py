@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import joblib
 import numpy as np
 import polars as pl
 import autobot.models.train_v5_panel_ensemble as panel_module
 
+from autobot.models.predictor import load_predictor_from_registry
 from autobot.models.registry import load_json
 from autobot.models.train_v5_panel_ensemble import (
     TrainV5PanelEnsembleOptions,
@@ -740,3 +742,64 @@ def test_load_panel_inference_dataset_window_rebuilds_runtime_source_dataset(tmp
     assert dataset.rows == 2
     assert dataset.y_cls.tolist() == [0, 0]
     assert dataset.feature_names == ("feat_a",)
+
+
+def test_load_predictor_backfills_legacy_panel_auxiliary_head_fields(tmp_path: Path) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    run_dir = registry_root / "train_v5_panel_ensemble" / "legacy-panel-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "train_config.yaml").write_text(
+        json.dumps(
+            {
+                "model_family": "train_v5_panel_ensemble",
+                "dataset_root": str(tmp_path / "unused"),
+                "feature_columns": ["feat_a"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    estimator = panel_module.V5PanelEnsembleEstimator(
+        classifier_bundle={"model_type": "classifier", "estimator": DummyClassifier()},
+        ranker_bundle={"model_type": "ranker", "estimator": DummyRanker()},
+        auxiliary_classifier_bundles={},
+        auxiliary_ranker_bundles={},
+        regressor_bundles={"h12": {"estimator": DummyRegressor(0.1)}},
+        regression_member_bundles={},
+        meta_model=panel_module._StackMetaModel(
+            intercept=0.0,
+            coefficients=(1.0, 0.0, 0.0),
+            feature_shift=(0.0, 0.0, 0.0),
+            feature_scale=(1.0, 1.0, 1.0),
+        ),
+        meta_ensemble=(),
+        regression_horizons=(12,),
+        primary_horizon=12,
+        uncertainty_temperature=1.0,
+    )
+    object.__delattr__(estimator, "auxiliary_classifier_bundles")
+    object.__delattr__(estimator, "auxiliary_ranker_bundles")
+    joblib.dump({"model_type": "v5_panel_ensemble", "estimator": estimator}, run_dir / "model.bin")
+
+    predictor = load_predictor_from_registry(
+        registry_root=registry_root,
+        model_ref="legacy-panel-run",
+        model_family="train_v5_panel_ensemble",
+    )
+
+    panel_estimator = predictor.model_bundle["estimator"]
+    assert getattr(panel_estimator, "auxiliary_classifier_bundles") == {}
+    assert getattr(panel_estimator, "auxiliary_ranker_bundles") == {}
+
+    contract = predictor.predict_score_contract(np.asarray([[0.25]], dtype=np.float64))
+    assert set(contract.keys()) >= {
+        "final_rank_score",
+        "final_uncertainty",
+        "score_mean",
+        "score_lcb",
+        "final_expected_return",
+        "final_expected_es",
+        "final_alpha_lcb",
+        "uncertainty_available",
+    }

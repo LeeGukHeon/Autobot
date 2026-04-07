@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import MISSING, dataclass, fields, replace
 import hashlib
 import json
 from pathlib import Path
@@ -113,6 +113,24 @@ class V5PanelEnsembleEstimator:
     regression_horizons: tuple[int, ...]
     primary_horizon: int
     uncertainty_temperature: float = 1.0
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        payload = dict(state or {})
+        # Older panel ensemble runs were serialized before auxiliary head bundles
+        # were added. Live/paper runtime still needs to load those run dirs.
+        payload.setdefault("auxiliary_classifier_bundles", {})
+        payload.setdefault("auxiliary_ranker_bundles", {})
+        for field in fields(type(self)):
+            if field.name in payload:
+                object.__setattr__(self, field.name, payload[field.name])
+                continue
+            if field.default is not MISSING:
+                object.__setattr__(self, field.name, field.default)
+                continue
+            if field.default_factory is not MISSING:
+                object.__setattr__(self, field.name, field.default_factory())
+                continue
+            raise AttributeError(f"missing required estimator field during unpickle: {field.name}")
 
     def _predict_regression_distribution(self, x: np.ndarray) -> dict[str, dict[str, np.ndarray]]:
         distributions: dict[str, dict[str, np.ndarray]] = {}
