@@ -102,3 +102,52 @@ def test_entry_boundary_can_require_support_quality_when_low_support_rows_drive_
     assert contract["calibration_metrics"]["support_quality_breakdown"]["reduced_context_like"]["rows"] == 2
     assert blocked["allowed"] is False
     assert "ENTRY_BOUNDARY_SUPPORT_QUALITY_BELOW_THRESHOLD" in blocked["reason_codes"]
+
+
+def test_entry_boundary_evaluate_is_backward_compatible_with_legacy_six_feature_contract() -> None:
+    legacy_contract = {
+        "policy": "risk_calibrated_entry_boundary_v1",
+        "alpha_lcb_floor": 0.0,
+        "tradability_threshold": 0.2,
+        "severe_loss_risk_threshold": 0.7,
+        "support_quality_policy": {
+            "enabled": True,
+            "support_score_threshold": 0.0,
+            "tradability_penalty": 0.0,
+            "reduced_context_severe_loss_risk_multiplier": 1.0,
+            "unknown_support_severe_loss_risk_multiplier": 1.0,
+            "tradability_evidence_risk_multiplier": 1.0,
+        },
+        "risk_model": {
+            "feature_names": [
+                "final_expected_return",
+                "final_expected_es",
+                "final_uncertainty",
+                "final_tradability",
+                "final_alpha_lcb",
+                "final_rank_score",
+            ],
+            "intercept": 0.0,
+            "coefficients": [0.5, -0.2, -0.1, 0.2, 0.3, 0.1],
+            "feature_shift": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "feature_scale": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            "constant_probability": None,
+        },
+    }
+
+    decision = evaluate_entry_boundary(
+        row={
+            "final_rank_score": 0.8,
+            "final_expected_return": 0.1,
+            "final_expected_es": 0.02,
+            "final_tradability": 0.7,
+            "final_uncertainty": 0.03,
+            "final_alpha_lcb": 0.05,
+            "sequence_support_score": 1.0,
+            "lob_support_score": 1.0,
+        },
+        contract=legacy_contract,
+    )
+
+    assert decision["enabled"] is True
+    assert isinstance(decision["estimated_severe_loss_risk"], float)

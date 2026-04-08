@@ -21,11 +21,21 @@ class _LinearRiskModel:
         if self.constant_probability is not None:
             probs = np.full(matrix.shape[0], float(self.constant_probability), dtype=np.float64)
             return np.column_stack([1.0 - probs, probs])
-        shift = np.asarray(self.feature_shift, dtype=np.float64)
-        scale = np.asarray(self.feature_scale, dtype=np.float64)
+        coeff = np.asarray(self.coefficients, dtype=np.float64)
+        target_width = int(coeff.shape[0])
+        matrix = _align_feature_matrix(matrix=matrix, target_width=target_width)
+        shift = _align_vector_width(
+            np.asarray(self.feature_shift, dtype=np.float64),
+            target_width=target_width,
+            fill_value=0.0,
+        )
+        scale = _align_vector_width(
+            np.asarray(self.feature_scale, dtype=np.float64),
+            target_width=target_width,
+            fill_value=1.0,
+        )
         safe_scale = np.where(np.abs(scale) < 1e-12, 1.0, scale)
         normalized = (matrix - shift) / safe_scale
-        coeff = np.asarray(self.coefficients, dtype=np.float64)
         logits = normalized @ coeff + float(self.intercept)
         probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -40.0, 40.0)))
         return np.column_stack([1.0 - probs, probs])
@@ -246,19 +256,9 @@ def evaluate_entry_boundary(
     if not payload:
         return {"enabled": False, "allowed": True, "reason_codes": [], "estimated_severe_loss_risk": None}
 
-    features = np.asarray(
-        [
-            _safe_optional_float(row.get("final_expected_return")) or 0.0,
-            _safe_optional_float(row.get("final_expected_es")) or 0.0,
-            _safe_optional_float(row.get("final_uncertainty")) or 0.0,
-            _safe_optional_float(row.get("final_tradability")) or 0.0,
-            _safe_optional_float(row.get("final_alpha_lcb")) or 0.0,
-            _safe_optional_float(row.get("final_rank_score")) or 0.0,
-            _resolve_row_support_quality_score(row=row),
-        ],
-        dtype=np.float64,
-    ).reshape(1, -1)
     risk_doc = dict(payload.get("risk_model") or {})
+    feature_names = tuple(str(item).strip() for item in (risk_doc.get("feature_names") or []) if str(item).strip())
+    features = _build_entry_boundary_feature_vector(row=row, feature_names=feature_names).reshape(1, -1)
     risk_model = _LinearRiskModel(
         intercept=float(risk_doc.get("intercept") or 0.0),
         coefficients=tuple(float(item) for item in (risk_doc.get("coefficients") or [])),
@@ -346,6 +346,57 @@ def _safe_optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _align_vector_width(values: np.ndarray, *, target_width: int, fill_value: float) -> np.ndarray:
+    vector = np.asarray(values, dtype=np.float64).reshape(-1)
+    if target_width <= 0:
+        return np.zeros(0, dtype=np.float64)
+    if vector.shape[0] == target_width:
+        return vector
+    if vector.shape[0] > target_width:
+        return vector[:target_width]
+    padding = np.full(target_width - vector.shape[0], float(fill_value), dtype=np.float64)
+    return np.concatenate([vector, padding])
+
+
+def _align_feature_matrix(*, matrix: np.ndarray, target_width: int) -> np.ndarray:
+    values = np.asarray(matrix, dtype=np.float64)
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+    current_width = int(values.shape[1]) if values.ndim >= 2 else 0
+    if current_width == target_width:
+        return values
+    if current_width > target_width:
+        return values[:, :target_width]
+    padding = np.zeros((values.shape[0], target_width - current_width), dtype=np.float64)
+    return np.concatenate([values, padding], axis=1)
+
+
+def _build_entry_boundary_feature_vector(*, row: dict[str, Any], feature_names: tuple[str, ...] | None = None) -> np.ndarray:
+    ordered_names = tuple(feature_names or ())
+    if not ordered_names:
+        ordered_names = (
+            "final_expected_return",
+            "final_expected_es",
+            "final_uncertainty",
+            "final_tradability",
+            "final_alpha_lcb",
+            "final_rank_score",
+        )
+        support_score = _resolve_row_support_quality_score(row=row)
+        if support_score != 2.0 or "sequence_support_score" in row or "lob_support_score" in row:
+            ordered_names = ordered_names + ("support_quality_score",)
+    value_by_name = {
+        "final_expected_return": _safe_optional_float(row.get("final_expected_return")) or 0.0,
+        "final_expected_es": _safe_optional_float(row.get("final_expected_es")) or 0.0,
+        "final_uncertainty": _safe_optional_float(row.get("final_uncertainty")) or 0.0,
+        "final_tradability": _safe_optional_float(row.get("final_tradability")) or 0.0,
+        "final_alpha_lcb": _safe_optional_float(row.get("final_alpha_lcb")) or 0.0,
+        "final_rank_score": _safe_optional_float(row.get("final_rank_score")) or 0.0,
+        "support_quality_score": _resolve_row_support_quality_score(row=row),
+    }
+    return np.asarray([float(value_by_name.get(name, 0.0)) for name in ordered_names], dtype=np.float64)
 
 
 def _resolve_support_score_array(
