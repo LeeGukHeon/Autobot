@@ -31,6 +31,11 @@ from .runtime_feature_dataset import write_runtime_feature_dataset
 from .runtime_recommendation_contract import normalize_runtime_exit_payload
 from .selection_calibration import _identity_calibration
 from .selection_policy import build_selection_policy_from_recommendations
+from .selection_optimizer import (
+    SelectionGridConfig,
+    build_selection_recommendations_from_walk_forward,
+    build_window_selection_objectives,
+)
 from .split import compute_time_splits, split_masks
 from .trade_action_policy import normalize_trade_action_policy
 from .train_v1 import _build_thresholds, build_selection_recommendations
@@ -50,6 +55,7 @@ from .v5_domain_weighting import (
 )
 from .ood_generalization import build_ood_generalization_report, write_ood_generalization_report
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
+from .split import compute_anchored_walk_forward_splits
 
 
 VALID_FUSION_STACKERS = ("linear", "monotone_gbdt", "regime_moe")
@@ -218,6 +224,109 @@ def _fusion_runtime_input_contract_path(run_dir: Path) -> Path:
 
 def _fusion_entry_boundary_path(run_dir: Path) -> Path:
     return run_dir / "entry_boundary_contract.json"
+
+
+def _resolve_fusion_interval_ms(ts_ms: np.ndarray) -> int:
+    values = np.unique(np.asarray(ts_ms, dtype=np.int64))
+    if values.size < 2:
+        return 300_000
+    diffs = np.diff(values)
+    positive = diffs[diffs > 0]
+    if positive.size <= 0:
+        return 300_000
+    return max(int(np.median(positive)), 1)
+
+
+def _build_fusion_selection_walk_forward(
+    *,
+    valid_scores: np.ndarray,
+    y_reg_valid: np.ndarray,
+    valid_ts_ms: np.ndarray,
+    thresholds: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    fallback_selection_recommendations = build_selection_recommendations(
+        valid_scores=valid_scores,
+        valid_ts_ms=valid_ts_ms,
+        thresholds=thresholds,
+    )
+    unique_ts = np.unique(np.asarray(valid_ts_ms, dtype=np.int64))
+    interval_ms = _resolve_fusion_interval_ms(valid_ts_ms)
+    selection_walk_forward: dict[str, Any] = {
+        "policy": "fusion_selection_walk_forward_v1",
+        "enabled": False,
+        "window_count_requested": 4,
+        "window_count_effective": 0,
+        "interval_ms": int(interval_ms),
+        "windows": [],
+        "skip_reason": "",
+    }
+    if unique_ts.size < 5:
+        selection_walk_forward["skip_reason"] = "INSUFFICIENT_UNIQUE_TIMESTAMPS"
+        return fallback_selection_recommendations, selection_walk_forward
+    try:
+        window_specs = compute_anchored_walk_forward_splits(
+            np.asarray(valid_ts_ms, dtype=np.int64),
+            valid_ratio=0.25,
+            test_ratio=0.25,
+            window_count=int(selection_walk_forward["window_count_requested"]),
+            embargo_bars=0,
+            interval_ms=int(interval_ms),
+        )
+    except ValueError as exc:
+        selection_walk_forward["skip_reason"] = str(exc)
+        return fallback_selection_recommendations, selection_walk_forward
+
+    windows: list[dict[str, Any]] = []
+    valid_scores_array = np.asarray(valid_scores, dtype=np.float64)
+    valid_returns_array = np.asarray(y_reg_valid, dtype=np.float64)
+    valid_ts_array = np.asarray(valid_ts_ms, dtype=np.int64)
+    for labels, info in window_specs:
+        masks = split_masks(labels)
+        test_mask = masks["test"]
+        if not np.any(test_mask):
+            continue
+        window_scores = valid_scores_array[test_mask]
+        window_returns = valid_returns_array[test_mask]
+        window_ts = valid_ts_array[test_mask]
+        windows.append(
+            {
+                "window_index": int(info.window_index),
+                "time_window": {
+                    "valid_start_ts": int(info.valid_start_ts),
+                    "test_start_ts": int(info.test_start_ts),
+                    "test_end_ts": int(info.test_end_ts),
+                },
+                "counts": dict(info.counts),
+                "selection_optimization": build_window_selection_objectives(
+                    scores=window_scores,
+                    y_reg=window_returns,
+                    ts_ms=window_ts,
+                    thresholds=thresholds,
+                    fee_bps_est=0.0,
+                    safety_bps=0.0,
+                    config=SelectionGridConfig(),
+                ),
+            }
+        )
+    if not windows:
+        selection_walk_forward["skip_reason"] = "NO_USABLE_WALK_FORWARD_WINDOWS"
+        return fallback_selection_recommendations, selection_walk_forward
+
+    selection_recommendations = build_selection_recommendations_from_walk_forward(
+        windows=windows,
+        fallback_recommendations=fallback_selection_recommendations,
+    )
+    selection_walk_forward.update(
+        {
+            "enabled": True,
+            "window_count_effective": int(len(windows)),
+            "windows": windows,
+            "recommended_threshold_key": str(selection_recommendations.get("recommended_threshold_key") or "").strip(),
+            "recommended_threshold_key_source": str(selection_recommendations.get("recommended_threshold_key_source") or "").strip(),
+            "fallback_used": bool(((selection_recommendations.get("optimizer") or {}).get("fallback_used"))),
+        }
+    )
+    return selection_recommendations, selection_walk_forward
 
 
 def _normalize_support_level_summary(frame: pl.DataFrame) -> dict[str, int]:
@@ -1767,8 +1876,17 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         ev_min_selected=1,
         sample_weight=sample_weight[valid_mask],
     )
-    selection_recommendations = build_selection_recommendations(valid_scores=valid_contract["final_rank_score"], valid_ts_ms=ts_ms[valid_mask], thresholds=thresholds)
-    selection_policy = build_selection_policy_from_recommendations(selection_recommendations=selection_recommendations, fallback_threshold_key="top_5pct", score_source="score_mean")
+    selection_recommendations, selection_walk_forward = _build_fusion_selection_walk_forward(
+        valid_scores=valid_contract["final_rank_score"],
+        y_reg_valid=y_reg[valid_mask],
+        valid_ts_ms=ts_ms[valid_mask],
+        thresholds=thresholds,
+    )
+    selection_policy = build_selection_policy_from_recommendations(
+        selection_recommendations=selection_recommendations,
+        fallback_threshold_key="top_5pct",
+        score_source="score_mean",
+    )
     selection_calibration = _identity_calibration(reason="FUSION_IDENTITY_CALIBRATION")
     entry_boundary = build_risk_calibrated_entry_boundary(
         final_rank_score=valid_contract["final_rank_score"],
@@ -2011,7 +2129,23 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         encoding="utf-8",
     )
     walk_forward_report_path = run_dir / "walk_forward_report.json"
-    walk_forward_report_path.write_text(json.dumps({"policy": "fusion_holdout_v1", "valid_metrics": valid_metrics, "test_metrics": test_metrics}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    walk_forward_report_path.write_text(
+        json.dumps(
+            {
+                "policy": "fusion_holdout_v2",
+                "valid_metrics": valid_metrics,
+                "test_metrics": test_metrics,
+                "selection_walk_forward": selection_walk_forward,
+                "selection_recommendations": selection_recommendations,
+                "selection_policy": selection_policy,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     promotion_payload = {
         "run_id": run_id,
         "promote": False,

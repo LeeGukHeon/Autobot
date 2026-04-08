@@ -127,6 +127,30 @@ def _base_rows() -> list[dict[str, object]]:
     return rows
 
 
+def _dense_rows() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for idx in range(48):
+        ts_ms = 1_774_569_600_000 + (idx * 60_000)
+        split = "train" if idx < 24 else ("valid" if idx < 36 else "test")
+        if idx < 24:
+            y_reg = -0.002 if idx % 2 == 0 else 0.003
+        else:
+            # Keep held-out slices mostly positive so walk-forward selection has
+            # feasible windows, but preserve both classes for the fitted heads.
+            y_reg = -0.0005 if idx % 4 == 0 else (0.004 + (0.0003 * (idx - 24)))
+        y_cls = 1 if y_reg > 0 else 0
+        rows.append(
+            {
+                "market": "KRW-BTC",
+                "ts_ms": ts_ms,
+                "split": split,
+                "y_cls": y_cls,
+                "y_reg": y_reg,
+            }
+        )
+    return rows
+
+
 def _runtime_rows_for(date_prefix: str) -> list[dict[str, object]]:
     start_ts_ms = int(parse_operating_date_to_ts_ms(date_prefix) or 0)
     end_ts_ms = int(parse_operating_date_to_ts_ms(date_prefix, end_of_day=True) or 0)
@@ -464,6 +488,110 @@ def test_train_v5_fusion_supports_regime_moe_stacker(tmp_path: Path) -> None:
     assert fusion_contract["regime_cluster_count"] >= 1
     assert runtime_recommendations["fusion_stacker_family"] == "regime_moe"
     assert runtime_recommendations["fusion_gating_policy"] == "sequence_regime_embedding_nearest_centroid_v1"
+
+
+def test_train_v5_fusion_selection_policy_uses_walk_forward_optimizer_when_valid_rows_support_windows(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-selection-001"
+    base_rows = _dense_rows()
+    panel_rows = []
+    sequence_rows = []
+    lob_rows = []
+    for row in base_rows:
+        y_reg = float(row["y_reg"])
+        panel_rows.append(
+            {
+                **row,
+                "final_rank_score": 0.85 + (y_reg * 2.0),
+                "final_expected_return": y_reg,
+                "final_expected_es": abs(y_reg) * 0.1,
+                "final_tradability": 0.9,
+                "final_uncertainty": 0.01,
+                "final_alpha_lcb": y_reg - (abs(y_reg) * 0.1) - 0.01,
+            }
+        )
+        sequence_rows.append(
+            {
+                **row,
+                "support_level": "strict_full",
+                "directional_probability_primary": 0.75,
+                "sequence_uncertainty_primary": 0.02,
+                "return_quantile_h3_q10": y_reg * 0.8,
+                "return_quantile_h3_q50": y_reg,
+                "return_quantile_h3_q90": y_reg * 1.2,
+                "regime_embedding_0": 0.1,
+            }
+        )
+        lob_rows.append(
+            {
+                **row,
+                "support_level": "strict_full",
+                "micro_alpha_1s": y_reg * 0.3,
+                "micro_alpha_5s": y_reg * 0.4,
+                "micro_alpha_30s": y_reg * 0.5,
+                "micro_alpha_60s": y_reg * 0.6,
+                "micro_uncertainty": 0.02,
+                "adverse_excursion_30s": abs(y_reg) * 0.1,
+            }
+        )
+    panel_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_panel_ensemble",
+        run_id="panel-run-selection-001",
+        trainer="v5_panel_ensemble",
+        snapshot_id=snapshot_id,
+        rows=panel_rows,
+    )
+    sequence_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_sequence",
+        run_id="sequence-run-selection-001",
+        trainer="v5_sequence",
+        snapshot_id=snapshot_id,
+        rows=sequence_rows,
+    )
+    lob_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_lob",
+        run_id="lob-run-selection-001",
+        trainer="v5_lob",
+        snapshot_id=snapshot_id,
+        rows=lob_rows,
+    )
+    tradability_path = _write_expert_run(
+        root=registry_root,
+        family="train_v5_tradability",
+        run_id="tradability-run-selection-001",
+        trainer="v5_tradability",
+        snapshot_id=snapshot_id,
+        rows=_tradability_rows(base_rows),
+    )
+
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=panel_path,
+            sequence_input_path=sequence_path,
+            lob_input_path=lob_path,
+            tradability_input_path=tradability_path,
+            registry_root=registry_root,
+            logs_root=tmp_path / "logs",
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=11,
+            stacker_family="linear",
+        )
+    )
+
+    selection_policy = load_json(result.run_dir / "selection_policy.json")
+    walk_forward_report = load_json(result.walk_forward_report_path)
+
+    assert selection_policy["selection_recommendation_source"] == "walk_forward_objective_optimizer"
+    assert walk_forward_report["policy"] == "fusion_holdout_v2"
+    assert walk_forward_report["selection_walk_forward"]["enabled"] is True
+    assert walk_forward_report["selection_walk_forward"]["window_count_effective"] >= 1
+    assert walk_forward_report["selection_walk_forward"]["recommended_threshold_key_source"] == "walk_forward_objective_optimizer"
 
 
 def test_train_v5_fusion_fails_on_snapshot_mismatch(tmp_path: Path) -> None:
