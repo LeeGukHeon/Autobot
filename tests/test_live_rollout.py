@@ -618,6 +618,48 @@ def test_live_installer_candidate_defaults_to_latest_candidate_when_model_source
     assert "Environment=AUTOBOT_LIVE_MODEL_FAMILY=train_v5_fusion" in stdout
 
 
+def test_live_installer_candidate_dry_run_surfaces_legacy_state_seed_when_target_missing(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    legacy_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    legacy_db.parent.mkdir(parents=True, exist_ok=True)
+    legacy_db.write_text("sqlite-placeholder", encoding="utf-8")
+
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-UnitName",
+            "autobot-live-alpha-canary.service",
+            "-RolloutMode",
+            "canary",
+            "-RolloutTargetUnit",
+            "autobot-live-alpha-canary.service",
+            "-SyncMode",
+            "poll",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "[live-install][dry-run] seed_state_db=" in stdout
+    assert str(legacy_db) in stdout
+    assert str(project_root / "data" / "state" / "live_canary" / "live_state.db") in stdout
+
+
 def test_live_installer_candidate_accepts_small_account_position_override() -> None:
     script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
     completed = subprocess.run(

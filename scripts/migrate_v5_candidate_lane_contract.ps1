@@ -86,6 +86,44 @@ function Copy-StateForward {
     }
 }
 
+function Copy-FileWithSqliteSidecars {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath,
+        [string]$LogPrefix
+    )
+    foreach ($suffix in @("", "-wal", "-shm")) {
+        $source = $SourcePath + $suffix
+        if (-not (Test-Path $source)) {
+            continue
+        }
+        $target = $TargetPath + $suffix
+        if ($DryRun) {
+            Write-Host ("[{0}][dry-run] copy_state_db {1} -> {2}" -f $LogPrefix, $source, $target)
+            continue
+        }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+}
+
+function Copy-StateDbForward {
+    param(
+        [string]$LegacyDbPath,
+        [string]$TargetDbPath
+    )
+    if ([string]::IsNullOrWhiteSpace($LegacyDbPath) -or [string]::IsNullOrWhiteSpace($TargetDbPath)) {
+        return
+    }
+    if (-not (Test-Path $LegacyDbPath)) {
+        return
+    }
+    if (Test-Path $TargetDbPath) {
+        return
+    }
+    Copy-FileWithSqliteSidecars -SourcePath $LegacyDbPath -TargetPath $TargetDbPath -LogPrefix "v5-lane-migrate"
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { [System.IO.Path]::GetFullPath($ProjectRoot) }
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
 $resolvedDailySplitInstallScript = if ([string]::IsNullOrWhiteSpace($DailySplitInstallScript)) { Resolve-DefaultDailySplitInstallScript -Root $resolvedProjectRoot } else { $DailySplitInstallScript }
@@ -99,6 +137,8 @@ $resolvedArchiveRoot = if ([string]::IsNullOrWhiteSpace($ArchiveRoot)) {
 
 $legacyStateRoot = Join-Path $resolvedProjectRoot "logs/model_v4_challenger"
 $v5StateRoot = Join-Path $resolvedProjectRoot "logs/model_v5_candidate"
+$legacyCandidateDbPath = Join-Path $resolvedProjectRoot "data/state/live_candidate/live_state.db"
+$v5CanaryDbPath = Join-Path $resolvedProjectRoot "data/state/live_canary/live_state.db"
 $legacyCanarySlug = "autobot_live_alpha_candidate_service"
 $legacyRolloutPath = Join-Path $resolvedProjectRoot ("logs/live_rollout/latest." + $legacyCanarySlug + ".json")
 $legacyCanaryConfidenceRoot = Join-Path $resolvedProjectRoot ("logs/canary_confidence_sequence/" + $legacyCanarySlug)
@@ -120,6 +160,7 @@ foreach ($unitName in @(
 }
 
 Copy-StateForward -LegacyRoot $legacyStateRoot -TargetRoot $v5StateRoot
+Copy-StateDbForward -LegacyDbPath $legacyCandidateDbPath -TargetDbPath $v5CanaryDbPath
 Move-ToArchive -SourcePath $legacyCanaryConfidenceRoot -ArchiveBase $resolvedArchiveRoot | Out-Null
 Move-ToArchive -SourcePath $legacyRolloutPath -ArchiveBase $resolvedArchiveRoot | Out-Null
 Move-ToArchive -SourcePath $legacyStateRoot -ArchiveBase $resolvedArchiveRoot | Out-Null

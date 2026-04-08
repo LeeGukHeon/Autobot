@@ -261,6 +261,39 @@ def test_t23_2_v5_lane_migration_dry_run_surfaces_v5_split_contract() -> None:
     assert "model_family=train_v5_fusion" in stdout
 
 
+def test_t23_2_v5_lane_migration_dry_run_surfaces_state_db_copy_when_legacy_db_exists(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    legacy_db = project_root / "data" / "state" / "live_candidate" / "live_state.db"
+    legacy_db.parent.mkdir(parents=True, exist_ok=True)
+    legacy_db.write_text("sqlite-placeholder", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "migrate_v5_candidate_lane_contract.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            "python",
+            "-NoInstall",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "[v5-lane-migrate][dry-run] copy_state_db" in stdout
+    assert str(legacy_db) in stdout
+    assert str(project_root / "data" / "state" / "live_canary" / "live_state.db") in stdout
+
+
 def test_t23_2_data_platform_refresh_wrapper_training_critical_dry_run_excludes_ws_candles() -> None:
     stdout = _run_script_dry_run(
         "refresh_data_platform_layers.ps1",

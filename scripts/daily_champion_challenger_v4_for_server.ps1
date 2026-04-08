@@ -47,6 +47,7 @@ param(
     [int]$PairedPaperWarmupSec = 60,
     [int]$PairedPaperWarmupMinTradeEventsPerMarket = 1,
     [int]$ExecutionContractMinRows = 20,
+    [int[]]$ExecutionContractLookbackDays = @(14, 30),
     [ValidateSet("combined", "promote_only", "spawn_only")]
     [string]$Mode = "combined",
     [bool]$PreflightAutoRecoveryEnabled = $true,
@@ -886,6 +887,7 @@ function Invoke-ExecutionContractRefresh {
         [string]$RefreshScriptPath,
         [string]$Root,
         [string]$PyExe,
+        [int]$LookbackDays = 14,
         [switch]$IsDryRun
     )
     $args = @(
@@ -893,7 +895,8 @@ function Invoke-ExecutionContractRefresh {
         "-ExecutionPolicy", "Bypass",
         "-File", $RefreshScriptPath,
         "-ProjectRoot", $Root,
-        "-PythonExe", $PyExe
+        "-PythonExe", $PyExe,
+        "-LookbackDays", ([Math]::Max([int]$LookbackDays, 1))
     )
     if ($IsDryRun) {
         $args += "-DryRun"
@@ -921,6 +924,7 @@ function Invoke-ExecutionContractRefresh {
         Output = [string]$exec.Output
         OutputPath = [string]$outputPath
         Artifact = $artifact
+        LookbackDays = [int]([Math]::Max([int]$LookbackDays, 1))
         RowsTotal = [int](Resolve-ExecutionContractRowsTotal -Payload $artifact)
     }
 }
@@ -2061,18 +2065,51 @@ if ($runSpawnPhase) {
     $executionContractGateEnforced = (-not $DryRun) -and $executionContractRefreshAvailable
     $executionContractRefresh = $null
     if ($executionContractRefreshAvailable) {
-        $executionContractRefresh = Invoke-ExecutionContractRefresh `
-            -PwshExe $psExe `
-            -RefreshScriptPath $resolvedExecutionPolicyRefreshScript `
-            -Root $resolvedProjectRoot `
-            -PyExe $resolvedPythonExe `
-            -IsDryRun:$DryRun
+        $executionContractLookbackOptions = @()
+        foreach ($value in @($ExecutionContractLookbackDays)) {
+            $candidateLookback = [int]$value
+            if ($candidateLookback -le 0) {
+                continue
+            }
+            if ($executionContractLookbackOptions -contains $candidateLookback) {
+                continue
+            }
+            $executionContractLookbackOptions += $candidateLookback
+        }
+        if ($executionContractLookbackOptions.Count -eq 0) {
+            $executionContractLookbackOptions = @(14)
+        }
+        $executionContractAttempts = @()
+        foreach ($lookbackDays in @($executionContractLookbackOptions)) {
+            $attempt = Invoke-ExecutionContractRefresh `
+                -PwshExe $psExe `
+                -RefreshScriptPath $resolvedExecutionPolicyRefreshScript `
+                -Root $resolvedProjectRoot `
+                -PyExe $resolvedPythonExe `
+                -LookbackDays $lookbackDays `
+                -IsDryRun:$DryRun
+            $executionContractAttempts += [ordered]@{
+                lookback_days = [int]$attempt.LookbackDays
+                exit_code = [int]$attempt.ExitCode
+                rows_total = [int]$attempt.RowsTotal
+                output_path = [string]$attempt.OutputPath
+            }
+            $executionContractRefresh = $attempt
+            if ([int]$attempt.ExitCode -ne 0) {
+                break
+            }
+            if ([int]$attempt.RowsTotal -ge [int]$ExecutionContractMinRows) {
+                break
+            }
+        }
         $report.steps.refresh_execution_contract = [ordered]@{
             exit_code = [int]$executionContractRefresh.ExitCode
             command = [string]$executionContractRefresh.Command
             output_preview = [string]$executionContractRefresh.Output
             output_path = [string]$executionContractRefresh.OutputPath
             rows_total = [int]$executionContractRefresh.RowsTotal
+            lookback_days = [int]$executionContractRefresh.LookbackDays
+            attempts = @($executionContractAttempts)
             enforced = [bool]$executionContractGateEnforced
         }
         if ($executionContractGateEnforced -and (([int]$executionContractRefresh.ExitCode -ne 0) -or ([int]$executionContractRefresh.RowsTotal -lt [int]$ExecutionContractMinRows))) {

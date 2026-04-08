@@ -454,6 +454,48 @@ def _make_fake_acceptance_script(
     return script_path
 
 
+def _make_fake_execution_policy_refresh_script(tmp_path: Path, rows_by_lookback: dict[int, int]) -> Path:
+    script_path = tmp_path / "fake_execution_policy_refresh.ps1"
+    payload_json = json.dumps({int(key): int(value) for key, value in rows_by_lookback.items()}, ensure_ascii=False)
+    script_path.write_text(
+        textwrap.dedent(
+            f"""
+            param(
+                [string]$ProjectRoot = "",
+                [string]$PythonExe = "",
+                [int]$LookbackDays = 14,
+                [switch]$DryRun
+            )
+
+            $outputDir = Join-Path $ProjectRoot "logs/fake_execution_policy"
+            New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+            $rowsLookup = @'
+            {payload_json}
+            '@ | ConvertFrom-Json
+            $rowsTotal = 0
+            $lookupKey = [string]([int]$LookbackDays)
+            if ($rowsLookup.PSObject.Properties.Name -contains $lookupKey) {{
+                $rowsTotal = [int]$rowsLookup.$lookupKey
+            }}
+            $reportPath = Join-Path $outputDir ("refresh_" + [int]$LookbackDays + ".json")
+            [ordered]@{{
+                policy = "fake_execution_policy_refresh"
+                lookback_days = [int]$LookbackDays
+                rows_total = [int]$rowsTotal
+                execution_contract = [ordered]@{{
+                    rows_total = [int]$rowsTotal
+                }}
+            }} | ConvertTo-Json -Depth 8 | Set-Content -Path $reportPath -Encoding UTF8
+            Write-Host $reportPath
+            exit 0
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return script_path
+
+
 def _seed_preflight_minimum(project_root: Path) -> None:
     family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
     family_dir.mkdir(parents=True, exist_ok=True)
@@ -740,6 +782,60 @@ def test_spawn_only_treats_candidate_rejection_as_successful_no_challenger_day(t
     assert completed.returncode == 0
     assert "[daily-cc] mode=spawn_only" in completed.stdout
     assert "[daily-cc] challenger_candidate_run_id=candidate-run-001" in completed.stdout
+
+
+def test_spawn_only_retries_execution_contract_with_longer_lookback_before_failing(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-lookback"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BACKTEST_ACCEPTANCE_FAILED"],
+        },
+        exit_code=2,
+    )
+    refresh_script = _make_fake_execution_policy_refresh_script(tmp_path, {14: 9, 30: 24})
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        extra_args=[
+            "-ExecutionPolicyRefreshScript",
+            str(refresh_script),
+            "-ExecutionContractMinRows",
+            "20",
+        ],
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    refresh_step = latest["steps"]["refresh_execution_contract"]
+
+    assert refresh_step["rows_total"] == 24
+    assert refresh_step["lookback_days"] == 30
+    assert refresh_step["attempts"] == [
+        {
+            "lookback_days": 14,
+            "exit_code": 0,
+            "rows_total": 9,
+            "output_path": str(project_root / "logs" / "fake_execution_policy" / "refresh_14.json"),
+        },
+        {
+            "lookback_days": 30,
+            "exit_code": 0,
+            "rows_total": 24,
+            "output_path": str(project_root / "logs" / "fake_execution_policy" / "refresh_30.json"),
+        },
+    ]
 
 
 def test_spawn_only_uses_trainer_evidence_failure_as_root_start_reason(tmp_path: Path) -> None:

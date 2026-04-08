@@ -41,6 +41,7 @@ param(
     [int]$PairedPaperWarmupSec = 60,
     [int]$PairedPaperWarmupMinTradeEventsPerMarket = 1,
     [int]$ExecutionContractMinRows = 20,
+    [int[]]$ExecutionContractLookbackDays = @(14, 30),
     [ValidateSet("combined", "promote_only", "spawn_only")]
     [string]$Mode = "combined",
     [switch]$SkipDailyPipeline,
@@ -335,6 +336,7 @@ if ($Mode -ne "promote_only") {
     -PairedPaperWarmupSec $PairedPaperWarmupSec `
     -PairedPaperWarmupMinTradeEventsPerMarket $PairedPaperWarmupMinTradeEventsPerMarket `
     -ExecutionContractMinRows $ExecutionContractMinRows `
+    -ExecutionContractLookbackDays $ExecutionContractLookbackDays `
     -Mode $Mode `
     -SkipDailyPipeline:$true `
     -SkipFeatureContractRefresh:$true `

@@ -27,6 +27,65 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot "systemd_service_utils.ps1")
 
+function Resolve-AbsolutePathMaybeRelative {
+    param(
+        [string]$Root,
+        [string]$PathValue
+    )
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return ""
+    }
+    if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        return [System.IO.Path]::GetFullPath($PathValue)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $Root $PathValue))
+}
+
+function Copy-FileWithSqliteSidecars {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath,
+        [string]$LogPrefix
+    )
+    foreach ($suffix in @("", "-wal", "-shm")) {
+        $source = $SourcePath + $suffix
+        if (-not (Test-Path $source)) {
+            continue
+        }
+        $target = $TargetPath + $suffix
+        if ($DryRun) {
+            Write-Host ("[{0}][dry-run] seed_state_db={1} -> {2}" -f $LogPrefix, $source, $target)
+            continue
+        }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+}
+
+function Seed-CandidateStateDbIfMissing {
+    param(
+        [string]$Root,
+        [string]$UnitName,
+        [string]$StateDbPath
+    )
+    $normalizedUnitName = ([string]$UnitName).Trim().ToLowerInvariant()
+    if ((-not $normalizedUnitName.Contains("candidate")) -and (-not $normalizedUnitName.Contains("canary"))) {
+        return
+    }
+    $targetDbPath = Resolve-AbsolutePathMaybeRelative -Root $Root -PathValue $StateDbPath
+    if ([string]::IsNullOrWhiteSpace($targetDbPath) -or (Test-Path $targetDbPath)) {
+        return
+    }
+    $legacyCandidateDbPath = Resolve-AbsolutePathMaybeRelative -Root $Root -PathValue "data/state/live_candidate/live_state.db"
+    if ([string]::IsNullOrWhiteSpace($legacyCandidateDbPath) -or (-not (Test-Path $legacyCandidateDbPath))) {
+        return
+    }
+    if ([string]::Equals($legacyCandidateDbPath, $targetDbPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+    Copy-FileWithSqliteSidecars -SourcePath $legacyCandidateDbPath -TargetPath $targetDbPath -LogPrefix "live-install"
+}
+
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
 $resolvedProjectRoot = [System.IO.Path]::GetFullPath($resolvedProjectRoot)
 $resolvedPythonExe = if ([string]::IsNullOrWhiteSpace($PythonExe)) { Resolve-DefaultPythonExe -Root $resolvedProjectRoot } else { $PythonExe }
@@ -55,6 +114,7 @@ $effectiveStateDbPath = if ([string]::IsNullOrWhiteSpace($StateDbPath)) {
 } else {
     $StateDbPath
 }
+Seed-CandidateStateDbIfMissing -Root $resolvedProjectRoot -UnitName $UnitName -StateDbPath $effectiveStateDbPath
 
 $liveArgList = @(
     "-m", "autobot.cli",
