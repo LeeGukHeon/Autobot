@@ -391,6 +391,86 @@ def test_model_alpha_v5_contract_emits_signal_first_sizing_meta() -> None:
     assert "PORTFOLIO_CONFIDENCE_HAIRCUT" in sizing_decision["reason_codes"]
 
 
+def test_model_alpha_v5_contract_keeps_size_ladder_advisory_only() -> None:
+    frame = pl.DataFrame(
+        {
+            "ts_ms": [1_000],
+            "market": ["KRW-BTC"],
+            "f1": [1.0],
+            "close": [100.0],
+        }
+    )
+    strategy = _build_strategy(
+        groups=[(1_000, frame)],
+        estimator=_V5ContractEstimator(
+            score_mean=[0.70],
+            final_expected_return=[0.012],
+            final_expected_es=[0.006],
+            final_tradability=[0.40],
+            final_uncertainty=[0.25],
+            final_alpha_lcb=[0.004],
+        ),
+        settings=ModelAlphaSettings(
+            selection=ModelAlphaSelectionSettings(top_pct=1.0, min_prob=None, min_candidates_per_ts=1),
+            position=ModelAlphaPositionSettings(base_budget_quote=10_000.0),
+        ),
+        runtime_recommendations={
+            "decision_contract_version": "v5_post_model_contract_v1",
+            "risk_control": {
+                "version": 1,
+                "policy": "execution_risk_control_hoeffding_v1",
+                "status": "ready",
+                "contract_status": "ok",
+                "decision_metric_name": "expected_action_value",
+                "selected_threshold": 0.5,
+                "selected_coverage": 31,
+                "selected_nonpositive_rate_ucb": 0.18,
+                "selected_severe_loss_rate_ucb": 0.11,
+                "live_gate": {
+                    "enabled": True,
+                    "metric_name": "expected_action_value",
+                    "threshold": 0.5,
+                    "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                },
+                "subgroup_family": {
+                    "enabled": False,
+                    "feature_name": "",
+                    "bucket_count_requested": 0,
+                    "bucket_count_effective": 0,
+                    "bounds": [],
+                    "min_coverage": 0,
+                },
+                "size_ladder": {
+                    "enabled": True,
+                    "status": "ready",
+                    "feature_name": "",
+                    "global_max_multiplier": 0.25,
+                    "group_limits": [],
+                },
+            },
+        },
+    )
+
+    result = strategy.on_ts(
+        ts_ms=1_000,
+        active_markets=["KRW-BTC"],
+        latest_prices={"KRW-BTC": 100.0},
+        open_markets=set(),
+    )
+
+    bid_intent = next(intent for intent in result.intents if intent.side == "bid")
+    meta = dict(bid_intent.meta or {})
+    sizing_decision = dict(meta.get("sizing_decision") or {})
+    size_ladder_static = dict(meta.get("size_ladder_static") or {})
+    assert meta["sizing_mode"] == "v5_portfolio_budget_first"
+    assert meta["notional_multiplier_source"] == "v5_signal_haircuts"
+    assert float(meta["notional_multiplier"]) == pytest.approx(0.5)
+    assert float(sizing_decision["resolved_notional_multiplier"]) == pytest.approx(0.5)
+    assert size_ladder_static["advisory_only"] is True
+    assert size_ladder_static["ownership_applied"] is False
+    assert float(size_ladder_static["resolved_multiplier"]) == pytest.approx(0.25)
+
+
 def test_model_alpha_v5_exit_intent_carries_exit_decision_and_liquidation_policy() -> None:
     entry_frame = pl.DataFrame(
         {

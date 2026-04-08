@@ -189,6 +189,84 @@ def _tradability_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return payload
 
 
+def _write_basic_fusion_inputs(*, registry_root: Path, snapshot_id: str) -> dict[str, Path]:
+    base_rows = _base_rows()
+    panel_rows = []
+    sequence_rows = []
+    lob_rows = []
+    for row in base_rows:
+        y_reg = float(row["y_reg"])
+        panel_rows.append(
+            {
+                **row,
+                "final_rank_score": 0.2 + (y_reg * 2.0),
+                "final_expected_return": y_reg * 0.9,
+                "final_expected_es": abs(y_reg) * 0.3,
+                "final_tradability": 0.8,
+                "final_uncertainty": 0.05,
+                "final_alpha_lcb": (y_reg * 0.9) - (abs(y_reg) * 0.3) - 0.05,
+            }
+        )
+        sequence_rows.append(
+            {
+                **row,
+                "support_level": "strict_full" if row["split"] != "train" else "reduced_context",
+                "directional_probability_primary": 0.3 + (0.01 * (int(row["ts_ms"]) % 7)),
+                "sequence_uncertainty_primary": 0.04,
+                "return_quantile_h3_q10": y_reg * 0.5,
+                "return_quantile_h3_q50": y_reg * 0.8,
+                "return_quantile_h3_q90": y_reg * 1.1,
+                "regime_embedding_0": 0.1,
+            }
+        )
+        lob_rows.append(
+            {
+                **row,
+                "support_level": "strict_full",
+                "micro_alpha_1s": y_reg * 0.2,
+                "micro_alpha_5s": y_reg * 0.4,
+                "micro_alpha_30s": y_reg * 0.6,
+                "micro_alpha_60s": y_reg * 0.7,
+                "micro_uncertainty": 0.03,
+                "adverse_excursion_30s": abs(y_reg) * 0.2,
+            }
+        )
+    return {
+        "panel": _write_expert_run(
+            root=registry_root,
+            family="train_v5_panel_ensemble",
+            run_id="panel-run-basic-001",
+            trainer="v5_panel_ensemble",
+            snapshot_id=snapshot_id,
+            rows=panel_rows,
+        ),
+        "sequence": _write_expert_run(
+            root=registry_root,
+            family="train_v5_sequence",
+            run_id="sequence-run-basic-001",
+            trainer="v5_sequence",
+            snapshot_id=snapshot_id,
+            rows=sequence_rows,
+        ),
+        "lob": _write_expert_run(
+            root=registry_root,
+            family="train_v5_lob",
+            run_id="lob-run-basic-001",
+            trainer="v5_lob",
+            snapshot_id=snapshot_id,
+            rows=lob_rows,
+        ),
+        "tradability": _write_expert_run(
+            root=registry_root,
+            family="train_v5_tradability",
+            run_id="tradability-run-basic-001",
+            trainer="v5_tradability",
+            snapshot_id=snapshot_id,
+            rows=_tradability_rows(base_rows),
+        ),
+    }
+
+
 def _write_runtime_export(*, table_path: Path, rows: list[dict[str, object]]) -> Path:
     table_path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows).write_parquet(table_path)
@@ -340,9 +418,19 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert input_contract["runtime_coverage_policy"] == "auxiliary_experts_full_window_required"
     assert input_contract["runtime_coverage_summary"] == {}
     assert input_contract["inputs"]["sequence"]["support_level_counts"]["strict_full"] > 0
+    assert input_contract["input_quality_summary"]["overall_quality_status"] == "degraded"
+    assert input_contract["input_quality_summary"]["experts"]["sequence"]["quality_status"] == "reduced_context_mixed"
+    assert input_contract["tradability_provenance"]["source_kind"] == "dedicated_tradability_expert"
+    assert input_contract["tradability_provenance"]["evidence_strength"] == "thin"
     assert "sequence_support_score" in input_contract["feature_contract"]["feature_columns"]
     assert "sequence_support_level" not in input_contract["feature_contract"]["feature_columns"]
-    assert load_json(result.predictor_contract_path)["final_rank_score_field"] == "final_rank_score"
+    predictor_contract = load_json(result.predictor_contract_path)
+    assert predictor_contract["final_rank_score_field"] == "final_rank_score"
+    assert predictor_contract["final_tradability_contract"]["source_kind"] == "dedicated_tradability_expert"
+    entry_boundary_contract = load_json(result.entry_boundary_contract_path)
+    assert entry_boundary_contract["support_quality_policy"]["enabled"] is True
+    assert entry_boundary_contract["input_quality_summary"]["overall_quality_status"] == "degraded"
+    assert entry_boundary_contract["tradability_provenance"]["evidence_strength"] == "thin"
     runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
     assert runtime_recommendations["decision_contract_version"] == "v5_post_model_contract_v1"
     assert runtime_recommendations["contract_owner_family"] == "train_v5_fusion"
@@ -350,6 +438,9 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert "sequence_backbone_name" in runtime_recommendations
     assert "lob_backbone_name" in runtime_recommendations
     assert "tradability_source_run_id" in runtime_recommendations
+    assert runtime_recommendations["final_tradability_contract"]["source_kind"] == "dedicated_tradability_expert"
+    assert runtime_recommendations["final_tradability_evidence_strength"] == "thin"
+    assert runtime_recommendations["runtime_input_quality_summary"]["overall_quality_status"] == "degraded"
     assert runtime_recommendations["exit"]["recommended_exit_mode"] == "risk"
     assert runtime_recommendations["exit"]["runtime_source_mode"] == "fusion_owned_panel_seeded"
     assert runtime_recommendations["execution"]["recommended_price_mode"] == "JOIN"
@@ -358,9 +449,14 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert runtime_recommendations["runtime_deploy_contract_readiness_path"].endswith("runtime_deploy_contract_readiness.json")
     assert runtime_recommendations["runtime_deploy_contract_ready"] is True
     assert runtime_recommendations["runtime_deploy_contract_summary"]["primary_reason_code"] == "PASS"
+    assert "entry_boundary_summary" in runtime_recommendations
+    assert "sell_side_quality_summary" in runtime_recommendations
+    assert "fusion_non_regression_summary" in runtime_recommendations
     assert "rows_above_alpha_floor" in runtime_recommendations["runtime_viability_summary"]
     assert "mean_final_alpha_lcb" in runtime_recommendations["runtime_viability_summary"]
     assert "top_entry_gate_reason_codes" in runtime_recommendations["runtime_viability_summary"]
+    assert "entry_boundary_summary" in runtime_recommendations["runtime_viability_summary"]
+    assert "sell_side_quality_summary" in runtime_recommendations["runtime_deploy_contract_summary"]
     report = load_json(result.train_report_path)
     assert report["data_platform_ready_snapshot_id"] == snapshot_id
     assert report["resumed"] is False
@@ -368,12 +464,17 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert report["runtime_viability_pass"] == runtime_recommendations["runtime_viability_pass"]
     assert report["runtime_viability_summary"]["rows_above_alpha_floor"] == runtime_recommendations["runtime_viability_summary"]["rows_above_alpha_floor"]
     assert report["runtime_deploy_contract_ready"] == runtime_recommendations["runtime_deploy_contract_ready"]
+    promotion_payload = load_json(result.promotion_path)
+    assert promotion_payload["fusion_non_regression_summary"]["paper_non_regression"] is None
     artifact_status = load_json(result.run_dir / "artifact_status.json")
     assert artifact_status["tail_context_written"] is True
     assert artifact_status["runtime_recommendations_complete"] is True
     assert artifact_status["governance_artifacts_complete"] is True
     runtime_viability = load_json(result.runtime_viability_report_path)
     assert runtime_viability["policy"] == "v5_runtime_viability_report_v1"
+    assert runtime_viability["input_quality_summary"]["overall_quality_status"] == "degraded"
+    assert runtime_viability["tradability_provenance"]["evidence_strength"] == "thin"
+    assert runtime_viability["entry_boundary_summary"]["support_quality_policy"]["enabled"] is True
     assert runtime_viability["runtime_rows_total"] > 0
     assert "entry_gate_allowed_count" in runtime_viability
     assert "mean_final_expected_return" in runtime_viability
@@ -384,6 +485,97 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert readiness["pass"] is True
     assert (tmp_path / "registry" / "train_v5_fusion" / "latest.json").exists()
     assert not (tmp_path / "registry" / "latest.json").exists()
+
+
+def test_train_v5_fusion_panel_only_input_variant_excludes_auxiliary_experts(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-panel-only-001"
+    paths = _write_basic_fusion_inputs(registry_root=registry_root, snapshot_id=snapshot_id)
+
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=paths["panel"],
+            sequence_input_path=paths["sequence"],
+            lob_input_path=paths["lob"],
+            tradability_input_path=paths["tradability"],
+            registry_root=registry_root,
+            logs_root=tmp_path / "logs",
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=7,
+            stacker_family="linear",
+            input_variant_name="panel_only",
+        )
+    )
+
+    input_contract = load_json(result.run_dir / "fusion_input_contract.json")
+    runtime_input_contract = load_json(result.run_dir / "fusion_runtime_input_contract.json")
+    fusion_contract = load_json(result.fusion_model_contract_path)
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+    feature_columns = list((input_contract.get("feature_contract") or {}).get("feature_columns") or [])
+
+    assert input_contract["input_variant_name"] == "panel_only"
+    assert input_contract["included_experts"] == ["panel"]
+    assert set(input_contract["excluded_experts"]) == {"sequence", "lob", "tradability"}
+    assert input_contract["input_quality_summary"]["overall_quality_status"] == "ready"
+    assert input_contract["input_quality_summary"]["experts"]["sequence"]["quality_status"] == "excluded_by_ablation"
+    assert input_contract["input_quality_summary"]["experts"]["lob"]["quality_status"] == "excluded_by_ablation"
+    assert input_contract["input_quality_summary"]["experts"]["tradability"]["quality_status"] == "excluded_by_ablation"
+    assert input_contract["tradability_provenance"]["quality_status"] == "excluded_by_ablation"
+    assert all(not str(name).startswith("sequence_") for name in feature_columns)
+    assert all(not str(name).startswith("lob_") for name in feature_columns)
+    assert all(not str(name).startswith("tradability_") for name in feature_columns)
+    assert runtime_input_contract["runtime_coverage_summary"]["experts"]["sequence"]["included"] is False
+    assert runtime_input_contract["runtime_coverage_summary"]["experts"]["tradability"]["required_full_window"] is False
+    assert fusion_contract["input_variant_name"] == "panel_only"
+    assert fusion_contract["included_experts"] == ["panel"]
+    assert runtime_recommendations["fusion_input_variant_name"] == "panel_only"
+    assert runtime_recommendations["fusion_included_experts"] == ["panel"]
+    assert set(runtime_recommendations["fusion_excluded_experts"]) == {"sequence", "lob", "tradability"}
+
+
+def test_train_v5_fusion_full_without_tradability_allows_missing_tradability_input(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-no-tradability-001"
+    paths = _write_basic_fusion_inputs(registry_root=registry_root, snapshot_id=snapshot_id)
+
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=paths["panel"],
+            sequence_input_path=paths["sequence"],
+            lob_input_path=paths["lob"],
+            tradability_input_path=None,
+            registry_root=registry_root,
+            logs_root=tmp_path / "logs",
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=7,
+            stacker_family="linear",
+            input_variant_name="full_without_tradability",
+        )
+    )
+
+    input_contract = load_json(result.run_dir / "fusion_input_contract.json")
+    fusion_contract = load_json(result.fusion_model_contract_path)
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+    feature_columns = list((input_contract.get("feature_contract") or {}).get("feature_columns") or [])
+
+    assert input_contract["input_variant_name"] == "full_without_tradability"
+    assert set(input_contract["included_experts"]) == {"panel", "sequence", "lob"}
+    assert input_contract["excluded_experts"] == ["tradability"]
+    assert input_contract["input_quality_summary"]["experts"]["tradability"]["quality_status"] == "excluded_by_ablation"
+    assert input_contract["tradability_provenance"]["quality_status"] == "excluded_by_ablation"
+    assert all(not str(name).startswith("tradability_") for name in feature_columns)
+    assert any(str(name).startswith("sequence_") for name in feature_columns)
+    assert any(str(name).startswith("lob_") for name in feature_columns)
+    assert fusion_contract["input_experts"]["tradability"]["ablation_excluded"] is True
+    assert fusion_contract["excluded_experts"] == ["tradability"]
+    assert runtime_recommendations["fusion_input_variant_name"] == "full_without_tradability"
+    assert runtime_recommendations["fusion_excluded_experts"] == ["tradability"]
 
 
 def test_train_v5_fusion_supports_regime_moe_stacker(tmp_path: Path) -> None:
@@ -1123,6 +1315,8 @@ def test_train_v5_fusion_uses_runtime_input_bundle_for_runtime_dataset(tmp_path:
     assert runtime_contract["runtime_coverage_summary"]["experts"]["sequence"]["missing_rows"] == 0
     assert runtime_contract["runtime_coverage_summary"]["experts"]["lob"]["missing_rows"] == 0
     assert runtime_contract["runtime_coverage_summary"]["experts"]["tradability"]["missing_rows"] == 0
+    assert runtime_contract["input_quality_summary"]["experts"]["sequence"]["quality_status"] == "healthy"
+    assert runtime_contract["tradability_provenance"]["evidence_strength"] == "thin"
     assert tail_context["panel_runtime_input_path"] == str(panel_runtime)
     assert tail_context["sequence_runtime_input_path"] == str(sequence_runtime)
     assert tail_context["lob_runtime_input_path"] == str(lob_runtime)

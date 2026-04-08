@@ -13,7 +13,11 @@ from autobot.execution.order_supervisor import (
     normalize_order_exec_profile,
     order_exec_profile_from_dict,
 )
-from autobot.strategy.v5_post_model_contract import build_v5_liquidation_policy, finalize_v5_entry_decision
+from autobot.strategy.v5_post_model_contract import (
+    V5_POST_MODEL_CONTRACT_VERSION,
+    build_v5_liquidation_policy,
+    finalize_v5_entry_decision,
+)
 from autobot.live.execution_attempts import record_execution_attempt_submission
 from autobot.models.execution_risk_control import (
     resolve_execution_risk_control_decision,
@@ -904,6 +908,10 @@ def resolve_live_strategy_execution(
     sizing_envelope_to_payload_fn: Callable[[Any], dict[str, Any]],
 ) -> Any:
     strategy_meta = dict(strategy_intent.meta or {})
+    v5_portfolio_budget_first = (
+        str(strategy_meta.get("decision_contract_version") or "").strip() == V5_POST_MODEL_CONTRACT_VERSION
+        and str(strategy_meta.get("sizing_ownership") or "").strip() == "portfolio_budget_first"
+    )
     trade_action_payload = (
         dict(strategy_meta.get("trade_action") or {})
         if isinstance(strategy_meta.get("trade_action"), dict)
@@ -919,7 +927,19 @@ def resolve_live_strategy_execution(
         trade_action=trade_action_payload,
         requested_multiplier=safe_optional_float_fn(strategy_meta.get("notional_multiplier")),
     )
-    if bool(size_ladder_decision.get("enabled")):
+    if bool(size_ladder_decision.get("enabled")) and bool(v5_portfolio_budget_first):
+        size_ladder_decision = {
+            **dict(size_ladder_decision),
+            "advisory_only": True,
+            "ownership_applied": False,
+            "ownership_reason_code": "V5_PORTFOLIO_BUDGET_FIRST",
+        }
+        if not bool(size_ladder_decision.get("allowed", True)):
+            size_ladder_decision["advisory_rejection_suppressed"] = True
+            size_ladder_decision["advisory_rejection_reason_code"] = str(
+                size_ladder_decision.get("reason_code", "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER")
+            ).strip() or "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER"
+    elif bool(size_ladder_decision.get("enabled")):
         resolved_multiplier = safe_optional_float_fn(size_ladder_decision.get("resolved_multiplier"))
         if resolved_multiplier is None or resolved_multiplier <= 0.0:
             return resolution_cls(

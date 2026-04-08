@@ -188,6 +188,12 @@ def test_candidate_canary_report_builds_metrics_and_dedupes_synthetic_rows(tmp_p
     assert report["safety_veto_reasons_top"][0][0] == "ENTRY_BOUNDARY_ALPHA_LCB_NOT_POSITIVE"
     assert report["exit_decision_reasons_top"][0][0] == "CONTINUATION_VALUE_EXIT"
     assert report["liquidation_policy_tiers"]["normal_protective"] == 1
+    assert report["continuation_exit_total"] == 1
+    assert report["continuation_exit_share"] == 0.5
+    assert report["timeout_close_total"] == 0
+    assert report["timeout_close_share"] == 0.0
+    assert report["urgent_liquidation_total"] == 0
+    assert report["urgent_liquidation_share"] == 0.0
     assert report["latest_closed"][0]["journal_id"] == "journal-loss"
     assert all(item["journal_id"] != "trade-KRW-ETH-1900" for item in report["latest_closed"])
 

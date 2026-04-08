@@ -238,6 +238,8 @@ def test_resolve_path_risk_guidance_uses_immediate_execution_cost_proxy() -> Non
     assert guidance["immediate_exit_fill_probability"] == 0.55
     assert guidance["immediate_exit_price_mode"] == "JOIN"
     assert guidance["exit_now_value_net"] == 0.002
+    assert guidance["expected_immediate_exit_cleanup_cost_bps"] == 0.0
+    assert guidance["expected_immediate_exit_miss_cost_bps"] == 0.0
 
 
 def test_resolve_path_risk_guidance_exposes_tp_hit_prob_at_current_tp() -> None:
@@ -280,6 +282,52 @@ def test_resolve_path_risk_guidance_exposes_tp_hit_prob_at_current_tp() -> None:
     )
 
     assert guidance["tp_hit_prob_at_current_tp"] is not None
+
+
+def test_resolve_path_risk_guidance_can_trigger_execution_liquidation_capture() -> None:
+    guidance = resolve_path_risk_guidance_from_plan(
+        plan_payload={
+            "hold_bars": 6,
+            "bar_interval_ms": 300_000,
+            "tp_pct": 0.01,
+            "expected_exit_fee_rate": 0.0005,
+            "expected_exit_slippage_bps": 2.5,
+            "expected_immediate_exit_cost_ratio": 0.0015,
+            "expected_immediate_exit_fill_probability": 0.30,
+            "expected_immediate_exit_cleanup_cost_bps": 20.0,
+            "expected_immediate_exit_miss_cost_bps": 40.0,
+            "path_risk": {
+                "status": "ready",
+                "overall_by_horizon": [
+                    {
+                        "hold_bars": 3,
+                        "reachable_tp_q60": 0.012,
+                        "bounded_sl_q80": 0.008,
+                        "terminal_return_q25": 0.004,
+                        "terminal_return_q50": 0.006,
+                        "terminal_return_q75": 0.008,
+                        "terminal_return_mean": 0.006,
+                        "terminal_positive_rate": 0.60,
+                        "terminal_nonnegative_rate": 0.65,
+                        "terminal_above_10bps_rate": 0.55,
+                        "terminal_above_25bps_rate": 0.45,
+                        "terminal_above_50bps_rate": 0.35,
+                        "drawdown_from_now_q80": 0.010,
+                        "drawdown_from_now_q90": 0.015,
+                    }
+                ],
+            },
+        },
+        elapsed_bars=3,
+        current_return_ratio=0.007,
+    )
+
+    assert guidance["continuation_should_exit"] is True
+    assert guidance["continuation_reason_code"] in {
+        "PATH_RISK_EXECUTION_LIQUIDATION_CAPTURE",
+        "PATH_RISK_CONTINUATION_CAPTURE",
+    }
+    assert guidance["execution_liquidation_penalty_ratio"] > 0.0
     assert 0.0 <= guidance["tp_hit_prob_at_current_tp"] <= 1.0
     assert guidance["tp_hit_prob_at_current_tp"] < 0.30
 

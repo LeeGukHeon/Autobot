@@ -905,6 +905,14 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
                 "fill_rate": 0.90,
                 "max_drawdown_pct": 2.0,
                 "slippage_bps_mean": 5.0,
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "payoff_ratio": 0.6,
+                    "tp_exit_count": 0,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 3,
+                    "market_loss_concentration": 0.40,
+                },
             },
         },
         "best_comparable_rule": {
@@ -916,6 +924,14 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
                 "fill_rate": 0.90,
                 "max_drawdown_pct": 2.0,
                 "slippage_bps_mean": 5.0,
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "payoff_ratio": 0.6,
+                    "tp_exit_count": 0,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 3,
+                    "market_loss_concentration": 0.40,
+                },
             },
         },
     }
@@ -937,6 +953,14 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
                 "fill_rate": 0.89,
                 "max_drawdown_pct": 0.8,
                 "slippage_bps_mean": 4.2,
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "payoff_ratio": 1.8,
+                    "tp_exit_count": 2,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 1,
+                    "market_loss_concentration": 0.35,
+                },
             },
         },
         "best_comparable_rule": {
@@ -955,6 +979,14 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
                 "fill_rate": 0.89,
                 "max_drawdown_pct": 0.8,
                 "slippage_bps_mean": 4.2,
+                "execution_structure": {
+                    "closed_trade_count": 4,
+                    "payoff_ratio": 1.8,
+                    "tp_exit_count": 2,
+                    "sl_exit_count": 1,
+                    "timeout_exit_count": 1,
+                    "market_loss_concentration": 0.35,
+                },
             },
         },
     }
@@ -971,3 +1003,6 @@ def test_build_exit_doc_prefers_risk_mode_when_risk_policy_wins() -> None:
     assert exit_doc["recommended_hold_bars"] == 9
     assert exit_doc["selected_policy_kind"] == "risk_exit"
     assert exit_doc["selected_grid_point"]["hold_bars"] == 9
+    assert exit_doc["selected_execution_structure_summary"]["quality_status"] == "healthy"
+    assert exit_doc["hold_execution_structure_summary"]["quality_status"] == "timeout_heavy"
+    assert exit_doc["sell_side_quality_summary"]["selected"]["payoff_ratio"] == 1.8

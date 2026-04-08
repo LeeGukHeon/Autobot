@@ -552,6 +552,11 @@ def test_summarize_v5_readiness_surfaces_v5_fusion_runtime_deploy_contract_summa
             "runtime_deploy_contract_summary": {
                 "primary_reason_code": "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY",
             },
+            "fusion_non_regression_summary": {
+                "paper_non_regression": True,
+                "paired_non_regression": False,
+                "canary_non_regression": None,
+            },
             "fusion_candidate_default_eligible": False,
             "fusion_evidence_reason_code": "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY",
         },
@@ -564,6 +569,9 @@ def test_summarize_v5_readiness_surfaces_v5_fusion_runtime_deploy_contract_summa
     assert family_summary["runtime_viability_primary_reason_code"] == "PASS"
     assert family_summary["runtime_deploy_contract_ready"] is False
     assert family_summary["runtime_deploy_contract_primary_reason_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
+    assert family_summary["fusion_paper_non_regression"] is True
+    assert family_summary["fusion_paired_non_regression"] is False
+    assert family_summary["fusion_canary_non_regression"] is None
 
 
 def test_build_dashboard_snapshot_includes_paired_paper_latest_and_history(tmp_path: Path) -> None:

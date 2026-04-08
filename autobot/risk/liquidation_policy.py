@@ -68,6 +68,9 @@ def resolve_protective_liquidation_policy(
     micro_snapshot: MicroSnapshot | None,
     active_order_present: bool,
     stop_breach_ratio: float | None,
+    expected_liquidation_cost_ratio: float | None = None,
+    continue_value_lcb: float | None = None,
+    exit_now_value_net: float | None = None,
 ) -> ProtectiveLiquidationPolicy:
     trigger = str(trigger_reason).strip().upper()
     breaker_action_value = str(breaker_action or "").strip().upper()
@@ -81,6 +84,9 @@ def resolve_protective_liquidation_policy(
     trade_imbalance = _safe_optional_float(getattr(micro_snapshot, "trade_imbalance", None))
     best_bid_price = _safe_optional_float(getattr(micro_snapshot, "best_bid_price", None))
     best_ask_price = _safe_optional_float(getattr(micro_snapshot, "best_ask_price", None))
+    expected_liquidation_cost_value = max(float(expected_liquidation_cost_ratio or 0.0), 0.0)
+    continue_value_lcb_value = _safe_optional_float(continue_value_lcb)
+    exit_now_value_net_value = _safe_optional_float(exit_now_value_net)
     queue_state = _resolve_queue_state(
         depth_top5_notional_krw=depth_top5,
         trade_imbalance=trade_imbalance,
@@ -107,12 +113,20 @@ def resolve_protective_liquidation_policy(
         replace_interval_ms = timeout_ms
         max_replaces = max(base_replace_value, 1)
         reason_codes.append("PROTECTIVE_SOFT_EXIT")
+        if expected_liquidation_cost_value >= 0.003:
+            reason_codes.append("PROTECTIVE_HIGH_LIQUIDATION_COST")
 
     spread_wide = spread_bps is not None and float(spread_bps) >= 25.0
     depth_thin = depth_top5 is not None and float(depth_top5) < 800_000.0
     adverse_flow = trade_imbalance is not None and float(trade_imbalance) <= -0.50
+    liquidation_cost_heavy = expected_liquidation_cost_value >= 0.005
+    continuation_edge_thin = (
+        continue_value_lcb_value is not None
+        and exit_now_value_net_value is not None
+        and float(exit_now_value_net_value) >= float(continue_value_lcb_value)
+    )
 
-    if trigger in {"SL", "TRAILING", "TIMEOUT"} or spread_wide or depth_thin or adverse_flow:
+    if trigger in {"SL", "TRAILING", "TIMEOUT"} or spread_wide or depth_thin or adverse_flow or liquidation_cost_heavy:
         tier_name = TIER_NORMAL_PROTECTIVE
         price_mode = PRICE_MODE_JOIN
         time_in_force = "gtc"
@@ -121,12 +135,15 @@ def resolve_protective_liquidation_policy(
         replace_interval_ms = max(min(timeout_ms, 15_000), 3_000)
         max_replaces = min(max(base_replace_value, 1), 2)
         reason_codes.append("PROTECTIVE_NORMAL_EXIT")
+        if liquidation_cost_heavy:
+            reason_codes.append("PROTECTIVE_HIGH_LIQUIDATION_COST")
 
     if (
         stop_breach_value >= 0.005
         or trigger in {"SL", "TRAILING"}
         or depth_thin
         or adverse_flow
+        or (liquidation_cost_heavy and continuation_edge_thin)
         or (elapsed_trigger_ms >= max(base_timeout_ms, 1) and (depth_thin or spread_wide))
     ):
         tier_name = TIER_URGENT_DEFENSIVE
@@ -204,6 +221,9 @@ def resolve_protective_liquidation_policy(
             "trade_imbalance": trade_imbalance,
             "best_bid_price": best_bid_price,
             "best_ask_price": best_ask_price,
+            "expected_liquidation_cost_ratio": float(expected_liquidation_cost_value),
+            "continue_value_lcb": continue_value_lcb_value,
+            "exit_now_value_net": exit_now_value_net_value,
             "breaker_action": breaker_action_value or None,
             "active_order_present": bool(active_order_present),
         },

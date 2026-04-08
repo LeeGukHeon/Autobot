@@ -806,15 +806,35 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                 requested_multiplier=requested_notional_multiplier,
                 enabled=bool(self._settings.exit.use_trade_level_action_policy),
             )
+            if isinstance(size_ladder_decision, dict) and bool(v5_post_model):
+                size_ladder_decision = {
+                    **size_ladder_decision,
+                    "advisory_only": True,
+                    "ownership_applied": False,
+                    "ownership_reason_code": "V5_PORTFOLIO_BUDGET_FIRST",
+                }
             notional_multiplier = (
-                float(size_ladder_decision.get("resolved_multiplier"))
-                if isinstance(size_ladder_decision, dict) and size_ladder_decision.get("resolved_multiplier") is not None
-                else float(requested_notional_multiplier)
+                float(requested_notional_multiplier)
+                if bool(v5_post_model)
+                else (
+                    float(size_ladder_decision.get("resolved_multiplier"))
+                    if isinstance(size_ladder_decision, dict) and size_ladder_decision.get("resolved_multiplier") is not None
+                    else float(requested_notional_multiplier)
+                )
             )
+            if isinstance(size_ladder_decision, dict) and not bool(v5_post_model) and "ownership_applied" not in size_ladder_decision:
+                size_ladder_decision = {
+                    **size_ladder_decision,
+                    "advisory_only": False,
+                    "ownership_applied": bool(size_ladder_decision.get("enabled")),
+                }
             if isinstance(v5_sizing_decision, dict):
                 v5_sizing_decision["resolved_notional_multiplier"] = float(notional_multiplier)
+                if isinstance(size_ladder_decision, dict):
+                    v5_sizing_decision["legacy_size_ladder_advisory"] = dict(size_ladder_decision)
             if (
-                isinstance(size_ladder_decision, dict)
+                not bool(v5_post_model)
+                and isinstance(size_ladder_decision, dict)
                 and bool(size_ladder_decision.get("enabled"))
                 and not bool(size_ladder_decision.get("allowed"))
             ):
@@ -837,6 +857,20 @@ class ModelAlphaStrategyV1(BacktestStrategyAdapter):
                     support_size_multiplier=float(trade_action_support_multiplier),
                 )
                 continue
+            if (
+                bool(v5_post_model)
+                and isinstance(size_ladder_decision, dict)
+                and bool(size_ladder_decision.get("enabled"))
+                and not bool(size_ladder_decision.get("allowed"))
+            ):
+                size_ladder_decision = {
+                    **size_ladder_decision,
+                    "advisory_rejection_suppressed": True,
+                    "advisory_rejection_reason_code": str(
+                        size_ladder_decision.get("reason_code", "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER")
+                    ).strip()
+                    or "SIZE_LADDER_NO_ADMISSIBLE_MULTIPLIER",
+                }
             if float(notional_multiplier) <= 0.0:
                 nonpositive_reason_code = (
                     "V5_TARGET_NOTIONAL_NONPOSITIVE"

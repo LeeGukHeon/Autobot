@@ -369,6 +369,42 @@ class _LargeNotionalStrategy:
         _ = event
 
 
+class _LargeNotionalV5Strategy:
+    def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
+        _ = ts_ms, active_markets, latest_prices, open_markets
+        return StrategyStepResult(
+            intents=(
+                StrategyOrderIntent(
+                    market="KRW-BTC",
+                    side="bid",
+                    ref_price=50_000_000.0,
+                    reason_code="MODEL_ALPHA_ENTRY_V1",
+                    prob=0.91,
+                    score=0.91,
+                    meta={
+                        "model_prob": 0.91,
+                        "notional_multiplier": 0.5,
+                        "notional_multiplier_source": "v5_signal_haircuts",
+                        "decision_contract_version": "v5_post_model_contract_v1",
+                        "sizing_ownership": "portfolio_budget_first",
+                        "sizing_decision": {
+                            "sizing_owner": "portfolio_budget_first",
+                            "requested_notional_multiplier": 0.5,
+                            "resolved_notional_multiplier": 0.5,
+                            "target_notional_quote": 5_000.0,
+                        },
+                    },
+                ),
+            ),
+            scored_rows=1,
+            eligible_rows=1,
+            selected_rows=1,
+        )
+
+    def on_fill(self, event):  # noqa: ANN201
+        _ = event
+
+
 class _StalePriceFlowStrategy:
     def on_ts(self, *, ts_ms: int, active_markets, latest_prices, open_markets):  # noqa: ANN201
         _ = ts_ms, active_markets, latest_prices, open_markets
@@ -1694,6 +1730,99 @@ def test_live_model_alpha_runtime_clamps_bid_notional_with_size_ladder(tmp_path:
     assert float(meta_payload["strategy"]["meta"]["notional_multiplier"]) == 1.5
     assert meta_payload["strategy"]["meta"]["notional_multiplier_source"] == "risk_control_size_ladder"
     assert float(meta_payload["size_ladder"]["resolved_multiplier"]) == 1.5
+
+
+def test_live_model_alpha_runtime_keeps_v5_size_ladder_advisory_only(tmp_path: Path, monkeypatch) -> None:
+    import autobot.live.model_alpha_runtime as runtime_module
+
+    predictor = SimpleNamespace(
+        run_dir=Path("run-live"),
+        runtime_recommendations={
+            "risk_control": {
+                "version": 1,
+                "policy": "execution_risk_control_hoeffding_v1",
+                "status": "ready",
+                "contract_status": "ok",
+                "decision_metric_name": "expected_action_value",
+                "selected_threshold": 0.0,
+                "selected_coverage": 31,
+                "selected_nonpositive_rate_ucb": 0.18,
+                "selected_severe_loss_rate_ucb": 0.11,
+                "live_gate": {
+                    "enabled": False,
+                    "metric_name": "expected_action_value",
+                    "threshold": 0.0,
+                    "skip_reason_code": "RISK_CONTROL_BELOW_THRESHOLD",
+                },
+                "subgroup_family": {
+                    "enabled": False,
+                    "feature_name": "",
+                    "bucket_count_requested": 0,
+                    "bucket_count_effective": 0,
+                    "bounds": [],
+                    "min_coverage": 0,
+                },
+                "size_ladder": {
+                    "enabled": True,
+                    "status": "ready",
+                    "feature_name": "",
+                    "global_max_multiplier": 0.25,
+                    "group_limits": [],
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(runtime_module, "_load_predictor_for_runtime", lambda **_: predictor)
+    monkeypatch.setattr(runtime_module, "_build_live_feature_provider", lambda **_: _FeatureProvider())
+    monkeypatch.setattr(runtime_module, "_build_live_strategy", lambda **_: _LargeNotionalV5Strategy())
+
+    settings = _runtime_settings(tmp_path, rollout_mode="live", canary=False)
+    executor = _ExecutorGateway()
+    now_ms = int(time.time() * 1000)
+    with LiveStateStore(tmp_path / "live_state.db") as store:
+        store.set_live_rollout_contract(
+            payload=build_rollout_contract(
+                mode="live",
+                target_unit="autobot-live-alpha.service",
+                arm_token="demo-token",
+                ts_ms=now_ms - 1000,
+            ),
+            ts_ms=now_ms - 1000,
+        )
+        store.set_live_test_order(
+            payload=build_rollout_test_order_record(
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                price="50000000",
+                volume="0.0001",
+                ok=True,
+                response_payload={"ok": True},
+                ts_ms=now_ms,
+            ),
+            ts_ms=now_ms,
+        )
+        summary = asyncio.run(
+            run_live_model_alpha_runtime(
+                store=store,
+                client=_PrivateClient(),
+                public_client=_PublicClient(),
+                public_ws_client=_PublicWsClient(),
+                settings=settings,
+                executor_gateway=executor,
+            )
+        )
+
+    assert summary["submitted_intents_total"] == 1
+    submitted_intent = executor.calls[0]["intent"]
+    notional_quote = float(submitted_intent.price) * float(submitted_intent.volume)
+    meta_payload = json.loads(str(executor.calls[0]["meta_json"]))
+    assert 4990.0 <= notional_quote <= 5010.0
+    assert float(meta_payload["strategy"]["meta"]["notional_multiplier"]) == 0.5
+    assert meta_payload["strategy"]["meta"]["notional_multiplier_source"] == "v5_signal_haircuts"
+    assert meta_payload["size_ladder"]["advisory_only"] is True
+    assert meta_payload["size_ladder"]["ownership_applied"] is False
+    assert float(meta_payload["size_ladder"]["resolved_multiplier"]) == 0.25
 
 
 def test_live_model_alpha_runtime_clamps_bid_notional_with_portfolio_budget(tmp_path: Path, monkeypatch) -> None:

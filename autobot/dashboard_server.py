@@ -2565,6 +2565,9 @@ def _load_model_provenance(project_root: Path, run_id: str | None) -> dict[str, 
         "runtime_deploy_contract_primary_reason_code": _dig(
             runtime_recommendations, "runtime_deploy_contract_summary", "primary_reason_code"
         ),
+        "fusion_paper_non_regression": _dig(runtime_recommendations, "fusion_non_regression_summary", "paper_non_regression"),
+        "fusion_paired_non_regression": _dig(runtime_recommendations, "fusion_non_regression_summary", "paired_non_regression"),
+        "fusion_canary_non_regression": _dig(runtime_recommendations, "fusion_non_regression_summary", "canary_non_regression"),
         "trade_action_status": _dig(runtime_recommendations, "trade_action", "status"),
         "recommended_exit_mode": _dig(runtime_recommendations, "exit", "recommended_exit_mode")
         or _dig(runtime_recommendations, "exit", "mode"),
@@ -2680,6 +2683,9 @@ def _load_model_family_latest_summary(project_root: Path, model_family: str) -> 
         "fusion_evidence_reason_code": runtime_recommendations.get("fusion_evidence_reason_code"),
         "fusion_offline_winner": runtime_recommendations.get("fusion_offline_winner"),
         "fusion_default_eligible_winner": runtime_recommendations.get("fusion_default_eligible_winner"),
+        "fusion_paper_non_regression": _dig(runtime_recommendations, "fusion_non_regression_summary", "paper_non_regression"),
+        "fusion_paired_non_regression": _dig(runtime_recommendations, "fusion_non_regression_summary", "paired_non_regression"),
+        "fusion_canary_non_regression": _dig(runtime_recommendations, "fusion_non_regression_summary", "canary_non_regression"),
         "runtime_viability_pass": bool(runtime_recommendations.get("runtime_viability_pass", False)),
         "runtime_viability_primary_reason_code": _dig(runtime_recommendations, "runtime_viability_summary", "primary_reason_code"),
         "runtime_deploy_contract_ready": bool(runtime_recommendations.get("runtime_deploy_contract_ready", False)),

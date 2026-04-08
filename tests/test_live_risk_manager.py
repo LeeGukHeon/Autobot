@@ -12,8 +12,10 @@ from autobot.live.model_risk_plan import build_model_derived_risk_records
 from autobot.live.risk_loop import apply_executor_event, apply_ticker_event
 from autobot.live.state_store import LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from autobot.risk.liquidation_policy import (
+    TIER_NORMAL_PROTECTIVE,
     TIER_EMERGENCY_FLATTEN,
     TIER_SOFT_EXIT,
+    TIER_URGENT_DEFENSIVE,
     resolve_protective_liquidation_policy,
 )
 from autobot.risk.live_risk_manager import LiveRiskManager
@@ -240,6 +242,38 @@ def test_protective_liquidation_policy_resolves_soft_vs_emergency_tiers() -> Non
     assert emergency.tier_name == TIER_EMERGENCY_FLATTEN
     assert emergency.ord_type == "best"
     assert emergency.time_in_force == "ioc"
+
+
+def test_protective_liquidation_policy_escalates_on_high_liquidation_cost() -> None:
+    policy = resolve_protective_liquidation_policy(
+        trigger_reason="PATH_RISK_CONTINUATION",
+        entry_price=100.0,
+        qty=1.0,
+        last_price=100.8,
+        tick_size=1.0,
+        base_exit_aggress_bps=8.0,
+        base_timeout_sec=20,
+        base_replace_max=2,
+        ts_ms=6_000,
+        created_ts_ms=1_000,
+        trigger_ts_ms=5_000,
+        breaker_action="",
+        micro_snapshot=_micro_snapshot(
+            market="KRW-BTC",
+            ts_ms=6_000,
+            trade_imbalance=-0.7,
+            spread_bps_mean=30.0,
+            depth_top5_notional_krw=50_000.0,
+        ),
+        active_order_present=False,
+        stop_breach_ratio=0.0,
+        expected_liquidation_cost_ratio=0.006,
+        continue_value_lcb=0.004,
+        exit_now_value_net=0.005,
+    )
+
+    assert policy.tier_name in {TIER_NORMAL_PROTECTIVE, TIER_URGENT_DEFENSIVE}
+    assert "PROTECTIVE_HIGH_LIQUIDATION_COST" in policy.reason_codes
 
 
 def test_risk_manager_emergency_flatten_uses_best_ioc_and_writes_report(tmp_path: Path) -> None:

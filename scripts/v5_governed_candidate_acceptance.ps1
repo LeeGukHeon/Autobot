@@ -3,6 +3,7 @@ param(
     [string]$PythonExe = "",
     [string]$DataPlatformRefreshScript = "",
     [switch]$SkipDataPlatformRefresh,
+    [switch]$EnableFusionInputAblationMatrix,
     [switch]$DryRun
 )
 
@@ -47,6 +48,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PaperMinPolicyEvents 0 `
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
     -EnableVariantMatrixSelection `
+    -EnableFusionInputAblationMatrix:$true `
     -SplitPolicyHistoricalSelectorEnabled:$false `
     -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v5_acceptance" `

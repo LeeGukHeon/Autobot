@@ -159,6 +159,7 @@ from .models import (
     materialize_v5_panel_ensemble_runtime_export,
     materialize_v5_sequence_runtime_export,
     materialize_v5_tradability_runtime_export,
+    run_v5_fusion_input_ablation_matrix,
     run_v5_fusion_variant_matrix,
     run_v5_lob_variant_matrix,
     run_v5_sequence_variant_matrix,
@@ -947,6 +948,10 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--fusion-runtime-start", help="Runtime/certification start date YYYY-MM-DD for fusion runtime dataset export.")
     model_train_parser.add_argument("--fusion-runtime-end", help="Runtime/certification end date YYYY-MM-DD for fusion runtime dataset export.")
     model_train_parser.add_argument("--fusion-stacker-family", choices=("linear", "monotone_gbdt", "regime_moe"))
+    model_train_parser.add_argument(
+        "--fusion-input-variant-name",
+        help="Named fusion input ablation preset, ex: full_fusion, full_without_tradability, panel_plus_sequence, panel_plus_lob, panel_only.",
+    )
     model_train_parser.add_argument("--tradability-panel-input", help="Path to panel tradability input predictions parquet.")
     model_train_parser.add_argument("--tradability-sequence-input", help="Path to sequence tradability input predictions parquet.")
     model_train_parser.add_argument("--tradability-lob-input", help="Path to lob tradability input predictions parquet.")
@@ -989,6 +994,15 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_variant_parser.add_argument("--fusion-tradability-runtime-input", help="Path to tradability fusion runtime predictions parquet.")
     model_train_variant_parser.add_argument("--fusion-runtime-start", help="Runtime/certification start date YYYY-MM-DD for fusion runtime dataset export.")
     model_train_variant_parser.add_argument("--fusion-runtime-end", help="Runtime/certification end date YYYY-MM-DD for fusion runtime dataset export.")
+    model_train_variant_parser.add_argument(
+        "--fusion-input-variant-name",
+        help="Named fusion input ablation preset, ex: full_fusion, full_without_tradability, panel_plus_sequence, panel_plus_lob, panel_only.",
+    )
+    model_train_variant_parser.add_argument(
+        "--fusion-enable-input-ablation-matrix",
+        action="store_true",
+        help="Evaluate multiple fusion input ablation presets and choose the strongest eligible input configuration.",
+    )
     model_train_variant_parser.add_argument("--live-domain-reweighting", action="store_true", help=argparse.SUPPRESS)
     model_train_variant_parser.add_argument("--live-domain-reweighting-db-path", help=argparse.SUPPRESS)
     model_train_variant_parser.add_argument("--execution-acceptance-top-n", type=int, help=argparse.SUPPRESS)
@@ -3128,27 +3142,31 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     raise ValueError(
                         "v5_fusion variant matrix requires panel/sequence/lob/tradability expert prediction tables."
                     )
-                payload = run_v5_fusion_variant_matrix(
-                    TrainV5FusionOptions(
-                        panel_input_path=Path(str(panel_input)),
-                        sequence_input_path=Path(str(sequence_input)),
-                        lob_input_path=Path(str(lob_input)),
-                        tradability_input_path=Path(str(tradability_input)),
-                        panel_runtime_input_path=(Path(str(getattr(args, "fusion_panel_runtime_input"))) if getattr(args, "fusion_panel_runtime_input", None) else None),
-                        sequence_runtime_input_path=(Path(str(getattr(args, "fusion_sequence_runtime_input"))) if getattr(args, "fusion_sequence_runtime_input", None) else None),
-                        lob_runtime_input_path=(Path(str(getattr(args, "fusion_lob_runtime_input"))) if getattr(args, "fusion_lob_runtime_input", None) else None),
-                        tradability_runtime_input_path=(Path(str(getattr(args, "fusion_tradability_runtime_input"))) if getattr(args, "fusion_tradability_runtime_input", None) else None),
-                        registry_root=registry_root,
-                        logs_root=logs_root,
-                        model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
-                        quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
-                        start=str(args.start or defaults["start"]).strip(),
-                        end=str(args.end or defaults["end"]).strip(),
-                        runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
-                        runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
-                        seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                        run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
-                    )
+                fusion_options = TrainV5FusionOptions(
+                    panel_input_path=Path(str(panel_input)),
+                    sequence_input_path=Path(str(sequence_input)),
+                    lob_input_path=Path(str(lob_input)),
+                    tradability_input_path=Path(str(tradability_input)),
+                    panel_runtime_input_path=(Path(str(getattr(args, "fusion_panel_runtime_input"))) if getattr(args, "fusion_panel_runtime_input", None) else None),
+                    sequence_runtime_input_path=(Path(str(getattr(args, "fusion_sequence_runtime_input"))) if getattr(args, "fusion_sequence_runtime_input", None) else None),
+                    lob_runtime_input_path=(Path(str(getattr(args, "fusion_lob_runtime_input"))) if getattr(args, "fusion_lob_runtime_input", None) else None),
+                    tradability_runtime_input_path=(Path(str(getattr(args, "fusion_tradability_runtime_input"))) if getattr(args, "fusion_tradability_runtime_input", None) else None),
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
+                    quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
+                    start=str(args.start or defaults["start"]).strip(),
+                    end=str(args.end or defaults["end"]).strip(),
+                    runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
+                    runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
+                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    input_variant_name=str(getattr(args, "fusion_input_variant_name", None) or "full_fusion").strip() or "full_fusion",
+                    run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
+                )
+                payload = (
+                    run_v5_fusion_input_ablation_matrix(fusion_options)
+                    if bool(getattr(args, "fusion_enable_input_ablation_matrix", False))
+                    else run_v5_fusion_variant_matrix(fusion_options)
                 )
                 print(json.dumps(payload, ensure_ascii=False))
                 return 0
@@ -3194,6 +3212,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
                     stacker_family=str(getattr(args, "fusion_stacker_family", None) or "linear").strip().lower(),
+                    input_variant_name=str(getattr(args, "fusion_input_variant_name", None) or "full_fusion").strip() or "full_fusion",
                 )
                 summary_v5_fusion = train_and_register_v5_fusion(options_v5_fusion)
                 print(

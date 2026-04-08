@@ -771,6 +771,7 @@ class LiveRiskManager:
         micro_snapshot: Any | None,
         active_order_present: bool,
     ):
+        base_plan = self._resolve_overlay_basis_plan(plan)
         sl_price = plan.resolve_sl_price()
         stop_breach_ratio = None
         if sl_price is not None and float(last_price) < float(sl_price):
@@ -794,6 +795,9 @@ class LiveRiskManager:
             micro_snapshot=micro_snapshot,
             active_order_present=bool(active_order_present),
             stop_breach_ratio=stop_breach_ratio,
+            expected_liquidation_cost_ratio=_as_float(base_plan.get("expected_liquidation_cost")) if isinstance(base_plan, dict) else None,
+            continue_value_lcb=_as_float(base_plan.get("continue_value_lcb")) if isinstance(base_plan, dict) else None,
+            exit_now_value_net=_as_float(base_plan.get("exit_now_value_net")) if isinstance(base_plan, dict) else None,
         )
 
     def _resolve_tick_size(self, market: str) -> float | None:

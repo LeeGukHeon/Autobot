@@ -522,6 +522,20 @@ def _build_exit_doc(
     else:
         payload["chosen_family"] = ""
         payload["chosen_rule_id"] = ""
+    payload["selected_execution_structure_summary"] = _build_sell_side_quality_summary(selected_row)
+    payload["hold_execution_structure_summary"] = _build_sell_side_quality_summary(best_row)
+    payload["risk_execution_structure_summary"] = _build_sell_side_quality_summary(best_risk_row)
+    payload["sell_side_quality_summary"] = {
+        "chosen_family": str(payload.get("chosen_family", "")).strip(),
+        "recommended_exit_mode": str(payload.get("recommended_exit_mode", "")).strip().lower(),
+        "recommended_hold_bars": int(payload.get("recommended_hold_bars", fallback_hold_bars) or fallback_hold_bars),
+        "quality_status": str(((payload.get("selected_execution_structure_summary") or {}).get("quality_status")) or ""),
+        "reason_codes": list(((payload.get("selected_execution_structure_summary") or {}).get("reason_codes")) or []),
+        "selected": dict(payload.get("selected_execution_structure_summary") or {}),
+        "hold": dict(payload.get("hold_execution_structure_summary") or {}),
+        "risk": dict(payload.get("risk_execution_structure_summary") or {}),
+        "family_compare_status": str(payload.get("family_compare_status", "")).strip(),
+    }
     return payload
 
 
@@ -663,7 +677,9 @@ def _compact_exit_rule_row(row: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(row, dict):
         return {}
     summary = dict(row.get("summary", {}))
-    execution_structure = dict(row.get("execution_structure", {}))
+    execution_structure = _normalize_execution_structure_metrics(
+        dict(row.get("execution_structure", {}) or summary.get("execution_structure") or {})
+    )
     return {
         "rule_id": str(row.get("rule_id", "")).strip(),
         "kind": str(row.get("kind", "")).strip(),
@@ -691,6 +707,49 @@ def _compact_exit_rule_row(row: dict[str, Any] | None) -> dict[str, Any]:
         "closed_trade_count": int(execution_structure.get("closed_trade_count", 0) or 0),
         "execution_structure": execution_structure,
         "summary": summary,
+    }
+
+
+def _build_sell_side_quality_summary(row: dict[str, Any] | None) -> dict[str, Any]:
+    compact = _compact_exit_rule_row(row)
+    execution_structure = dict(compact.get("execution_structure") or {})
+    closed_trade_count = max(int(compact.get("closed_trade_count", 0) or 0), 0)
+    timeout_exit_share = max(float(compact.get("timeout_exit_share", 0.0) or 0.0), 0.0)
+    tp_exit_share = max(float(compact.get("tp_exit_share", 0.0) or 0.0), 0.0)
+    sl_exit_share = max(float(compact.get("sl_exit_share", 0.0) or 0.0), 0.0)
+    payoff_ratio = max(float(compact.get("payoff_ratio", 0.0) or 0.0), 0.0)
+    market_loss_concentration = max(float(execution_structure.get("market_loss_concentration", 0.0) or 0.0), 0.0)
+    execution_structure_penalty_total = max(float(compact.get("execution_structure_penalty_total", 0.0) or 0.0), 0.0)
+    quality_status = "insufficient_trade_count"
+    reason_codes: list[str] = []
+    if closed_trade_count >= 3:
+        quality_status = "healthy"
+        if payoff_ratio < 0.75:
+            quality_status = "payoff_weak"
+            reason_codes.append("PAYOFF_RATIO_WEAK")
+        if timeout_exit_share >= 0.60:
+            quality_status = "timeout_heavy"
+            reason_codes.append("TIMEOUT_EXIT_HEAVY")
+        if timeout_exit_share >= 0.80 and tp_exit_share <= 0.0:
+            quality_status = "timeout_heavy_no_tp"
+            if "TIMEOUT_EXIT_HEAVY" not in reason_codes:
+                reason_codes.append("TIMEOUT_EXIT_HEAVY")
+            reason_codes.append("TP_EXIT_ABSENT")
+        elif tp_exit_share <= 0.0 and (sl_exit_share + timeout_exit_share) >= 0.99:
+            reason_codes.append("TP_EXIT_ABSENT")
+        if market_loss_concentration > 0.85:
+            quality_status = "loss_concentration_high"
+            reason_codes.append("LOSS_CONCENTRATION_HIGH")
+    return {
+        "closed_trade_count": int(closed_trade_count),
+        "payoff_ratio": float(payoff_ratio),
+        "tp_exit_share": float(tp_exit_share),
+        "sl_exit_share": float(sl_exit_share),
+        "timeout_exit_share": float(timeout_exit_share),
+        "market_loss_concentration": float(market_loss_concentration),
+        "execution_structure_penalty_total": float(execution_structure_penalty_total),
+        "quality_status": str(quality_status),
+        "reason_codes": reason_codes,
     }
 
 

@@ -95,6 +95,7 @@ param(
     [string[]]$KnownRuntimeUnits = @("autobot-paper-v5.service", "autobot-live-alpha.service"),
     [bool]$AutoRestartKnownUnits = $true,
     [switch]$EnableVariantMatrixSelection,
+    [switch]$EnableFusionInputAblationMatrix,
     [switch]$SkipDailyPipeline,
     [switch]$SkipPaperSoak,
     [switch]$SkipReportRefresh,
@@ -236,6 +237,8 @@ function Resolve-RunVariantMetadata {
         fusion_variant_name = ""
         fusion_stacker_family = ""
         fusion_gating_policy = ""
+        fusion_input_variant_name = ""
+        fusion_input_ablation_report_path = ""
         source_mode = ""
     }
     if ([string]::IsNullOrWhiteSpace($RunDir) -or (-not (Test-Path $RunDir))) {
@@ -264,6 +267,8 @@ function Resolve-RunVariantMetadata {
             $result.fusion_variant_name = $result.chosen_variant_name
             $result.fusion_stacker_family = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_stacker_family" -DefaultValue "")
             $result.fusion_gating_policy = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_gating_policy" -DefaultValue "")
+            $result.fusion_input_variant_name = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_input_variant_name" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "fusion_input_variant_name" -DefaultValue ""))
+            $result.fusion_input_ablation_report_path = [string](Get-PropValue -ObjectValue $runtimeRecommendations -Name "fusion_input_ablation_report_path" -DefaultValue (Get-PropValue -ObjectValue $trainConfig -Name "fusion_input_ablation_report_path" -DefaultValue ""))
         }
     }
     if ([string]::IsNullOrWhiteSpace($variantReportPath) -and (-not [string]::IsNullOrWhiteSpace($variantReportFilename))) {
@@ -5504,6 +5509,11 @@ function Build-ReportMarkdown {
     $lines.Add("- runtime_parity_evaluation_contract_id: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $steps -Name 'backtest_runtime_parity_candidate' -DefaultValue @{}) -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- runtime_deploy_contract_ready: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'runtime_deploy_contract_ready' -DefaultValue ''))") | Out-Null
     $lines.Add("- runtime_deploy_contract_reason: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'runtime_deploy_contract_summary' -DefaultValue @{}) -Name 'primary_reason_code' -DefaultValue ''))") | Out-Null
+    $lines.Add("- runtime_input_quality_status: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'runtime_viability_summary' -DefaultValue @{}) -Name 'input_quality_summary' -DefaultValue @{}) -Name 'overall_quality_status' -DefaultValue ''))") | Out-Null
+    $lines.Add("- runtime_sell_side_quality_status: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'runtime_deploy_contract_summary' -DefaultValue @{}) -Name 'sell_side_quality_summary' -DefaultValue @{}) -Name 'quality_status' -DefaultValue ''))") | Out-Null
+    $lines.Add("- fusion_paper_non_regression: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'fusion_non_regression_summary' -DefaultValue @{}) -Name 'paper_non_regression' -DefaultValue ''))") | Out-Null
+    $lines.Add("- fusion_paired_non_regression: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'fusion_non_regression_summary' -DefaultValue @{}) -Name 'paired_non_regression' -DefaultValue ''))") | Out-Null
+    $lines.Add("- fusion_canary_non_regression: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name 'candidate' -DefaultValue @{}) -Name 'fusion_non_regression_summary' -DefaultValue @{}) -Name 'canary_non_regression' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_orders_submitted: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_submitted' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_orders_filled: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'orders_filled' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_realized_pnl_quote: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'realized_pnl_quote' -DefaultValue ''))") | Out-Null
@@ -5511,6 +5521,20 @@ function Build-ReportMarkdown {
     $lines.Add("- paper_t15_gate_pass: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 't15_gate_pass' -DefaultValue ''))") | Out-Null
     $lines.Add("- paper_evaluation_contract_id: $([string](Get-PropValue -ObjectValue $paperCandidate -Name 'evaluation_contract_id' -DefaultValue ''))") | Out-Null
     $lines.Add("- promoted: $([string](Get-PropValue -ObjectValue $promoteStep -Name 'promoted' -DefaultValue ''))") | Out-Null
+
+    $decisionLanguageSummary = Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $ReportValue -Name "candidate" -DefaultValue @{}) -Name "decision_language_summary" -DefaultValue @{}
+    if (-not (Test-IsEffectivelyEmptyObject -ObjectValue $decisionLanguageSummary)) {
+        $lines.Add("") | Out-Null
+        $lines.Add("## Decision Language") | Out-Null
+        $lines.Add("- contract_id: $([string](Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'contract_id' -DefaultValue ''))") | Out-Null
+        $lines.Add("- compare_mode: $([string](Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'compare_mode' -DefaultValue ''))") | Out-Null
+        $lines.Add("- frozen_backtest_pass: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'frozen_compare' -DefaultValue @{}) -Name 'pass' -DefaultValue ''))") | Out-Null
+        $lines.Add("- frozen_timeout_exit_share: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'frozen_compare' -DefaultValue @{}) -Name 'timeout_exit_share' -DefaultValue ''))") | Out-Null
+        $lines.Add("- deploy_runtime_parity_pass: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'deploy_runtime' -DefaultValue @{}) -Name 'runtime_parity_pass' -DefaultValue ''))") | Out-Null
+        $lines.Add("- deploy_input_quality_status: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'deploy_runtime' -DefaultValue @{}) -Name 'input_quality_status' -DefaultValue ''))") | Out-Null
+        $lines.Add("- deploy_sell_side_quality_status: $([string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'deploy_runtime' -DefaultValue @{}) -Name 'sell_side_quality_status' -DefaultValue ''))") | Out-Null
+        $lines.Add("- blocker_reason_codes: $([string]((@(Get-PropValue -ObjectValue $decisionLanguageSummary -Name 'blocker_reason_codes' -DefaultValue @())) -join ','))") | Out-Null
+    }
 
     $lines.Add("") | Out-Null
     $lines.Add("## Trainer Evidence") | Out-Null
@@ -5996,7 +6020,83 @@ function Sync-ReportTopLevelSummary {
     $report.completed_at = (Get-Date).ToString("o")
 }
 
+function Sync-DecisionLanguageSummary {
+    if (([string]$Trainer).Trim().ToLowerInvariant() -ne "v5_fusion") {
+        return
+    }
+    $candidate = Get-PropValue -ObjectValue $report -Name "candidate" -DefaultValue @{}
+    $steps = Get-PropValue -ObjectValue $report -Name "steps" -DefaultValue @{}
+    $gates = Get-PropValue -ObjectValue $report -Name "gates" -DefaultValue @{}
+    $backtestGate = Get-PropValue -ObjectValue $gates -Name "backtest" -DefaultValue @{}
+    $runtimeParityGate = Get-PropValue -ObjectValue $gates -Name "runtime_parity" -DefaultValue @{}
+    $backtestCandidate = Get-PropValue -ObjectValue $steps -Name "backtest_candidate" -DefaultValue @{}
+    $runtimeParityCandidate = Get-PropValue -ObjectValue $steps -Name "backtest_runtime_parity_candidate" -DefaultValue @{}
+    $runtimeViabilitySummary = Get-PropValue -ObjectValue $candidate -Name "runtime_viability_summary" -DefaultValue @{}
+    $runtimeDeploySummary = Get-PropValue -ObjectValue $candidate -Name "runtime_deploy_contract_summary" -DefaultValue @{}
+    $fusionNonRegressionSummary = Get-PropValue -ObjectValue $candidate -Name "fusion_non_regression_summary" -DefaultValue @{}
+
+    $backtestExecutionStructure = Get-PropValue -ObjectValue $backtestCandidate -Name "execution_structure" -DefaultValue @{}
+    $runtimeParityExecutionStructure = Get-PropValue -ObjectValue $runtimeParityCandidate -Name "execution_structure" -DefaultValue @{}
+
+    $blockerReasonCodes = New-Object System.Collections.Generic.List[string]
+    foreach ($value in @(
+        [string](Get-PropValue -ObjectValue $candidate -Name "fusion_evidence_reason_code" -DefaultValue ""),
+        [string](Get-PropValue -ObjectValue $runtimeViabilitySummary -Name "primary_reason_code" -DefaultValue ""),
+        [string](Get-PropValue -ObjectValue $runtimeDeploySummary -Name "primary_reason_code" -DefaultValue "")
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($value) -and (-not $blockerReasonCodes.Contains($value))) {
+            $blockerReasonCodes.Add($value) | Out-Null
+        }
+    }
+    foreach ($pair in @(
+        @{ name = "paper_non_regression"; value = (Get-PropValue -ObjectValue $fusionNonRegressionSummary -Name "paper_non_regression" -DefaultValue $null) },
+        @{ name = "paired_non_regression"; value = (Get-PropValue -ObjectValue $fusionNonRegressionSummary -Name "paired_non_regression" -DefaultValue $null) },
+        @{ name = "canary_non_regression"; value = (Get-PropValue -ObjectValue $fusionNonRegressionSummary -Name "canary_non_regression" -DefaultValue $null) }
+    )) {
+        if (($null -ne $pair.value) -and (-not (To-Bool $pair.value $true)) -and (-not $blockerReasonCodes.Contains([string]$pair.name))) {
+            $blockerReasonCodes.Add([string]$pair.name) | Out-Null
+        }
+    }
+
+    $summary = [ordered]@{
+        contract_id = "decision_language_summary_v1"
+        contract_role = "decision_language_summary"
+        compare_mode = "frozen_acceptance_vs_deploy_runtime_side_by_side_v1"
+        frozen_compare = [ordered]@{
+            evaluation_contract_id = "acceptance_frozen_compare_v1"
+            pass = Get-PropValue -ObjectValue $backtestGate -Name "pass" -DefaultValue $null
+            decision_basis = [string](Get-PropValue -ObjectValue $backtestGate -Name "decision_basis" -DefaultValue "")
+            candidate_payoff_ratio = To-Double (Get-PropValue -ObjectValue $backtestGate -Name "candidate_payoff_ratio" -DefaultValue 0.0) 0.0
+            candidate_payoff_ratio_threshold = To-Double (Get-PropValue -ObjectValue $backtestGate -Name "candidate_payoff_ratio_threshold" -DefaultValue 0.0) 0.0
+            candidate_min_realized_pnl_pass = To-Bool (Get-PropValue -ObjectValue $backtestGate -Name "candidate_min_realized_pnl_pass" -DefaultValue $false) $false
+            timeout_exit_share = To-Double (Get-PropValue -ObjectValue $backtestExecutionStructure -Name "timeout_exit_share" -DefaultValue 0.0) 0.0
+            tp_exit_share = To-Double (Get-PropValue -ObjectValue $backtestExecutionStructure -Name "tp_exit_share" -DefaultValue 0.0) 0.0
+            sl_exit_share = To-Double (Get-PropValue -ObjectValue $backtestExecutionStructure -Name "sl_exit_share" -DefaultValue 0.0) 0.0
+        }
+        deploy_runtime = [ordered]@{
+            evaluation_contract_id = "runtime_deploy_contract_v1"
+            runtime_parity_pass = Get-PropValue -ObjectValue $runtimeParityGate -Name "pass" -DefaultValue $null
+            runtime_viability_primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeViabilitySummary -Name "primary_reason_code" -DefaultValue "")
+            runtime_deploy_contract_primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeDeploySummary -Name "primary_reason_code" -DefaultValue "")
+            input_quality_status = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $runtimeViabilitySummary -Name "input_quality_summary" -DefaultValue @{}) -Name "overall_quality_status" -DefaultValue "")
+            sell_side_quality_status = [string](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $runtimeDeploySummary -Name "sell_side_quality_summary" -DefaultValue @{}) -Name "quality_status" -DefaultValue "")
+            paper_non_regression = Get-PropValue -ObjectValue $fusionNonRegressionSummary -Name "paper_non_regression" -DefaultValue $null
+            paired_non_regression = Get-PropValue -ObjectValue $fusionNonRegressionSummary -Name "paired_non_regression" -DefaultValue $null
+            canary_non_regression = Get-PropValue -ObjectValue $fusionNonRegressionSummary -Name "canary_non_regression" -DefaultValue $null
+            timeout_exit_share = To-Double (Get-PropValue -ObjectValue $runtimeParityExecutionStructure -Name "timeout_exit_share" -DefaultValue 0.0) 0.0
+            tp_exit_share = To-Double (Get-PropValue -ObjectValue $runtimeParityExecutionStructure -Name "tp_exit_share" -DefaultValue 0.0) 0.0
+            sl_exit_share = To-Double (Get-PropValue -ObjectValue $runtimeParityExecutionStructure -Name "sl_exit_share" -DefaultValue 0.0) 0.0
+        }
+        blocker_reason_codes = @($blockerReasonCodes)
+    }
+    $report.steps.decision_language_summary = $summary
+    if (-not (Test-IsEffectivelyEmptyObject -ObjectValue $report.candidate)) {
+        $report.candidate.decision_language_summary = $summary
+    }
+}
+
 function Save-Report {
+    Sync-DecisionLanguageSummary
     Sync-ReportTopLevelSummary
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $runReportPath = Join-Path $resolvedOutDir ($ReportPrefix + "_" + $stamp + ".json")
@@ -7548,6 +7648,9 @@ try {
         if ((-not [string]::IsNullOrWhiteSpace($certificationStartDate)) -and (-not [string]::IsNullOrWhiteSpace($effectiveBatchDate))) {
             $trainArgs += @("--fusion-runtime-start", $certificationStartDate, "--fusion-runtime-end", $effectiveBatchDate)
         }
+        if ($useFusionVariantMatrix -and $EnableFusionInputAblationMatrix.IsPresent) {
+            $trainArgs += "--fusion-enable-input-ablation-matrix"
+        }
     }
     $trainExec = Invoke-CommandCapture -Exe $resolvedPythonExe -ArgList $trainArgs
     $candidateMatrixPayload = if ($useFusionVariantMatrix) { Resolve-JsonObjectFromText -TextValue ([string]$trainExec.Output) } else { @{} }
@@ -7605,7 +7708,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($candidateFusionVariantName) -and (-not [string]::IsNullOrWhiteSpace($fusionStackerFamily))) {
         $candidateFusionVariantName = $fusionStackerFamily
     }
+    $candidateFusionInputVariantName = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "fusion_input_variant_name" -DefaultValue (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_input_variant_name" -DefaultValue ""))
     $candidateVariantReportPath = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "variant_report_path" -DefaultValue "")
+    $candidateFusionInputAblationReportPath = [string](Get-PropValue -ObjectValue $candidateVariantMetadata -Name "fusion_input_ablation_report_path" -DefaultValue (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_input_ablation_report_path" -DefaultValue ""))
     $fusionInputExperts = Get-PropValue -ObjectValue $candidateFusionModelContract -Name "input_experts" -DefaultValue @{}
     $fusionTradabilityInput = Get-PropValue -ObjectValue $fusionInputExperts -Name "tradability" -DefaultValue @{}
     $sequencePretrainMethod = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "sequence_pretrain_method" -DefaultValue "")
@@ -7642,6 +7747,8 @@ try {
         lob_variant_name = $candidateLobVariantName
         fusion_variant_name = $candidateFusionVariantName
         fusion_variant_report_path = $candidateVariantReportPath
+        fusion_input_variant_name = $candidateFusionInputVariantName
+        fusion_input_ablation_report_path = $candidateFusionInputAblationReportPath
         sequence_pretrain_method = $sequencePretrainMethod
         sequence_pretrain_ready = $sequencePretrainReady
         sequence_pretrain_status = $sequencePretrainStatus
@@ -7855,6 +7962,7 @@ try {
         fusion_variant_name = $candidateFusionVariantName
         fusion_variant_report_path = $candidateVariantReportPath
         promotion_decision = $promotionDecision
+        fusion_non_regression_summary = (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_non_regression_summary" -DefaultValue (Get-PropValue -ObjectValue $promotionDecision -Name "fusion_non_regression_summary" -DefaultValue @{}))
         candidate_model_ref_requested = $CandidateModelRef
         candidate_run_id_used_for_backtest = $candidateBacktestModelRef
         candidate_run_id_used_for_paper = $candidatePaperModelRef
@@ -7904,6 +8012,8 @@ try {
     $report.steps.train.lob_variant_name = $candidateLobVariantName
     $report.steps.train.fusion_variant_name = $candidateFusionVariantName
     $report.steps.train.fusion_variant_report_path = $candidateVariantReportPath
+    $report.steps.train.fusion_input_variant_name = $candidateFusionInputVariantName
+    $report.steps.train.fusion_input_ablation_report_path = $candidateFusionInputAblationReportPath
     $report.steps.train.duplicate_candidate = (To-Bool (Get-PropValue -ObjectValue $duplicateCandidateArtifacts -Name "duplicate" -DefaultValue $false) $false)
     $report.steps.train.duplicate_candidate_artifacts = $duplicateCandidateArtifacts
 
@@ -8157,6 +8267,9 @@ try {
             entry_gate_allowed_ratio = To-Double (Get-PropValue -ObjectValue $runtimeViability -Name "entry_gate_allowed_ratio" -DefaultValue 0.0) 0.0
             estimated_intent_candidate_count = [int](To-Int64 (Get-PropValue -ObjectValue $runtimeViability -Name "estimated_intent_candidate_count" -DefaultValue 0) 0)
             primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeViability -Name "primary_reason_code" -DefaultValue "")
+            entry_boundary_summary = (Get-PropValue -ObjectValue $runtimeViability -Name "entry_boundary_summary" -DefaultValue @{})
+            input_quality_summary = (Get-PropValue -ObjectValue $runtimeViability -Name "input_quality_summary" -DefaultValue @{})
+            tradability_provenance = (Get-PropValue -ObjectValue $runtimeViability -Name "tradability_provenance" -DefaultValue @{})
             top_entry_gate_reason_codes = @((Get-PropValue -ObjectValue $runtimeViability -Name "top_entry_gate_reason_codes" -DefaultValue @()))
             sample_rows = @((Get-PropValue -ObjectValue $runtimeViability -Name "sample_rows" -DefaultValue @()))
         }
@@ -8213,9 +8326,14 @@ try {
             decision_contract_version = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "decision_contract_version" -DefaultValue "")
             required_components = @((Get-PropValue -ObjectValue $runtimeDeployContract -Name "required_components" -DefaultValue @()))
             advisory_components = @((Get-PropValue -ObjectValue $runtimeDeployContract -Name "advisory_components" -DefaultValue @()))
+            sell_side_quality_summary = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "sell_side_quality_summary" -DefaultValue @{})
+            entry_boundary_summary = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "entry_boundary_summary" -DefaultValue @{})
+            input_quality_summary = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "input_quality_summary" -DefaultValue @{})
+            tradability_provenance = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "tradability_provenance" -DefaultValue @{})
             component_readiness = (Get-PropValue -ObjectValue $runtimeDeployContract -Name "component_readiness" -DefaultValue @{})
             primary_reason_code = [string](Get-PropValue -ObjectValue $runtimeDeployContract -Name "primary_reason_code" -DefaultValue "")
         }
+        $report.candidate.fusion_non_regression_summary = (Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_non_regression_summary" -DefaultValue (Get-PropValue -ObjectValue $promotionDecision -Name "fusion_non_regression_summary" -DefaultValue @{}))
         if (-not [bool](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "pass" -DefaultValue $false)) {
             $runtimeDeployFailureCode = [string](Get-PropValue -ObjectValue $runtimeDeployContractGate -Name "reason" -DefaultValue "FUSION_RUNTIME_DEPLOY_CONTRACT_NOT_READY")
             $report.reasons = @($runtimeDeployFailureCode)
@@ -9367,6 +9485,21 @@ try {
     $pairedPaperArtifact = Resolve-LatestPairedPaperArtifact -ProjectRoot $resolvedProjectRoot
     $canaryConfidenceArtifact = Resolve-LatestCanaryConfidenceArtifact -ProjectRoot $resolvedProjectRoot
     if (([string]$Trainer).Trim().ToLowerInvariant() -eq "v5_fusion") {
+        $existingFusionEvidenceReasonCode = [string](Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_evidence_reason_code" -DefaultValue (Get-PropValue -ObjectValue $promotionDecision -Name "fusion_evidence_reason_code" -DefaultValue ""))
+        $existingFusionNonRegressionSummary = Get-PropValue -ObjectValue $candidateRuntimeRecommendations -Name "fusion_non_regression_summary" -DefaultValue (Get-PropValue -ObjectValue $promotionDecision -Name "fusion_non_regression_summary" -DefaultValue @{})
+        $specificFusionBlockerReasonCode = ""
+        $paperNonRegression = Get-PropValue -ObjectValue $existingFusionNonRegressionSummary -Name "paper_non_regression" -DefaultValue $null
+        $pairedNonRegression = Get-PropValue -ObjectValue $existingFusionNonRegressionSummary -Name "paired_non_regression" -DefaultValue $null
+        $canaryNonRegression = Get-PropValue -ObjectValue $existingFusionNonRegressionSummary -Name "canary_non_regression" -DefaultValue $null
+        if (($null -ne $pairedNonRegression) -and (-not (To-Bool $pairedNonRegression $true))) {
+            $specificFusionBlockerReasonCode = "PAIRED_NON_REGRESSION_FAILED"
+        } elseif (($null -ne $canaryNonRegression) -and (-not (To-Bool $canaryNonRegression $true))) {
+            $specificFusionBlockerReasonCode = "CANARY_NON_REGRESSION_FAILED"
+        } elseif (($null -ne $paperNonRegression) -and (-not (To-Bool $paperNonRegression $true))) {
+            $specificFusionBlockerReasonCode = "PAPER_NON_REGRESSION_FAILED"
+        } elseif ((-not [string]::IsNullOrWhiteSpace($existingFusionEvidenceReasonCode)) -and ($existingFusionEvidenceReasonCode -notin @("OFFLINE_SELECTION_ONLY", "LINEAR_BASELINE_WINNER", "BASELINE_RETAINED_EVIDENCE_NOT_STRONG_ENOUGH", "REGIME_MOE_EVIDENCE_STRONG_ENOUGH"))) {
+            $specificFusionBlockerReasonCode = $existingFusionEvidenceReasonCode
+        }
         $paperEvidencePass = if ($SkipPaperSoak) { $true } else { $paperPass }
         $canaryPass = if (Test-IsEffectivelyEmptyObject -ObjectValue (Get-PropValue -ObjectValue $canaryConfidenceArtifact -Name "payload" -DefaultValue @{})) {
             $true
@@ -9393,7 +9526,11 @@ try {
                 $pairedPass -and
                 $canaryPass
             )
-        if ([string]::Equals($fusionStackerFamily, "regime_moe", [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not [string]::IsNullOrWhiteSpace($specificFusionBlockerReasonCode)) {
+            $fusionCandidateDefaultEligible = $false
+            $fusionEvidenceReasonCode = $specificFusionBlockerReasonCode
+            $fusionEvidenceWinner = "linear"
+        } elseif ([string]::Equals($fusionStackerFamily, "regime_moe", [System.StringComparison]::OrdinalIgnoreCase)) {
             $fusionEvidenceReasonCode = if ($fusionCandidateDefaultEligible) { "REGIME_MOE_EVIDENCE_STRONG_ENOUGH" } else { "BASELINE_RETAINED_EVIDENCE_NOT_STRONG_ENOUGH" }
             $fusionEvidenceWinner = if ($fusionCandidateDefaultEligible) { "regime_moe" } else { "linear" }
         } else {

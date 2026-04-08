@@ -59,6 +59,44 @@ from .split import compute_anchored_walk_forward_splits
 
 
 VALID_FUSION_STACKERS = ("linear", "monotone_gbdt", "regime_moe")
+VALID_FUSION_INPUT_VARIANTS = (
+    "full_fusion",
+    "full_without_tradability",
+    "panel_plus_sequence_lob",
+    "panel_plus_sequence",
+    "panel_plus_lob",
+    "panel_only",
+)
+_FUSION_INPUT_VARIANT_ALIASES = {
+    "panel_plus_sequence_lob": "full_without_tradability",
+}
+_FUSION_INPUT_VARIANT_CONFIGS = {
+    "full_fusion": {
+        "include_sequence": True,
+        "include_lob": True,
+        "include_tradability": True,
+    },
+    "full_without_tradability": {
+        "include_sequence": True,
+        "include_lob": True,
+        "include_tradability": False,
+    },
+    "panel_plus_sequence": {
+        "include_sequence": True,
+        "include_lob": False,
+        "include_tradability": False,
+    },
+    "panel_plus_lob": {
+        "include_sequence": False,
+        "include_lob": True,
+        "include_tradability": False,
+    },
+    "panel_only": {
+        "include_sequence": False,
+        "include_lob": False,
+        "include_tradability": False,
+    },
+}
 _FUSION_INPUT_CONTRACT_FILENAME = "fusion_input_contract.json"
 _FUSION_RUNTIME_INPUT_CONTRACT_FILENAME = "fusion_runtime_input_contract.json"
 _FUSION_ENTRY_BOUNDARY_STATUS_KEY = "entry_boundary_complete"
@@ -84,6 +122,10 @@ class TrainV5FusionOptions:
     runtime_start: str | None = None
     runtime_end: str | None = None
     stacker_family: str = "linear"
+    input_variant_name: str = "full_fusion"
+    include_sequence: bool | None = None
+    include_lob: bool | None = None
+    include_tradability: bool | None = None
     run_scope: str = "manual_fusion_expert"
 
 
@@ -214,6 +256,99 @@ class _RegimeMoERegressionHead:
         return payload
 
 
+def _normalize_fusion_input_variant_name(value: str | None) -> str:
+    normalized = str(value or "").strip().lower() or "full_fusion"
+    return str(_FUSION_INPUT_VARIANT_ALIASES.get(normalized, normalized))
+
+
+def _derive_fusion_input_variant_name(
+    *,
+    include_sequence: bool,
+    include_lob: bool,
+    include_tradability: bool,
+) -> str:
+    if include_sequence and include_lob and include_tradability:
+        return "full_fusion"
+    if include_sequence and include_lob and not include_tradability:
+        return "full_without_tradability"
+    if include_sequence and not include_lob and not include_tradability:
+        return "panel_plus_sequence"
+    if (not include_sequence) and include_lob and not include_tradability:
+        return "panel_plus_lob"
+    if (not include_sequence) and (not include_lob) and (not include_tradability):
+        return "panel_only"
+    suffix: list[str] = []
+    if include_sequence:
+        suffix.append("sequence")
+    if include_lob:
+        suffix.append("lob")
+    if include_tradability:
+        suffix.append("tradability")
+    return "panel_plus_" + "_".join(suffix) if suffix else "panel_only"
+
+
+def _resolve_fusion_input_variant(options: TrainV5FusionOptions) -> dict[str, Any]:
+    requested_variant_name = _normalize_fusion_input_variant_name(options.input_variant_name)
+    default_config = dict(_FUSION_INPUT_VARIANT_CONFIGS.get(requested_variant_name) or {})
+    explicit_overrides_present = any(
+        value is not None
+        for value in (
+            options.include_sequence,
+            options.include_lob,
+            options.include_tradability,
+        )
+    )
+    if not default_config and not explicit_overrides_present:
+        raise ValueError(
+            "input_variant_name must be one of: " + ", ".join(VALID_FUSION_INPUT_VARIANTS)
+        )
+    include_sequence = (
+        bool(default_config.get("include_sequence", True))
+        if options.include_sequence is None
+        else bool(options.include_sequence)
+    )
+    include_lob = (
+        bool(default_config.get("include_lob", True))
+        if options.include_lob is None
+        else bool(options.include_lob)
+    )
+    include_tradability = (
+        bool(default_config.get("include_tradability", True))
+        if options.include_tradability is None
+        else bool(options.include_tradability)
+    )
+    canonical_variant_name = _derive_fusion_input_variant_name(
+        include_sequence=include_sequence,
+        include_lob=include_lob,
+        include_tradability=include_tradability,
+    )
+    included_experts = ["panel"]
+    if include_sequence:
+        included_experts.append("sequence")
+    if include_lob:
+        included_experts.append("lob")
+    if include_tradability:
+        included_experts.append("tradability")
+    excluded_experts = [
+        expert_name
+        for expert_name, included in (
+            ("sequence", include_sequence),
+            ("lob", include_lob),
+            ("tradability", include_tradability),
+        )
+        if not included
+    ]
+    return {
+        "input_variant_name": canonical_variant_name,
+        "requested_input_variant_name": requested_variant_name,
+        "include_sequence": bool(include_sequence),
+        "include_lob": bool(include_lob),
+        "include_tradability": bool(include_tradability),
+        "included_experts": included_experts,
+        "excluded_experts": excluded_experts,
+    }
+
+
 def _fusion_input_contract_path(run_dir: Path) -> Path:
     return run_dir / _FUSION_INPUT_CONTRACT_FILENAME
 
@@ -339,6 +474,259 @@ def _normalize_support_level_summary(frame: pl.DataFrame) -> dict[str, int]:
             continue
         counts[key] = int(row.get("len", 0) or 0)
     return counts
+
+
+def _safe_fraction(numerator: int | float, denominator: int | float) -> float | None:
+    try:
+        resolved_denominator = float(denominator)
+    except (TypeError, ValueError):
+        return None
+    if resolved_denominator <= 0.0:
+        return None
+    try:
+        return float(float(numerator) / resolved_denominator)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _build_support_level_quality_summary(*, expert_name: str, counts: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(counts or {})
+    strict_full_rows = max(int(payload.get("strict_full", 0) or 0), 0)
+    reduced_context_rows = max(int(payload.get("reduced_context", 0) or 0), 0)
+    structural_invalid_rows = max(int(payload.get("structural_invalid", 0) or 0), 0)
+    total_rows = strict_full_rows + reduced_context_rows + structural_invalid_rows
+    strict_full_ratio = _safe_fraction(strict_full_rows, total_rows)
+    reduced_context_ratio = _safe_fraction(reduced_context_rows, total_rows)
+    structural_invalid_ratio = _safe_fraction(structural_invalid_rows, total_rows)
+    prefix = str(expert_name).strip().upper() or "AUX"
+    reason_codes: list[str] = []
+    quality_status = "unknown"
+    if total_rows > 0:
+        quality_status = "healthy"
+        if (structural_invalid_ratio or 0.0) > 0.0:
+            reason_codes.append(f"{prefix}_STRUCTURAL_INVALID_PRESENT")
+        if (structural_invalid_ratio or 0.0) >= 0.05:
+            quality_status = "structural_invalid_heavy"
+        elif (reduced_context_ratio or 0.0) >= 0.80:
+            quality_status = "reduced_context_heavy"
+        elif (reduced_context_ratio or 0.0) >= 0.50:
+            quality_status = "reduced_context_mixed"
+        if (reduced_context_ratio or 0.0) >= 0.80:
+            reason_codes.append(f"{prefix}_REDUCED_CONTEXT_HEAVY")
+        elif (reduced_context_ratio or 0.0) >= 0.50:
+            reason_codes.append(f"{prefix}_REDUCED_CONTEXT_MIXED")
+    return {
+        "support_level_counts": {
+            "strict_full": int(strict_full_rows),
+            "reduced_context": int(reduced_context_rows),
+            "structural_invalid": int(structural_invalid_rows),
+            "total": int(total_rows),
+        },
+        "strict_full_rows": int(strict_full_rows),
+        "reduced_context_rows": int(reduced_context_rows),
+        "structural_invalid_rows": int(structural_invalid_rows),
+        "strict_full_ratio": strict_full_ratio,
+        "reduced_context_ratio": reduced_context_ratio,
+        "structural_invalid_ratio": structural_invalid_ratio,
+        "quality_status": str(quality_status),
+        "reason_codes": reason_codes,
+    }
+
+
+def _build_tradability_provenance(payload: dict[str, Any] | None) -> dict[str, Any]:
+    doc = dict(payload or {})
+    if bool(doc.get("ablation_excluded", False)):
+        selected_markets = _normalize_market_list(
+            list(doc.get("selected_markets") or doc.get("requested_selected_markets") or doc.get("available_markets") or [])
+        )
+        coverage_dates = [str(item).strip() for item in (doc.get("coverage_dates") or []) if str(item).strip()]
+        return {
+            "policy": "v5_fusion_tradability_provenance_v1",
+            "source_kind": "excluded_by_ablation",
+            "source_model_family": str(doc.get("model_family") or "").strip(),
+            "source_trainer": str(doc.get("trainer") or "").strip(),
+            "source_run_id": str(doc.get("run_id") or "").strip(),
+            "path": str(doc.get("path") or "").strip(),
+            "rows": 0,
+            "selected_market_count": int(len(selected_markets)),
+            "selected_markets": list(selected_markets),
+            "coverage_date_count": int(len(coverage_dates)),
+            "coverage_start_date": str(doc.get("coverage_start_date") or "").strip(),
+            "coverage_end_date": str(doc.get("coverage_end_date") or "").strip(),
+            "evidence_strength": "not_applicable",
+            "quality_status": "excluded_by_ablation",
+            "reason_codes": [str(doc.get("ablation_reason_code") or "TRADABILITY_EXCLUDED_BY_ABLATION")],
+            "ablation_excluded": True,
+            "input_variant_name": str(doc.get("input_variant_name") or "").strip(),
+        }
+    trainer = str(doc.get("trainer") or "").strip()
+    model_family = str(doc.get("model_family") or "").strip()
+    source_kind = (
+        "dedicated_tradability_expert"
+        if "tradability" in trainer.lower() or "tradability" in model_family.lower()
+        else "proxy_or_unknown"
+    )
+    rows = max(int(doc.get("rows", 0) or 0), 0)
+    selected_markets = _normalize_market_list(
+        list(doc.get("selected_markets") or doc.get("requested_selected_markets") or doc.get("available_markets") or [])
+    )
+    coverage_dates = [str(item).strip() for item in (doc.get("coverage_dates") or []) if str(item).strip()]
+    selected_market_count = len(selected_markets)
+    coverage_date_count = len(coverage_dates)
+    evidence_strength = "strong"
+    quality_status = "ready"
+    reason_codes: list[str] = []
+    if rows <= 0 or selected_market_count <= 0:
+        evidence_strength = "missing"
+        quality_status = "missing"
+        reason_codes.append("TRADABILITY_EVIDENCE_MISSING")
+    elif rows < 100 or selected_market_count < 20 or coverage_date_count < 10:
+        evidence_strength = "thin"
+        quality_status = "thin_training_evidence"
+        reason_codes.append("TRADABILITY_EVIDENCE_THIN")
+    elif rows < 500 or selected_market_count < 30 or coverage_date_count < 20:
+        evidence_strength = "moderate"
+        quality_status = "moderate_training_evidence"
+    if source_kind != "dedicated_tradability_expert":
+        reason_codes.append("TRADABILITY_SOURCE_NOT_DEDICATED_EXPERT")
+        if quality_status == "ready":
+            quality_status = "proxy_backed"
+    return {
+        "policy": "v5_fusion_tradability_provenance_v1",
+        "source_kind": str(source_kind),
+        "source_model_family": model_family,
+        "source_trainer": trainer,
+        "source_run_id": str(doc.get("run_id") or "").strip(),
+        "path": str(doc.get("path") or "").strip(),
+        "rows": int(rows),
+        "selected_market_count": int(selected_market_count),
+        "selected_markets": list(selected_markets),
+        "coverage_date_count": int(coverage_date_count),
+        "coverage_start_date": str(doc.get("coverage_start_date") or "").strip(),
+        "coverage_end_date": str(doc.get("coverage_end_date") or "").strip(),
+        "evidence_strength": str(evidence_strength),
+        "quality_status": str(quality_status),
+        "reason_codes": reason_codes,
+    }
+
+
+def _build_input_quality_summary(input_contract: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(input_contract or {})
+    inputs = {key: dict(value or {}) for key, value in (payload.get("inputs") or {}).items()}
+    expert_summaries: dict[str, Any] = {}
+    all_reason_codes: list[str] = []
+    degraded = False
+    caution = False
+    tradability_provenance = _build_tradability_provenance(inputs.get("tradability"))
+    for expert_name in ("panel", "sequence", "lob", "tradability"):
+        meta = dict(inputs.get(expert_name) or {})
+        summary = {
+            "run_id": str(meta.get("run_id") or "").strip(),
+            "model_family": str(meta.get("model_family") or "").strip(),
+            "trainer": str(meta.get("trainer") or "").strip(),
+            "rows": max(int(meta.get("rows", 0) or 0), 0),
+            "selected_market_count": len(
+                _normalize_market_list(
+                    list(meta.get("selected_markets") or meta.get("requested_selected_markets") or meta.get("available_markets") or [])
+                )
+            ),
+            "coverage_date_count": len([str(item).strip() for item in (meta.get("coverage_dates") or []) if str(item).strip()]),
+            "coverage_start_date": str(meta.get("coverage_start_date") or "").strip(),
+            "coverage_end_date": str(meta.get("coverage_end_date") or "").strip(),
+            "ablation_excluded": bool(meta.get("ablation_excluded", False)),
+            "included": not bool(meta.get("ablation_excluded", False)),
+            "input_variant_name": str(meta.get("input_variant_name") or "").strip(),
+        }
+        if bool(meta.get("ablation_excluded", False)):
+            summary.update(
+                {
+                    "quality_status": "excluded_by_ablation",
+                    "reason_codes": [str(meta.get("ablation_reason_code") or f"{expert_name.upper()}_EXCLUDED_BY_ABLATION")],
+                }
+            )
+        elif expert_name in {"sequence", "lob"}:
+            support_summary = _build_support_level_quality_summary(
+                expert_name=expert_name,
+                counts=meta.get("support_level_counts"),
+            )
+            summary.update(support_summary)
+        elif expert_name == "tradability":
+            summary.update(
+                {
+                    "source_kind": str(tradability_provenance.get("source_kind") or ""),
+                    "evidence_strength": str(tradability_provenance.get("evidence_strength") or ""),
+                    "quality_status": str(tradability_provenance.get("quality_status") or "unknown"),
+                    "reason_codes": list(tradability_provenance.get("reason_codes") or []),
+                }
+            )
+        else:
+            quality_status = "anchor_ready" if int(summary["rows"]) > 0 else "missing"
+            summary.update(
+                {
+                    "quality_status": quality_status,
+                    "reason_codes": ([] if quality_status == "anchor_ready" else ["PANEL_INPUT_MISSING"]),
+                }
+            )
+        expert_summaries[expert_name] = summary
+        summary_reason_codes = [str(item).strip() for item in (summary.get("reason_codes") or []) if str(item).strip()]
+        for code in summary_reason_codes:
+            if code not in all_reason_codes:
+                all_reason_codes.append(code)
+        quality_status = str(summary.get("quality_status") or "").strip().lower()
+        if quality_status in {"missing", "thin_training_evidence", "reduced_context_heavy", "structural_invalid_heavy", "proxy_backed"}:
+            degraded = True
+        elif quality_status in {"reduced_context_mixed", "moderate_training_evidence"}:
+            caution = True
+    overall_quality_status = "ready"
+    if degraded:
+        overall_quality_status = "degraded"
+    elif caution:
+        overall_quality_status = "caution"
+    return {
+        "policy": "v5_fusion_input_quality_summary_v1",
+        "input_variant_name": str(payload.get("input_variant_name") or ""),
+        "included_experts": list(payload.get("included_experts") or []),
+        "excluded_experts": list(payload.get("excluded_experts") or []),
+        "overall_quality_status": str(overall_quality_status),
+        "reason_codes": all_reason_codes,
+        "experts": expert_summaries,
+        "tradability_provenance": tradability_provenance,
+    }
+
+
+def _build_excluded_fusion_input_metadata(
+    *,
+    path: Path | None,
+    prefix: str,
+    input_variant_name: str,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    resolved_path = Path(path).resolve() if path is not None else None
+    if resolved_path is not None and resolved_path.exists():
+        metadata = _load_fusion_input_metadata(path=resolved_path, prefix=prefix)
+    reason_code = f"{str(prefix).strip().upper()}_EXCLUDED_BY_ABLATION"
+    selected_markets = list(metadata.get("selected_markets") or metadata.get("requested_selected_markets") or [])
+    requested_selected_markets = list(metadata.get("requested_selected_markets") or selected_markets)
+    return {
+        **metadata,
+        "prefix": str(prefix),
+        "path": str(resolved_path) if resolved_path is not None else "",
+        "rows": 0,
+        "support_level_counts": {},
+        "label_columns": {},
+        "selected_markets": selected_markets,
+        "requested_selected_markets": requested_selected_markets,
+        "available_markets": list(metadata.get("available_markets") or selected_markets),
+        "coverage_dates": list(metadata.get("coverage_dates") or []),
+        "coverage_start_date": str(metadata.get("coverage_start_date") or "").strip(),
+        "coverage_end_date": str(metadata.get("coverage_end_date") or "").strip(),
+        "coverage_start_ts_ms": int(metadata.get("coverage_start_ts_ms", 0) or 0),
+        "coverage_end_ts_ms": int(metadata.get("coverage_end_ts_ms", 0) or 0),
+        "ablation_included": False,
+        "ablation_excluded": True,
+        "input_variant_name": str(input_variant_name),
+        "ablation_reason_code": reason_code,
+    }
 
 
 def _load_fusion_input_metadata(*, path: Path, prefix: str) -> dict[str, Any]:
@@ -614,10 +1002,24 @@ def _build_fusion_numeric_feature_contract(merged: pl.DataFrame) -> tuple[tuple[
     }
 
 
-def _build_runtime_coverage_summary(merged: pl.DataFrame) -> dict[str, Any]:
+def _build_runtime_coverage_summary(merged: pl.DataFrame, *, input_contract: dict[str, Any] | None = None) -> dict[str, Any]:
     total_rows = int(merged.height)
+    inputs = {key: dict(value or {}) for key, value in ((input_contract or {}).get("inputs") or {}).items()}
     experts: dict[str, Any] = {}
     for expert_name in ("panel", "sequence", "lob", "tradability"):
+        meta = dict(inputs.get(expert_name) or {})
+        included = not bool(meta.get("ablation_excluded", False))
+        if not included:
+            experts[expert_name] = {
+                "included": False,
+                "ablation_excluded": True,
+                "present_rows": 0,
+                "missing_rows": 0,
+                "coverage_ratio": None,
+                "required_full_window": False,
+                "reason_code": str(meta.get("ablation_reason_code") or f"{expert_name.upper()}_EXCLUDED_BY_ABLATION"),
+            }
+            continue
         present_column = f"{expert_name}_present"
         present_rows = total_rows
         if present_column in merged.columns:
@@ -626,6 +1028,8 @@ def _build_runtime_coverage_summary(merged: pl.DataFrame) -> dict[str, Any]:
             )
         missing_rows = max(total_rows - present_rows, 0)
         experts[expert_name] = {
+            "included": True,
+            "ablation_excluded": False,
             "present_rows": present_rows,
             "missing_rows": missing_rows,
             "coverage_ratio": float(present_rows / total_rows) if total_rows > 0 else 0.0,
@@ -813,31 +1217,92 @@ def _fit_regime_moe_reg_head(
 
 
 def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInputBundle:
+    input_variant = _resolve_fusion_input_variant(options)
     panel, panel_meta = _load_expert_table(options.panel_input_path, prefix="panel")
-    sequence, sequence_meta = _load_expert_table(options.sequence_input_path, prefix="sequence")
-    lob, lob_meta = _load_expert_table(options.lob_input_path, prefix="lob")
-    if options.tradability_input_path is None:
-        raise ValueError("v5_fusion requires explicit tradability expert input")
-    tradability, tradability_meta = _load_expert_table(options.tradability_input_path, prefix="tradability")
+    panel_meta = {
+        **dict(panel_meta),
+        "ablation_included": True,
+        "ablation_excluded": False,
+        "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+    }
+    sequence = None
+    sequence_meta = _build_excluded_fusion_input_metadata(
+        path=options.sequence_input_path,
+        prefix="sequence",
+        input_variant_name=str(input_variant.get("input_variant_name") or ""),
+    )
+    if bool(input_variant.get("include_sequence", True)):
+        sequence, sequence_meta = _load_expert_table(options.sequence_input_path, prefix="sequence")
+        sequence_meta = {
+            **dict(sequence_meta),
+            "ablation_included": True,
+            "ablation_excluded": False,
+            "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+        }
+    lob = None
+    lob_meta = _build_excluded_fusion_input_metadata(
+        path=options.lob_input_path,
+        prefix="lob",
+        input_variant_name=str(input_variant.get("input_variant_name") or ""),
+    )
+    if bool(input_variant.get("include_lob", True)):
+        lob, lob_meta = _load_expert_table(options.lob_input_path, prefix="lob")
+        lob_meta = {
+            **dict(lob_meta),
+            "ablation_included": True,
+            "ablation_excluded": False,
+            "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+        }
+    tradability = None
+    tradability_meta = _build_excluded_fusion_input_metadata(
+        path=options.tradability_input_path,
+        prefix="tradability",
+        input_variant_name=str(input_variant.get("input_variant_name") or ""),
+    )
+    if bool(input_variant.get("include_tradability", True)):
+        if options.tradability_input_path is None:
+            raise ValueError("v5_fusion requires tradability input when include_tradability is enabled")
+        tradability, tradability_meta = _load_expert_table(options.tradability_input_path, prefix="tradability")
+        tradability_meta = {
+            **dict(tradability_meta),
+            "ablation_included": True,
+            "ablation_excluded": False,
+            "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+        }
     if panel.height <= 0:
         raise ValueError("fusion panel anchor has no rows")
     snapshot_ids = {
         str(panel_meta.get("data_platform_ready_snapshot_id") or "").strip(),
-        str(sequence_meta.get("data_platform_ready_snapshot_id") or "").strip(),
-        str(lob_meta.get("data_platform_ready_snapshot_id") or "").strip(),
-        str(tradability_meta.get("data_platform_ready_snapshot_id") or "").strip(),
     }
+    for meta in (sequence_meta, lob_meta, tradability_meta):
+        if bool(meta.get("ablation_excluded", False)):
+            continue
+        snapshot_ids.add(str(meta.get("data_platform_ready_snapshot_id") or "").strip())
     if "" in snapshot_ids or len(snapshot_ids) != 1:
         raise ValueError("fusion inputs must come from the same non-empty data_platform_ready_snapshot_id")
-    merged = panel.join(sequence, on=["market", "ts_ms"], how="left", coalesce=True)
-    merged = merged.join(lob, on=["market", "ts_ms"], how="left", coalesce=True)
-    merged = merged.join(tradability, on=["market", "ts_ms"], how="left", coalesce=True)
-    merged = merged.with_columns(
+    merged = panel
+    if sequence is not None:
+        merged = merged.join(sequence, on=["market", "ts_ms"], how="left", coalesce=True)
+    if lob is not None:
+        merged = merged.join(lob, on=["market", "ts_ms"], how="left", coalesce=True)
+    if tradability is not None:
+        merged = merged.join(tradability, on=["market", "ts_ms"], how="left", coalesce=True)
+    present_columns: list[pl.Expr] = [
         pl.col("panel_final_rank_score").is_not_null().cast(pl.Float64).alias("panel_present"),
-        pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Float64).alias("sequence_present"),
-        pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Float64).alias("lob_present"),
-        pl.col("tradability_tradability_prob").is_not_null().cast(pl.Float64).alias("tradability_present"),
-    )
+    ]
+    if sequence is not None:
+        present_columns.append(
+            pl.col("sequence_directional_probability_primary").is_not_null().cast(pl.Float64).alias("sequence_present")
+        )
+    if lob is not None:
+        present_columns.append(
+            pl.col("lob_micro_alpha_30s").is_not_null().cast(pl.Float64).alias("lob_present")
+        )
+    if tradability is not None:
+        present_columns.append(
+            pl.col("tradability_tradability_prob").is_not_null().cast(pl.Float64).alias("tradability_present")
+        )
+    merged = merged.with_columns(present_columns)
     expert_value_columns = [
         name
         for name, dtype in merged.schema.items()
@@ -868,6 +1333,9 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
         "label_contract_source": "train_v5_panel_ensemble",
         "panel_label_columns": dict(panel_meta.get("label_columns") or {}),
         "auxiliary_experts": ["sequence", "lob", "tradability"],
+        "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+        "included_experts": list(input_variant.get("included_experts") or []),
+        "excluded_experts": list(input_variant.get("excluded_experts") or []),
         "target_alignment_policy": "panel_anchor_only",
         "runtime_coverage_policy": "auxiliary_experts_full_window_required",
         "runtime_coverage_summary": {},
@@ -880,6 +1348,9 @@ def _load_and_merge_expert_tables(options: TrainV5FusionOptions) -> _FusionInput
         "feature_contract": feature_contract,
         "rows_after_merge": int(merged.height),
     }
+    input_quality_summary = _build_input_quality_summary(input_contract)
+    input_contract["input_quality_summary"] = input_quality_summary
+    input_contract["tradability_provenance"] = dict(input_quality_summary.get("tradability_provenance") or {})
     return _FusionInputBundle(
         merged=merged.sort(["ts_ms", "market"]),
         input_contract=input_contract,
@@ -911,6 +1382,10 @@ def _runtime_fusion_input_options(options: TrainV5FusionOptions) -> TrainV5Fusio
         runtime_end=options.runtime_end,
         seed=options.seed,
         stacker_family=options.stacker_family,
+        input_variant_name=options.input_variant_name,
+        include_sequence=options.include_sequence,
+        include_lob=options.include_lob,
+        include_tradability=options.include_tradability,
         run_scope=options.run_scope,
     )
 
@@ -961,6 +1436,7 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
             list((payload.get("selected_markets") or payload.get("requested_selected_markets") or payload.get("available_markets") or []))
         )
         for key, payload in input_metadata.items()
+        if not bool((payload or {}).get("ablation_excluded", False))
     }
     common_runtime_markets = _panel_order_preserving_intersection(markets_by_expert)
     common_runtime_universe_id = _build_common_runtime_universe_id(
@@ -977,6 +1453,8 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
     expected_runtime_dates = operating_date_range(str(runtime_options.start), str(runtime_options.end))
     for expert_name in ("panel", "sequence", "lob", "tradability"):
         payload = dict(input_metadata.get(expert_name) or {})
+        if bool(payload.get("ablation_excluded", False)):
+            continue
         expert_start = int(payload.get("coverage_start_ts_ms", 0) or 0)
         expert_end = int(payload.get("coverage_end_ts_ms", 0) or 0)
         expert_dates = list(payload.get("coverage_dates") or [])
@@ -1013,11 +1491,14 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
         )
     )
     input_contract["runtime_rows_after_date_filter"] = int(merged.height)
-    runtime_coverage_summary = _build_runtime_coverage_summary(merged)
+    runtime_coverage_summary = _build_runtime_coverage_summary(merged, input_contract=input_contract)
     runtime_coverage_summary["common_runtime_market_count"] = len(common_runtime_markets)
     runtime_coverage_summary["common_runtime_markets"] = list(common_runtime_markets)
     input_contract["runtime_coverage_policy"] = "auxiliary_experts_full_window_required"
     input_contract["runtime_coverage_summary"] = runtime_coverage_summary
+    input_quality_summary = _build_input_quality_summary(input_contract)
+    input_contract["input_quality_summary"] = input_quality_summary
+    input_contract["tradability_provenance"] = dict(input_quality_summary.get("tradability_provenance") or {})
     if explicit_runtime_requested:
         expert_coverage = dict(runtime_coverage_summary.get("experts") or {})
         if int(((expert_coverage.get("sequence") or {}).get("missing_rows") or 0)) > 0:
@@ -1036,6 +1517,11 @@ def _prepare_fusion_runtime_input_bundle(options: TrainV5FusionOptions) -> _Fusi
 
 def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, input_contract: dict[str, Any]) -> dict[str, Any]:
     upstream_inputs = dict(input_contract.get("inputs") or {})
+    input_quality_summary = dict(input_contract.get("input_quality_summary") or {})
+    tradability_provenance = dict(
+        input_contract.get("tradability_provenance")
+        or (input_quality_summary.get("tradability_provenance") or {})
+    )
     upstream_runtime_context: dict[str, Any] = {}
     for key in ("panel", "sequence", "lob", "tradability"):
         payload = dict(upstream_inputs.get(key) or {})
@@ -1109,10 +1595,18 @@ def _build_fusion_runtime_recommendations(*, options: TrainV5FusionOptions, inpu
                 "data_platform_ready_snapshot_id": str(
                     (upstream_inputs.get(key) or {}).get("data_platform_ready_snapshot_id") or ""
                 ).strip(),
+                "input_quality": dict((input_quality_summary.get("experts") or {}).get(key) or {}),
             }
-            for key in ("panel", "sequence", "lob")
+            for key in ("panel", "sequence", "lob", "tradability")
         },
         "upstream_runtime_context": upstream_runtime_context,
+        "input_quality_summary": input_quality_summary,
+        "final_tradability_contract": tradability_provenance,
+        "final_tradability_source_kind": str(tradability_provenance.get("source_kind") or "").strip(),
+        "final_tradability_source_family": str(tradability_provenance.get("source_model_family") or "").strip(),
+        "final_tradability_source_run_id": str(tradability_provenance.get("source_run_id") or "").strip(),
+        "final_tradability_evidence_strength": str(tradability_provenance.get("evidence_strength") or "").strip(),
+        "final_tradability_quality_status": str(tradability_provenance.get("quality_status") or "").strip(),
         "sequence_variant_name": str(
             (upstream_inputs.get("sequence") or {}).get("sequence_variant_name")
             or sequence_runtime_context.get("sequence_variant_name")
@@ -1173,6 +1667,12 @@ def _build_runtime_viability_report(
     final_uncertainty = np.asarray(contract["final_uncertainty"], dtype=np.float64)
     final_alpha_lcb = np.asarray(contract["final_alpha_lcb"], dtype=np.float64)
     alpha_lcb_floor = float(entry_boundary.get("alpha_lcb_floor") or 0.0)
+    input_quality_summary = dict(runtime_input_contract.get("input_quality_summary") or {})
+    tradability_provenance = dict(
+        runtime_input_contract.get("tradability_provenance")
+        or (input_quality_summary.get("tradability_provenance") or {})
+    )
+    feature_index_by_name = {str(name): idx for idx, name in enumerate(getattr(predictor, "feature_names", ()) or ())}
 
     rows_total = int(final_alpha_lcb.shape[0])
     alpha_lcb_positive_count = int(np.sum(final_alpha_lcb > 0.0))
@@ -1195,6 +1695,16 @@ def _build_runtime_viability_report(
                 "final_tradability": float(final_tradability[idx]),
                 "final_uncertainty": float(final_uncertainty[idx]),
                 "final_alpha_lcb": float(final_alpha_lcb[idx]),
+                "sequence_support_score": (
+                    float(runtime_x[idx, feature_index_by_name["sequence_support_score"]])
+                    if "sequence_support_score" in feature_index_by_name
+                    else None
+                ),
+                "lob_support_score": (
+                    float(runtime_x[idx, feature_index_by_name["lob_support_score"]])
+                    if "lob_support_score" in feature_index_by_name
+                    else None
+                ),
             },
             contract=entry_boundary,
         )
@@ -1227,6 +1737,10 @@ def _build_runtime_viability_report(
                     "alpha_lcb_floor": alpha_lcb_floor,
                     "gate_allowed": bool(gate.get("allowed", False)),
                     "gate_reason_codes": list(gate.get("reason_codes") or []),
+                    "support_quality_score": boundary_decision.get("support_quality_score"),
+                    "adjusted_tradability": boundary_decision.get("adjusted_tradability"),
+                    "quality_adjusted_severe_loss_risk": boundary_decision.get("quality_adjusted_severe_loss_risk"),
+                    "support_score_threshold": boundary_decision.get("support_score_threshold"),
                 }
             )
     rows_total_float = float(rows_total) if rows_total > 0 else 1.0
@@ -1241,6 +1755,12 @@ def _build_runtime_viability_report(
         "generation_window": dict(runtime_input_contract.get("runtime_window") or {}),
         "common_runtime_universe_id": str(runtime_input_contract.get("common_runtime_universe_id") or "").strip(),
         "alpha_lcb_floor": alpha_lcb_floor,
+        "entry_boundary_summary": {
+            "alpha_lcb_floor": float(entry_boundary.get("alpha_lcb_floor") or 0.0),
+            "tradability_threshold": float(entry_boundary.get("tradability_threshold") or 0.0),
+            "severe_loss_risk_threshold": float(entry_boundary.get("severe_loss_risk_threshold") or 1.0),
+            "support_quality_policy": dict(entry_boundary.get("support_quality_policy") or {}),
+        },
         "runtime_rows_total": rows_total,
         "mean_final_expected_return": mean_final_expected_return,
         "mean_final_expected_es": mean_final_expected_es,
@@ -1259,6 +1779,8 @@ def _build_runtime_viability_report(
             if rows_above_alpha_floor <= 0
             else ("FUSION_RUNTIME_ENTRY_GATE_ZERO_VIABILITY" if entry_gate_allowed_count <= 0 else "PASS")
         ),
+        "input_quality_summary": input_quality_summary,
+        "tradability_provenance": tradability_provenance,
         "entry_gate_reason_counts": reason_counts,
         "top_entry_gate_reason_codes": top_entry_gate_reason_codes,
         "sample_rows": sample_rows,
@@ -1282,6 +1804,9 @@ def _build_runtime_viability_summary(report: dict[str, Any] | None) -> dict[str,
         "entry_gate_allowed_ratio": payload.get("entry_gate_allowed_ratio"),
         "estimated_intent_candidate_count": payload.get("estimated_intent_candidate_count"),
         "primary_reason_code": payload.get("primary_reason_code"),
+        "entry_boundary_summary": dict(payload.get("entry_boundary_summary") or {}),
+        "input_quality_summary": dict(payload.get("input_quality_summary") or {}),
+        "tradability_provenance": dict(payload.get("tradability_provenance") or {}),
         "top_entry_gate_reason_codes": list(payload.get("top_entry_gate_reason_codes") or []),
         "sample_rows": list(payload.get("sample_rows") or [])[:5],
     }
@@ -1441,6 +1966,10 @@ def _build_runtime_deploy_contract_readiness_summary(report: dict[str, Any] | No
         "primary_reason_code": str(payload.get("primary_reason_code") or "").strip(),
         "required_components": list(payload.get("required_components") or []),
         "advisory_components": list(payload.get("advisory_components") or []),
+        "sell_side_quality_summary": dict(payload.get("sell_side_quality_summary") or {}),
+        "entry_boundary_summary": dict(payload.get("entry_boundary_summary") or {}),
+        "input_quality_summary": dict(payload.get("input_quality_summary") or {}),
+        "tradability_provenance": dict(payload.get("tradability_provenance") or {}),
         "component_readiness": {
             name: {
                 "required": bool(dict(doc or {}).get("required", False)),
@@ -1471,6 +2000,15 @@ def _build_runtime_deploy_contract_readiness(
             "component_readiness": {},
         }
     upstream_inputs = dict(input_contract.get("inputs") or {})
+    input_quality_summary = dict(input_contract.get("input_quality_summary") or {})
+    tradability_provenance = dict(
+        input_contract.get("tradability_provenance")
+        or (input_quality_summary.get("tradability_provenance") or {})
+    )
+    sell_side_quality_summary = dict(
+        ((runtime_recommendations.get("exit") or {}).get("sell_side_quality_summary")) or {}
+    )
+    entry_boundary_summary = dict(runtime_recommendations.get("entry_boundary_summary") or {})
     panel_runtime_context = dict(((upstream_inputs.get("panel") or {}).get("runtime_recommendations")) or {})
     decision_contract_version = str(runtime_recommendations.get("decision_contract_version") or "").strip()
     required_components: list[str] = []
@@ -1522,6 +2060,10 @@ def _build_runtime_deploy_contract_readiness(
         "decision_contract_version": decision_contract_version,
         "required_components": list(dict.fromkeys(required_components)),
         "advisory_components": list(dict.fromkeys(advisory_components)),
+        "sell_side_quality_summary": sell_side_quality_summary,
+        "entry_boundary_summary": entry_boundary_summary,
+        "input_quality_summary": input_quality_summary,
+        "tradability_provenance": tradability_provenance,
         "component_readiness": component_readiness,
         "pass": primary_reason_code == "PASS",
         "primary_reason_code": primary_reason_code,
@@ -1710,6 +2252,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     stacker_family = str(options.stacker_family).strip().lower()
     if stacker_family not in VALID_FUSION_STACKERS:
         raise ValueError(f"stacker_family must be one of: {', '.join(VALID_FUSION_STACKERS)}")
+    input_variant = _resolve_fusion_input_variant(options)
 
     run_id = make_run_id(seed=options.seed)
     train_input_bundle = _prepare_fusion_input_bundle(options)
@@ -1895,6 +2438,18 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         final_tradability=valid_contract["final_tradability"],
         final_uncertainty=valid_contract["final_uncertainty"],
         final_alpha_lcb=valid_contract["final_alpha_lcb"],
+        sequence_support_score=(
+            merged.get_column("sequence_support_score").to_numpy().astype(np.float64, copy=False)[valid_mask]
+            if "sequence_support_score" in merged.columns
+            else None
+        ),
+        lob_support_score=(
+            merged.get_column("lob_support_score").to_numpy().astype(np.float64, copy=False)[valid_mask]
+            if "lob_support_score" in merged.columns
+            else None
+        ),
+        input_quality_summary=dict(train_input_bundle.input_contract.get("input_quality_summary") or {}),
+        tradability_provenance=dict(train_input_bundle.input_contract.get("tradability_provenance") or {}),
         realized_return=y_reg[valid_mask],
     )
 
@@ -1910,10 +2465,12 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "fusion_model": {
             "policy": "v5_fusion_v1",
             "stacker_family": stacker_family,
+            "input_variant_name": str(input_variant.get("input_variant_name") or ""),
             "gating_policy": estimator.gating_policy,
             "regime_feature_columns": list(estimator.regime_feature_columns),
             "regime_cluster_count": int(estimator.regime_cluster_count),
-            "input_experts": ["panel", "sequence", "lob", "tradability"],
+            "input_experts": list(input_variant.get("included_experts") or []),
+            "excluded_experts": list(input_variant.get("excluded_experts") or []),
             "outputs": ["final_rank_score", "final_expected_return", "final_expected_es", "final_tradability", "final_uncertainty", "final_alpha_lcb"],
             "feature_columns": list(feature_names),
         },
@@ -1945,6 +2502,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "panel_input_sha256": _sha256_file(options.panel_input_path),
         "sequence_input_sha256": _sha256_file(options.sequence_input_path),
         "lob_input_sha256": _sha256_file(options.lob_input_path),
+        "input_variant_name": str(input_variant.get("input_variant_name") or ""),
         "sample_count": int(merged.height),
         "code_version": autobot_version,
         "data_platform_ready_snapshot_id": str(train_input_bundle.input_contract.get("snapshot_id") or "").strip()
@@ -1970,6 +2528,12 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         "registry_root": str(options.registry_root),
         "logs_root": str(options.logs_root),
         "trainer": "v5_fusion",
+        "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+        "include_sequence": bool(input_variant.get("include_sequence", True)),
+        "include_lob": bool(input_variant.get("include_lob", True)),
+        "include_tradability": bool(input_variant.get("include_tradability", True)),
+        "included_experts": list(input_variant.get("included_experts") or []),
+        "excluded_experts": list(input_variant.get("excluded_experts") or []),
         "feature_columns": list(feature_names),
         "autobot_version": autobot_version,
         "data_platform_ready_snapshot_id": data_fingerprint.get("data_platform_ready_snapshot_id"),
@@ -2003,6 +2567,9 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         or ""
     )
     runtime_recommendations["fusion_variant_name"] = stacker_family
+    runtime_recommendations["fusion_input_variant_name"] = str(input_variant.get("input_variant_name") or "")
+    runtime_recommendations["fusion_included_experts"] = list(input_variant.get("included_experts") or [])
+    runtime_recommendations["fusion_excluded_experts"] = list(input_variant.get("excluded_experts") or [])
     runtime_recommendations["fusion_offline_winner"] = stacker_family
     runtime_recommendations["fusion_default_eligible_winner"] = stacker_family
     runtime_recommendations["fusion_candidate_default_eligible"] = True
@@ -2047,6 +2614,15 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     runtime_recommendations["domain_weighting_enabled"] = bool((weight_components.get("domain_details") or {}).get("enabled", False))
     runtime_recommendations["fusion_stacker_family"] = stacker_family
     runtime_recommendations["fusion_gating_policy"] = estimator.gating_policy
+    runtime_recommendations["entry_boundary_summary"] = {
+        "alpha_lcb_floor": float(entry_boundary.get("alpha_lcb_floor") or 0.0),
+        "tradability_threshold": float(entry_boundary.get("tradability_threshold") or 0.0),
+        "severe_loss_risk_threshold": float(entry_boundary.get("severe_loss_risk_threshold") or 1.0),
+        "support_quality_policy": dict(entry_boundary.get("support_quality_policy") or {}),
+    }
+    runtime_recommendations["sell_side_quality_summary"] = dict(
+        (((runtime_recommendations.get("exit") or {}).get("sell_side_quality_summary")) or {})
+    )
     run_dir = save_run(
         RegistrySavePayload(
             registry_root=options.registry_root,
@@ -2076,9 +2652,12 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
             {
                 "policy": "v5_fusion_v1",
                 "stacker_family": stacker_family,
+                "input_variant_name": str(input_variant.get("input_variant_name") or ""),
                 "gating_policy": estimator.gating_policy,
                 "regime_feature_columns": list(estimator.regime_feature_columns),
                 "regime_cluster_count": int(estimator.regime_cluster_count),
+                "included_experts": list(input_variant.get("included_experts") or []),
+                "excluded_experts": list(input_variant.get("excluded_experts") or []),
                 "input_experts": {
                     "panel": dict((train_input_bundle.input_contract.get("inputs") or {}).get("panel") or {}),
                     "sequence": dict((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}),
@@ -2088,6 +2667,8 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "sequence_backbone_name": str(((train_input_bundle.input_contract.get("inputs") or {}).get("sequence") or {}).get("backbone_family") or ""),
                 "lob_backbone_name": str(((train_input_bundle.input_contract.get("inputs") or {}).get("lob") or {}).get("backbone_family") or ""),
                 "tradability_source_run_id": str(((train_input_bundle.input_contract.get("inputs") or {}).get("tradability") or {}).get("run_id") or ""),
+                "input_quality_summary": dict(train_input_bundle.input_contract.get("input_quality_summary") or {}),
+                "final_tradability_contract": dict(train_input_bundle.input_contract.get("tradability_provenance") or {}),
                 "feature_columns": list(feature_names),
                 "monotone_sign_map": dict(train_input_bundle.input_contract.get("feature_contract", {}).get("monotone_sign_map") or {}),
                 "outputs": {
@@ -2120,6 +2701,11 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
                 "final_tradability_field": "final_tradability",
                 "final_alpha_lcb_field": "final_alpha_lcb",
                 "feature_columns": list(feature_names),
+                "input_variant_name": str(input_variant.get("input_variant_name") or ""),
+                "included_experts": list(input_variant.get("included_experts") or []),
+                "excluded_experts": list(input_variant.get("excluded_experts") or []),
+                "input_quality_summary": dict(train_input_bundle.input_contract.get("input_quality_summary") or {}),
+                "final_tradability_contract": dict(train_input_bundle.input_contract.get("tradability_provenance") or {}),
             },
             ensure_ascii=False,
             indent=2,
@@ -2240,6 +2826,14 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     runtime_input_contract = dict(runtime_input_bundle.input_contract)
     runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
     runtime_input_contract["domain_weighting_report_path"] = str(domain_weighting_report_path)
+    runtime_recommendations["runtime_input_quality_summary"] = dict(runtime_input_contract.get("input_quality_summary") or {})
+    runtime_recommendations["runtime_final_tradability_contract"] = dict(runtime_input_contract.get("tradability_provenance") or {})
+    runtime_recommendations["runtime_final_tradability_evidence_strength"] = str(
+        ((runtime_input_contract.get("tradability_provenance") or {}).get("evidence_strength")) or ""
+    ).strip()
+    runtime_recommendations["runtime_final_tradability_quality_status"] = str(
+        ((runtime_input_contract.get("tradability_provenance") or {}).get("quality_status")) or ""
+    ).strip()
     runtime_viability_report = _build_runtime_viability_report(
         run_id=run_id,
         model_family=options.model_family,
@@ -2292,6 +2886,14 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
             )
         )
     )
+    runtime_recommendations["fusion_non_regression_summary"] = {
+        "paper_non_regression": None,
+        "paired_non_regression": None,
+        "canary_non_regression": None,
+        "paper_evidence_summary": {},
+        "paired_evidence_summary": {},
+        "canary_evidence_summary": {},
+    }
     promotion_payload["runtime_viability_report_path"] = str(runtime_viability_report_path)
     promotion_payload["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
     promotion_payload["runtime_viability_summary"] = dict(runtime_recommendations["runtime_viability_summary"])
@@ -2300,6 +2902,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
     promotion_payload["runtime_deploy_contract_summary"] = dict(
         runtime_recommendations["runtime_deploy_contract_summary"]
     )
+    promotion_payload["fusion_non_regression_summary"] = dict(runtime_recommendations["fusion_non_regression_summary"])
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_id,
@@ -2358,6 +2961,10 @@ def _options_from_v5_fusion_train_config(train_config: dict[str, Any]) -> TrainV
         runtime_end=(str(base.get("runtime_end", "")).strip() or None),
         seed=int(base["seed"]),
         stacker_family=str(base.get("stacker_family", "linear")),
+        input_variant_name=str(base.get("input_variant_name", "full_fusion") or "full_fusion"),
+        include_sequence=base.get("include_sequence"),
+        include_lob=base.get("include_lob"),
+        include_tradability=base.get("include_tradability"),
         run_scope=str(base.get("run_scope", "manual_fusion_expert")),
     )
 
@@ -2412,6 +3019,18 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         final_tradability=valid_contract["final_tradability"],
         final_uncertainty=valid_contract["final_uncertainty"],
         final_alpha_lcb=valid_contract["final_alpha_lcb"],
+        sequence_support_score=(
+            merged.get_column("sequence_support_score").to_numpy().astype(np.float64, copy=False)[valid_mask]
+            if "sequence_support_score" in merged.columns
+            else None
+        ),
+        lob_support_score=(
+            merged.get_column("lob_support_score").to_numpy().astype(np.float64, copy=False)[valid_mask]
+            if "lob_support_score" in merged.columns
+            else None
+        ),
+        input_quality_summary=dict(input_bundle.input_contract.get("input_quality_summary") or {}),
+        tradability_provenance=dict(input_bundle.input_contract.get("tradability_provenance") or {}),
         realized_return=y_reg[valid_mask],
     )
     runtime_dataset_root = Path(str(train_config.get("dataset_root") or run_dir / "runtime_feature_dataset"))
@@ -2445,6 +3064,15 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         options=options,
         input_contract=input_bundle.input_contract,
     )
+    runtime_recommendations["entry_boundary_summary"] = {
+        "alpha_lcb_floor": float(entry_boundary.get("alpha_lcb_floor") or 0.0),
+        "tradability_threshold": float(entry_boundary.get("tradability_threshold") or 0.0),
+        "severe_loss_risk_threshold": float(entry_boundary.get("severe_loss_risk_threshold") or 1.0),
+        "support_quality_policy": dict(entry_boundary.get("support_quality_policy") or {}),
+    }
+    runtime_recommendations["sell_side_quality_summary"] = dict(
+        (((runtime_recommendations.get("exit") or {}).get("sell_side_quality_summary")) or {})
+    )
     promotion_payload = load_json(run_dir / "promotion_decision.json") or {
         "run_id": run_dir.name,
         "promote": False,
@@ -2454,6 +3082,14 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     runtime_input_contract = dict(runtime_input_bundle.input_contract)
     runtime_input_contract["runtime_dataset_root"] = str(runtime_dataset_written_root)
     runtime_input_contract["domain_weighting_report_path"] = str(run_dir / "domain_weighting_report.json")
+    runtime_recommendations["runtime_input_quality_summary"] = dict(runtime_input_contract.get("input_quality_summary") or {})
+    runtime_recommendations["runtime_final_tradability_contract"] = dict(runtime_input_contract.get("tradability_provenance") or {})
+    runtime_recommendations["runtime_final_tradability_evidence_strength"] = str(
+        ((runtime_input_contract.get("tradability_provenance") or {}).get("evidence_strength")) or ""
+    ).strip()
+    runtime_recommendations["runtime_final_tradability_quality_status"] = str(
+        ((runtime_input_contract.get("tradability_provenance") or {}).get("quality_status")) or ""
+    ).strip()
     runtime_viability_report = _build_runtime_viability_report(
         run_id=run_dir.name,
         model_family=options.model_family,
@@ -2506,6 +3142,14 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
             )
         )
     )
+    runtime_recommendations["fusion_non_regression_summary"] = {
+        "paper_non_regression": None,
+        "paired_non_regression": None,
+        "canary_non_regression": None,
+        "paper_evidence_summary": {},
+        "paired_evidence_summary": {},
+        "canary_evidence_summary": {},
+    }
     promotion_payload["runtime_viability_report_path"] = str(runtime_viability_report_path)
     promotion_payload["runtime_viability_pass"] = bool(runtime_viability_report.get("pass", False))
     promotion_payload["runtime_viability_summary"] = dict(runtime_recommendations["runtime_viability_summary"])
@@ -2514,6 +3158,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     promotion_payload["runtime_deploy_contract_summary"] = dict(
         runtime_recommendations["runtime_deploy_contract_summary"]
     )
+    promotion_payload["fusion_non_regression_summary"] = dict(runtime_recommendations["fusion_non_regression_summary"])
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_dir.name,

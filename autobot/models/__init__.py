@@ -61,6 +61,7 @@ from .train_v5_tradability import (
     train_and_register_v5_tradability,
 )
 from .v5_variant_selection import (
+    run_v5_fusion_input_ablation_matrix,
     run_v5_fusion_variant_matrix,
     run_v5_lob_variant_matrix,
     run_v5_sequence_variant_matrix,
@@ -114,6 +115,7 @@ __all__ = [
     "train_and_register_v5_tradability",
     "run_v5_sequence_variant_matrix",
     "run_v5_lob_variant_matrix",
+    "run_v5_fusion_input_ablation_matrix",
     "run_v5_fusion_variant_matrix",
     "ModelBtProxyOptions",
     "ModelBtProxyResult",

@@ -88,6 +88,10 @@ _CONTRACTS_BY_ID: dict[str, ModelAlphaEvaluationContract] = {
         contract_id="paper_default_contract_v1",
         contract_role="config_default",
     ),
+    "decision_language_summary_v1": ModelAlphaEvaluationContract(
+        contract_id="decision_language_summary_v1",
+        contract_role="decision_language_summary",
+    ),
 }
 
 

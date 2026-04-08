@@ -6,6 +6,7 @@ param(
     [int]$TrainLookbackDays = 30,
     [int]$BacktestLookbackDays = 8,
     [switch]$EnableVariantMatrixSelection,
+    [switch]$EnableFusionInputAblationMatrix,
     [switch]$DryRun
 )
 
@@ -45,6 +46,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
     -BacktestRuntimeParityEnabled:$false `
     -EnableVariantMatrixSelection:$EnableVariantMatrixSelection `
+    -EnableFusionInputAblationMatrix:$EnableFusionInputAblationMatrix `
     -SkipDailyPipeline `
     -SkipPaperSoak `
     -SkipPromote `

@@ -163,6 +163,8 @@ def resolve_path_risk_guidance_from_plan(
     immediate_exit_cost_ratio = _as_float(payload.get("expected_immediate_exit_cost_ratio"))
     if immediate_exit_cost_ratio is None:
         immediate_exit_cost_ratio = float(immediate_exit_fee_rate) + (float(immediate_exit_slippage_bps) / 10_000.0)
+    expected_immediate_exit_cleanup_cost_bps = max(_as_float(payload.get("expected_immediate_exit_cleanup_cost_bps")) or 0.0, 0.0)
+    expected_immediate_exit_miss_cost_bps = max(_as_float(payload.get("expected_immediate_exit_miss_cost_bps")) or 0.0, 0.0)
     deferred_exit_cost_ratio = immediate_exit_cost_ratio
 
     continuation_should_exit = False
@@ -193,11 +195,21 @@ def resolve_path_risk_guidance_from_plan(
         if immediate_exit_value_ratio is not None
         else None
     )
+    execution_confidence_penalty_ratio = max(1.0 - float(immediate_exit_fill_probability), 0.0) * max(
+        float(expected_immediate_exit_miss_cost_bps) / 10_000.0,
+        0.0,
+    )
+    execution_cleanup_penalty_ratio = max(float(expected_immediate_exit_cleanup_cost_bps) / 10_000.0, 0.0) * max(
+        1.0 - float(immediate_exit_fill_probability),
+        0.0,
+    )
+    execution_liquidation_penalty_ratio = float(execution_confidence_penalty_ratio + execution_cleanup_penalty_ratio)
     continue_value_net = (
         float(continue_edge_q50)
         - float(deferred_exit_cost_ratio)
         - float(alpha_decay_penalty_ratio or 0.0)
         - float(portfolio_spillover_penalty_ratio)
+        - float(execution_liquidation_penalty_ratio)
         if continue_edge_q50 is not None
         else None
     )
@@ -206,6 +218,7 @@ def resolve_path_risk_guidance_from_plan(
         - float(deferred_exit_cost_ratio)
         - float(alpha_decay_penalty_ratio or 0.0)
         - float(portfolio_spillover_penalty_ratio)
+        - float(execution_liquidation_penalty_ratio)
         if continue_edge_q25 is not None
         else continue_value_net
     )
@@ -303,6 +316,16 @@ def resolve_path_risk_guidance_from_plan(
             ):
                 continuation_should_exit = True
                 continuation_reason_code = "PATH_RISK_CONTINUATION_CAPTURE"
+            elif (
+                immediate_exit_fill_probability is not None
+                and float(immediate_exit_fill_probability) < 0.45
+                and execution_liquidation_penalty_ratio >= float(continuation_margin_ratio)
+                and exit_now_value_net is not None
+                and continue_value_lcb is not None
+                and float(exit_now_value_net) >= float(continue_value_lcb)
+            ):
+                continuation_should_exit = True
+                continuation_reason_code = "PATH_RISK_EXECUTION_LIQUIDATION_CAPTURE"
 
     return {
         "applied": bool(reachable_tp_ratio is not None or bounded_sl_ratio is not None or continuation_should_exit),
@@ -342,7 +365,12 @@ def resolve_path_risk_guidance_from_plan(
         "immediate_exit_time_to_fill_ms": immediate_exit_time_to_fill_ms,
         "immediate_exit_price_mode": immediate_exit_price_mode,
         "immediate_exit_cost_ratio": float(immediate_exit_cost_ratio),
+        "expected_immediate_exit_cleanup_cost_bps": float(expected_immediate_exit_cleanup_cost_bps),
+        "expected_immediate_exit_miss_cost_bps": float(expected_immediate_exit_miss_cost_bps),
         "deferred_exit_cost_ratio": float(deferred_exit_cost_ratio),
+        "execution_confidence_penalty_ratio": float(execution_confidence_penalty_ratio),
+        "execution_cleanup_penalty_ratio": float(execution_cleanup_penalty_ratio),
+        "execution_liquidation_penalty_ratio": float(execution_liquidation_penalty_ratio),
         "continuation_value_ratio": continuation_value_ratio,
         "exit_now_value_net": exit_now_value_net,
         "continue_value_net": continue_value_net,

@@ -814,3 +814,57 @@ def test_candidate_acceptance_variant_matrix_selection_routes_chosen_variants(tm
     assert report["candidate"]["sequence_variant_name"] == "patchtst_v1__none"
     assert report["candidate"]["lob_variant_name"] == "deeplob_v1"
     assert report["candidate"]["fusion_variant_name"] == "linear"
+
+
+def test_candidate_acceptance_passes_fusion_input_ablation_matrix_flag_to_variant_matrix(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _write_json(
+        project_root / "models" / "registry" / "train_v5_fusion" / "champion.json",
+        {"run_id": "champion-run-000"},
+    )
+    _seed_train_snapshot_close_contract(project_root, batch_date="2026-03-08", snapshot_id="snapshot-dependency-001")
+    python_exe = _make_fake_python_exe(tmp_path)
+    wrapper_script = tmp_path / "run_acceptance_matrix_ablation.ps1"
+    wrapper_script.write_text(
+        (
+            "& "
+            + json.dumps(str(ACCEPTANCE_SCRIPT))
+            + " -ProjectRoot "
+            + json.dumps(str(project_root))
+            + " -PythonExe "
+            + json.dumps(str(python_exe))
+            + " -OutDir "
+            + json.dumps("logs/test_acceptance_v5_variant_matrix_ablation")
+            + " -BatchDate "
+            + json.dumps("2026-03-08")
+            + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote -EnableVariantMatrixSelection -EnableFusionInputAblationMatrix "
+            + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\",\"v5_tradability\")\n"
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper_script),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+
+    invocations = [
+        json.loads(line)
+        for line in (project_root / "logs" / "fake_python_invocations.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    fusion_matrix_calls = [
+        row for row in invocations if row.get("command") == "model train-variant-matrix" and row.get("trainer") == "v5_fusion"
+    ]
+    assert len(fusion_matrix_calls) == 1
+    assert "--fusion-enable-input-ablation-matrix" in fusion_matrix_calls[0]["args"]

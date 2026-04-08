@@ -172,6 +172,16 @@ def build_candidate_canary_report(
         liquidation_tier = str(((strategy_meta.get("liquidation_policy") or {}).get("tier_name")) or "").strip()
         if liquidation_tier:
             liquidation_policy_tiers[liquidation_tier] += 1
+    continuation_exit_total = int(exit_decision_reasons.get("CONTINUATION_VALUE_EXIT", 0) or 0)
+    timeout_close_total = sum(
+        int(count)
+        for reason, count in close_reasons.items()
+        if "TIMEOUT" in str(reason).strip().upper()
+    )
+    liquidation_total = sum(int(value) for value in liquidation_policy_tiers.values())
+    urgent_liquidation_total = int(liquidation_policy_tiers.get("urgent_defensive", 0) or 0) + int(
+        liquidation_policy_tiers.get("emergency_flatten", 0) or 0
+    )
     verification_status = Counter(str((row.get("exit_meta") or {}).get("close_verification_status") or "").strip() for row in closed_rows)
     opportunity_summary = _load_opportunity_summary(
         opportunity_log_path=opportunity_log_path,
@@ -223,6 +233,24 @@ def build_candidate_canary_report(
         "safety_veto_reasons_top": safety_veto_reasons.most_common(10),
         "exit_decision_reasons_top": exit_decision_reasons.most_common(10),
         "liquidation_policy_tiers": dict(liquidation_policy_tiers),
+        "continuation_exit_total": int(continuation_exit_total),
+        "continuation_exit_share": (
+            float(continuation_exit_total) / float(len(closed_rows))
+            if len(closed_rows) > 0
+            else 0.0
+        ),
+        "timeout_close_total": int(timeout_close_total),
+        "timeout_close_share": (
+            float(timeout_close_total) / float(len(closed_rows))
+            if len(closed_rows) > 0
+            else 0.0
+        ),
+        "urgent_liquidation_total": int(urgent_liquidation_total),
+        "urgent_liquidation_share": (
+            float(urgent_liquidation_total) / float(liquidation_total)
+            if liquidation_total > 0
+            else 0.0
+        ),
         "opportunity_log_path": str(opportunity_log_path) if opportunity_log_path is not None else None,
         "opportunity_rows_total": int(opportunity_summary.get("opportunity_rows_total") or 0),
         "opportunity_run_rows_total": int(opportunity_summary.get("opportunity_run_rows_total") or 0),

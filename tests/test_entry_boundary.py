@@ -64,3 +64,41 @@ def test_entry_boundary_can_choose_negative_alpha_floor_when_loss_control_allows
     )
 
     assert contract["alpha_lcb_floor"] < 0.0
+
+
+def test_entry_boundary_can_require_support_quality_when_low_support_rows_drive_losses() -> None:
+    contract = build_risk_calibrated_entry_boundary(
+        final_rank_score=np.asarray([0.9, 0.8, 0.7, 0.6], dtype=np.float64),
+        final_expected_return=np.asarray([0.10, 0.09, 0.08, 0.07], dtype=np.float64),
+        final_expected_es=np.asarray([0.02, 0.02, 0.02, 0.02], dtype=np.float64),
+        final_tradability=np.asarray([0.9, 0.9, 0.9, 0.9], dtype=np.float64),
+        final_uncertainty=np.asarray([0.02, 0.02, 0.02, 0.02], dtype=np.float64),
+        final_alpha_lcb=np.asarray([0.06, 0.05, 0.04, 0.03], dtype=np.float64),
+        sequence_support_score=np.asarray([2.0, 2.0, 1.0, 1.0], dtype=np.float64),
+        lob_support_score=np.asarray([2.0, 2.0, 1.0, 1.0], dtype=np.float64),
+        input_quality_summary={"overall_quality_status": "degraded"},
+        tradability_provenance={"evidence_strength": "thin", "quality_status": "thin_training_evidence"},
+        realized_return=np.asarray([0.08, 0.07, -0.12, -0.11], dtype=np.float64),
+        severe_loss_ratio=0.05,
+        target_max_severe_loss_rate=0.25,
+    )
+
+    blocked = evaluate_entry_boundary(
+        row={
+            "final_rank_score": 0.7,
+            "final_expected_return": 0.08,
+            "final_expected_es": 0.02,
+            "final_tradability": 0.9,
+            "final_uncertainty": 0.02,
+            "final_alpha_lcb": 0.04,
+            "sequence_support_score": 1.0,
+            "lob_support_score": 1.0,
+        },
+        contract=contract,
+    )
+
+    assert contract["support_quality_policy"]["support_score_threshold"] >= 2.0
+    assert contract["support_quality_policy"]["tradability_evidence_strength"] == "thin"
+    assert contract["calibration_metrics"]["support_quality_breakdown"]["reduced_context_like"]["rows"] == 2
+    assert blocked["allowed"] is False
+    assert "ENTRY_BOUNDARY_SUPPORT_QUALITY_BELOW_THRESHOLD" in blocked["reason_codes"]

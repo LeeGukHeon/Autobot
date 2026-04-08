@@ -8,6 +8,7 @@ from autobot.models.train_v5_fusion import TrainV5FusionOptions
 from autobot.models.train_v5_lob import TrainV5LobOptions
 from autobot.models.train_v5_sequence import TrainV5SequenceOptions
 from autobot.models.v5_variant_selection import (
+    run_v5_fusion_input_ablation_matrix,
     run_v5_fusion_variant_matrix,
     run_v5_lob_variant_matrix,
     run_v5_sequence_variant_matrix,
@@ -745,3 +746,601 @@ def test_fusion_variant_matrix_rejects_runtime_deploy_contract_not_ready_candida
     report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
     assert "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY" in report["rejection_reasons"]["monotone_gbdt"]
     assert report["runtime_deploy_contract_ready"] is True
+
+
+def test_fusion_variant_matrix_applies_input_quality_brake_to_small_nonbaseline_edge(tmp_path: Path, monkeypatch) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    logs_root = tmp_path / "logs"
+    seq_dir = registry_root / "train_v5_sequence" / "sequence-winner"
+    lob_dir = registry_root / "train_v5_lob" / "lob-winner"
+    panel_dir = registry_root / "train_v5_panel_ensemble" / "panel-run"
+    trad_dir = registry_root / "train_v5_tradability" / "trad-run"
+    for run_dir, train_config, runtime_recommendations in (
+        (
+            seq_dir,
+            {"sequence_variant_name": "patchtst_v1__none"},
+            {"sequence_variant_name": "patchtst_v1__none", "sequence_backbone_name": "patchtst_v1"},
+        ),
+        (
+            lob_dir,
+            {"lob_variant_name": "deeplob_v1"},
+            {"lob_variant_name": "deeplob_v1", "lob_backbone_name": "deeplob_v1"},
+        ),
+        (panel_dir, {}, {}),
+        (trad_dir, {}, {}),
+    ):
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={"trainer": "seed", "model_family": run_dir.parent.name, **train_config},
+            runtime_recommendations=runtime_recommendations,
+            leaderboard_row={"test_ev_net_top5": 0.1},
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+
+    degraded_input_quality = {
+        "policy": "v5_fusion_input_quality_summary_v1",
+        "overall_quality_status": "degraded",
+        "reason_codes": ["SEQUENCE_REDUCED_CONTEXT_HEAVY", "TRADABILITY_EVIDENCE_THIN"],
+        "experts": {
+            "sequence": {"quality_status": "reduced_context_heavy"},
+            "lob": {"quality_status": "healthy"},
+            "tradability": {"quality_status": "thin_training_evidence"},
+        },
+        "tradability_provenance": {
+            "source_kind": "dedicated_tradability_expert",
+            "evidence_strength": "thin",
+            "quality_status": "thin_training_evidence",
+            "reason_codes": ["TRADABILITY_EVIDENCE_THIN"],
+        },
+    }
+
+    def fake_train(options: TrainV5FusionOptions):
+        variant_name = options.stacker_family
+        run_id = f"fusion-{variant_name}"
+        run_dir = registry_root / options.model_family / run_id
+        score_map = {
+            "linear": (0.100, 0.60, 0.60, 0.40),
+            "monotone_gbdt": (0.105, 0.60, 0.60, 0.39),
+            "regime_moe": (0.090, 0.59, 0.59, 0.41),
+        }
+        ev, precision, pr_auc, log_loss = score_map[variant_name]
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={
+                "trainer": "v5_fusion",
+                "model_family": options.model_family,
+                "start": options.start,
+                "end": options.end,
+                "quote": options.quote,
+                "run_scope": options.run_scope,
+                "stacker_family": options.stacker_family,
+                "fusion_variant_name": variant_name,
+            },
+            runtime_recommendations={
+                "source_family": "train_v5_fusion",
+                "fusion_variant_name": variant_name,
+                "fusion_stacker_family": variant_name,
+                "fusion_gating_policy": "single_expert_v1",
+                "sequence_variant_name": "patchtst_v1__none",
+                "lob_variant_name": "deeplob_v1",
+            },
+            leaderboard_row={
+                "test_ev_net_top5": ev,
+                "test_precision_top5": precision,
+                "test_pr_auc": pr_auc,
+                "test_log_loss": log_loss,
+            },
+            walk_forward_report={"realized_pnl_quote": ev * 100.0},
+            runtime_viability={
+                "policy": "v5_runtime_viability_report_v1",
+                "pass": True,
+                "alpha_lcb_floor": -0.01,
+                "runtime_rows_total": 100,
+                "alpha_lcb_positive_count": 12,
+                "rows_above_alpha_floor": 12,
+                "rows_above_alpha_floor_ratio": 0.12,
+                "expected_return_positive_count": 15,
+                "entry_gate_allowed_count": 10,
+                "entry_gate_allowed_ratio": 0.10,
+                "estimated_intent_candidate_count": 10,
+                "primary_reason_code": "PASS",
+                "input_quality_summary": degraded_input_quality,
+                "tradability_provenance": dict(degraded_input_quality["tradability_provenance"]),
+            },
+        )
+        _write_json(run_dir / "fusion_model_contract.json", {"policy": "v5_fusion_v1"})
+        _write_json(run_dir / "fusion_runtime_input_contract.json", {"policy": "v5_fusion_runtime_input_contract_v1"})
+        _write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "effective_sample_weight_summary": {"mean": 1.0}})
+        return SimpleNamespace(run_dir=run_dir)
+
+    monkeypatch.setattr("autobot.models.v5_variant_selection.train_and_register_v5_fusion", fake_train)
+
+    payload = run_v5_fusion_variant_matrix(
+        TrainV5FusionOptions(
+            panel_input_path=panel_dir / "expert_prediction_table.parquet",
+            sequence_input_path=seq_dir / "expert_prediction_table.parquet",
+            lob_input_path=lob_dir / "expert_prediction_table.parquet",
+            tradability_input_path=trad_dir / "expert_prediction_table.parquet",
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-01",
+            end="2026-03-07",
+            seed=42,
+            run_scope="scheduled_daily",
+        )
+    )
+
+    assert payload["chosen_variant_name"] == "linear"
+    report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
+    assert report["offline_winner_variant_name"] == "monotone_gbdt"
+    assert report["chosen_variant_name"] == "linear"
+    assert report["selection_evidence"]["input_quality_brake_applied"] is True
+    assert report["selection_evidence"]["input_quality_brake_severity"] == "degraded"
+    assert report["selection_evidence"]["minimum_utility_edge_vs_linear_required"] == 0.01
+    assert report["selection_evidence"]["tradability_evidence_strength"] == "thin"
+    assert report["selection_evidence"]["entry_boundary_summary"] == {}
+    assert report["selection_evidence"]["sell_side_quality_summary"] == {}
+    assert report["selection_evidence"]["boundary_quality_non_regression"] is None
+    assert report["selection_evidence"]["sell_side_quality_non_regression"] is None
+
+
+def test_fusion_variant_matrix_rejects_nonbaseline_when_paired_evidence_regresses(tmp_path: Path, monkeypatch) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    logs_root = tmp_path / "logs"
+    seq_dir = registry_root / "train_v5_sequence" / "sequence-winner"
+    lob_dir = registry_root / "train_v5_lob" / "lob-winner"
+    panel_dir = registry_root / "train_v5_panel_ensemble" / "panel-run"
+    trad_dir = registry_root / "train_v5_tradability" / "trad-run"
+    for run_dir, train_config, runtime_recommendations in (
+        (seq_dir, {"sequence_variant_name": "patchtst_v1__none"}, {"sequence_variant_name": "patchtst_v1__none"}),
+        (lob_dir, {"lob_variant_name": "deeplob_v1"}, {"lob_variant_name": "deeplob_v1"}),
+        (panel_dir, {}, {}),
+        (trad_dir, {}, {}),
+    ):
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={"trainer": "seed", "model_family": run_dir.parent.name, **train_config},
+            runtime_recommendations=runtime_recommendations,
+            leaderboard_row={"test_ev_net_top5": 0.1},
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+
+    def fake_train(options: TrainV5FusionOptions):
+        variant_name = options.stacker_family
+        run_id = f"fusion-{variant_name}"
+        run_dir = registry_root / options.model_family / run_id
+        score_map = {
+            "linear": (0.10, 0.60, 0.60, 0.40),
+            "monotone_gbdt": (0.12, 0.61, 0.61, 0.39),
+            "regime_moe": (0.09, 0.59, 0.59, 0.41),
+        }
+        ev, precision, pr_auc, log_loss = score_map[variant_name]
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={
+                "trainer": "v5_fusion",
+                "model_family": options.model_family,
+                "start": options.start,
+                "end": options.end,
+                "quote": options.quote,
+                "run_scope": options.run_scope,
+                "stacker_family": options.stacker_family,
+                "fusion_variant_name": variant_name,
+            },
+            runtime_recommendations={
+                "source_family": "train_v5_fusion",
+                "fusion_variant_name": variant_name,
+                "fusion_stacker_family": variant_name,
+                "fusion_gating_policy": "single_expert_v1",
+                "sequence_variant_name": "patchtst_v1__none",
+                "lob_variant_name": "deeplob_v1",
+            },
+            leaderboard_row={
+                "test_ev_net_top5": ev,
+                "test_precision_top5": precision,
+                "test_pr_auc": pr_auc,
+                "test_log_loss": log_loss,
+            },
+            walk_forward_report={"realized_pnl_quote": ev * 100.0},
+        )
+        if variant_name == "monotone_gbdt":
+            _write_json(
+                run_dir / "promotion_decision.json",
+                {
+                    "comparison_mode": "paired_paper_runtime_decision_v1",
+                    "paired_gate": {"pass": False, "reason": "PAIRED_PAPER_NOT_READY"},
+                    "decision": {
+                        "promote": False,
+                        "decision": "keep_champion",
+                        "hard_failures": ["PAIRED_PAPER_NOT_READY"],
+                        "matched_evidence_checks": {"matched_pnl_not_worse": False},
+                    },
+                    "paired_report_excerpt": {"decision_language_counts": {"challenger_safety_veto_only": 1}},
+                },
+            )
+        _write_json(run_dir / "fusion_model_contract.json", {"policy": "v5_fusion_v1"})
+        _write_json(run_dir / "fusion_runtime_input_contract.json", {"policy": "v5_fusion_runtime_input_contract_v1"})
+        _write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "effective_sample_weight_summary": {"mean": 1.0}})
+        return SimpleNamespace(run_dir=run_dir)
+
+    monkeypatch.setattr("autobot.models.v5_variant_selection.train_and_register_v5_fusion", fake_train)
+
+    payload = run_v5_fusion_variant_matrix(
+        TrainV5FusionOptions(
+            panel_input_path=panel_dir / "expert_prediction_table.parquet",
+            sequence_input_path=seq_dir / "expert_prediction_table.parquet",
+            lob_input_path=lob_dir / "expert_prediction_table.parquet",
+            tradability_input_path=trad_dir / "expert_prediction_table.parquet",
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-01",
+            end="2026-03-07",
+            seed=42,
+            run_scope="scheduled_daily",
+        )
+    )
+
+    assert payload["chosen_variant_name"] == "linear"
+    report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
+    assert report["offline_winner_variant_name"] == "monotone_gbdt"
+    assert report["baseline_kept_reason_code"] == "PAIRED_NON_REGRESSION_FAILED"
+    assessment = report["selection_evidence"]["offline_winner_clear_edge_assessment"]
+    assert assessment["reason_code"] == "PAIRED_NON_REGRESSION_FAILED"
+    assert assessment["paired_evidence"]["available"] is True
+    assert "PAIRED_PAPER_NOT_READY" in assessment["paired_evidence"]["hard_failures"]
+    chosen_runtime = json.loads((registry_root / "train_v5_fusion" / "fusion-linear" / "runtime_recommendations.json").read_text(encoding="utf-8"))
+    assert chosen_runtime["fusion_evidence_reason_code"] == "PAIRED_NON_REGRESSION_FAILED"
+    assert chosen_runtime["fusion_non_regression_summary"]["paired_non_regression"] is False
+    assert "PAIRED_PAPER_NOT_READY" in chosen_runtime["fusion_non_regression_summary"]["paired_evidence_summary"]["hard_failures"]
+
+
+def test_fusion_variant_matrix_rejects_nonbaseline_when_canary_evidence_regresses(tmp_path: Path, monkeypatch) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    logs_root = tmp_path / "logs"
+    seq_dir = registry_root / "train_v5_sequence" / "sequence-winner"
+    lob_dir = registry_root / "train_v5_lob" / "lob-winner"
+    panel_dir = registry_root / "train_v5_panel_ensemble" / "panel-run"
+    trad_dir = registry_root / "train_v5_tradability" / "trad-run"
+    for run_dir, train_config, runtime_recommendations in (
+        (seq_dir, {"sequence_variant_name": "patchtst_v1__none"}, {"sequence_variant_name": "patchtst_v1__none"}),
+        (lob_dir, {"lob_variant_name": "deeplob_v1"}, {"lob_variant_name": "deeplob_v1"}),
+        (panel_dir, {}, {}),
+        (trad_dir, {}, {}),
+    ):
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={"trainer": "seed", "model_family": run_dir.parent.name, **train_config},
+            runtime_recommendations=runtime_recommendations,
+            leaderboard_row={"test_ev_net_top5": 0.1},
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+
+    canary_root = tmp_path / "logs" / "canary_confidence_sequence" / "autobot_live_alpha_candidate_service"
+    canary_root.mkdir(parents=True, exist_ok=True)
+
+    def fake_train(options: TrainV5FusionOptions):
+        variant_name = options.stacker_family
+        run_id = f"fusion-{variant_name}"
+        run_dir = registry_root / options.model_family / run_id
+        score_map = {
+            "linear": (0.10, 0.60, 0.60, 0.40),
+            "monotone_gbdt": (0.12, 0.61, 0.61, 0.39),
+            "regime_moe": (0.09, 0.59, 0.59, 0.41),
+        }
+        ev, precision, pr_auc, log_loss = score_map[variant_name]
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={
+                "trainer": "v5_fusion",
+                "model_family": options.model_family,
+                "start": options.start,
+                "end": options.end,
+                "quote": options.quote,
+                "run_scope": options.run_scope,
+                "stacker_family": options.stacker_family,
+                "fusion_variant_name": variant_name,
+            },
+            runtime_recommendations={
+                "source_family": "train_v5_fusion",
+                "fusion_variant_name": variant_name,
+                "fusion_stacker_family": variant_name,
+                "fusion_gating_policy": "single_expert_v1",
+                "sequence_variant_name": "patchtst_v1__none",
+                "lob_variant_name": "deeplob_v1",
+            },
+            leaderboard_row={
+                "test_ev_net_top5": ev,
+                "test_precision_top5": precision,
+                "test_pr_auc": pr_auc,
+                "test_log_loss": log_loss,
+            },
+            walk_forward_report={"realized_pnl_quote": ev * 100.0},
+        )
+        if variant_name == "monotone_gbdt":
+            _write_json(
+                canary_root / "latest.json",
+                {
+                    "policy": "canary_confidence_sequence_v1",
+                    "run_id": run_id,
+                    "decision": {
+                        "status": "abort",
+                        "promote_eligible": False,
+                        "abort": True,
+                        "abort_reason_codes": ["FEATURE_DIVERGENCE_CS_BREACH"],
+                        "blocking_reason_codes": ["CANARY_DIVERGENCE_INSUFFICIENT_EVIDENCE"],
+                        "execution_liquidation_summary": {"exit_decision_reasons_top": []},
+                    },
+                },
+            )
+        _write_json(run_dir / "fusion_model_contract.json", {"policy": "v5_fusion_v1"})
+        _write_json(run_dir / "fusion_runtime_input_contract.json", {"policy": "v5_fusion_runtime_input_contract_v1"})
+        _write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "effective_sample_weight_summary": {"mean": 1.0}})
+        return SimpleNamespace(run_dir=run_dir)
+
+    monkeypatch.setattr("autobot.models.v5_variant_selection.train_and_register_v5_fusion", fake_train)
+
+    payload = run_v5_fusion_variant_matrix(
+        TrainV5FusionOptions(
+            panel_input_path=panel_dir / "expert_prediction_table.parquet",
+            sequence_input_path=seq_dir / "expert_prediction_table.parquet",
+            lob_input_path=lob_dir / "expert_prediction_table.parquet",
+            tradability_input_path=trad_dir / "expert_prediction_table.parquet",
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-01",
+            end="2026-03-07",
+            seed=42,
+            run_scope="scheduled_daily",
+        )
+    )
+
+    assert payload["chosen_variant_name"] == "linear"
+    report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
+    assert report["offline_winner_variant_name"] == "monotone_gbdt"
+    assert report["baseline_kept_reason_code"] == "CANARY_NON_REGRESSION_FAILED"
+    assessment = report["selection_evidence"]["offline_winner_clear_edge_assessment"]
+    assert assessment["reason_code"] == "CANARY_NON_REGRESSION_FAILED"
+    assert assessment["canary_evidence"]["available"] is True
+    assert assessment["canary_evidence"]["abort"] is True
+    chosen_promotion = json.loads((registry_root / "train_v5_fusion" / "fusion-linear" / "promotion_decision.json").read_text(encoding="utf-8"))
+    assert chosen_promotion["fusion_evidence_reason_code"] == "CANARY_NON_REGRESSION_FAILED"
+    assert chosen_promotion["fusion_non_regression_summary"]["canary_non_regression"] is False
+    assert chosen_promotion["fusion_non_regression_summary"]["canary_evidence_summary"]["abort"] is True
+
+
+def test_fusion_variant_matrix_records_forced_input_variant_provenance(tmp_path: Path, monkeypatch) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    logs_root = tmp_path / "logs"
+    seq_dir = registry_root / "train_v5_sequence" / "sequence-winner"
+    lob_dir = registry_root / "train_v5_lob" / "lob-winner"
+    panel_dir = registry_root / "train_v5_panel_ensemble" / "panel-run"
+    trad_dir = registry_root / "train_v5_tradability" / "trad-run"
+    for run_dir, train_config, runtime_recommendations in (
+        (seq_dir, {"sequence_variant_name": "patchtst_v1__none"}, {"sequence_variant_name": "patchtst_v1__none"}),
+        (lob_dir, {"lob_variant_name": "deeplob_v1"}, {"lob_variant_name": "deeplob_v1"}),
+        (panel_dir, {}, {}),
+        (trad_dir, {}, {}),
+    ):
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={"trainer": "seed", "model_family": run_dir.parent.name, **train_config},
+            runtime_recommendations=runtime_recommendations,
+            leaderboard_row={"test_ev_net_top5": 0.1},
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+
+    def fake_train(options: TrainV5FusionOptions):
+        variant_name = options.stacker_family
+        run_id = f"fusion-{variant_name}"
+        run_dir = registry_root / options.model_family / run_id
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={
+                "trainer": "v5_fusion",
+                "model_family": options.model_family,
+                "start": options.start,
+                "end": options.end,
+                "quote": options.quote,
+                "run_scope": options.run_scope,
+                "stacker_family": options.stacker_family,
+                "input_variant_name": options.input_variant_name,
+                "include_sequence": False,
+                "include_lob": False,
+                "include_tradability": False,
+                "fusion_variant_name": variant_name,
+            },
+            runtime_recommendations={
+                "source_family": "train_v5_fusion",
+                "fusion_variant_name": variant_name,
+                "fusion_stacker_family": variant_name,
+                "fusion_input_variant_name": options.input_variant_name,
+                "fusion_included_experts": ["panel"],
+                "fusion_excluded_experts": ["sequence", "lob", "tradability"],
+            },
+            leaderboard_row={
+                "test_ev_net_top5": 0.10,
+                "test_precision_top5": 0.60,
+                "test_pr_auc": 0.60,
+                "test_log_loss": 0.40,
+            },
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+        _write_json(run_dir / "fusion_model_contract.json", {"policy": "v5_fusion_v1"})
+        _write_json(run_dir / "fusion_runtime_input_contract.json", {"policy": "v5_fusion_runtime_input_contract_v1"})
+        _write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "effective_sample_weight_summary": {"mean": 1.0}})
+        return SimpleNamespace(run_dir=run_dir)
+
+    monkeypatch.setattr("autobot.models.v5_variant_selection.train_and_register_v5_fusion", fake_train)
+
+    payload = run_v5_fusion_variant_matrix(
+        TrainV5FusionOptions(
+            panel_input_path=panel_dir / "expert_prediction_table.parquet",
+            sequence_input_path=seq_dir / "expert_prediction_table.parquet",
+            lob_input_path=lob_dir / "expert_prediction_table.parquet",
+            tradability_input_path=trad_dir / "expert_prediction_table.parquet",
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-01",
+            end="2026-03-07",
+            seed=42,
+            run_scope="scheduled_daily",
+            input_variant_name="panel_only",
+        )
+    )
+
+    report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
+    assert report["input_provenance"]["input_variant_name"] == "panel_only"
+    assert report["input_provenance"]["included_experts"] == ["panel"]
+    assert set(report["input_provenance"]["excluded_experts"]) == {"sequence", "lob", "tradability"}
+
+
+def test_fusion_input_ablation_matrix_selects_clear_edge_variant(tmp_path: Path, monkeypatch) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    logs_root = tmp_path / "logs"
+
+    def fake_run(options: TrainV5FusionOptions, publish_latest: bool = True):  # noqa: ARG001
+        input_variant_name = str(options.input_variant_name)
+        run_id = f"fusion-{input_variant_name}"
+        run_dir = registry_root / options.model_family / run_id
+        included_map = {
+            "full_fusion": ["panel", "sequence", "lob", "tradability"],
+            "full_without_tradability": ["panel", "sequence", "lob"],
+            "panel_plus_sequence": ["panel", "sequence"],
+            "panel_plus_lob": ["panel", "lob"],
+            "panel_only": ["panel"],
+        }
+        included_experts = included_map[input_variant_name]
+        excluded_experts = [name for name in ("sequence", "lob", "tradability") if name not in included_experts]
+        metric_map = {
+            "full_fusion": (10.0, 0.10, 0.60, 0.60, 0.40),
+            "full_without_tradability": (9.5, 0.095, 0.59, 0.59, 0.41),
+            "panel_plus_sequence": (10.5, 0.101, 0.60, 0.60, 0.40),
+            "panel_plus_lob": (9.8, 0.099, 0.60, 0.60, 0.40),
+            "panel_only": (12.0, 0.12, 0.62, 0.62, 0.38),
+        }
+        pnl, ev, precision, pr_auc, log_loss = metric_map[input_variant_name]
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={
+                "trainer": "v5_fusion",
+                "model_family": options.model_family,
+                "start": options.start,
+                "end": options.end,
+                "quote": options.quote,
+                "run_scope": options.run_scope,
+                "stacker_family": "linear",
+                "input_variant_name": input_variant_name,
+                "include_sequence": str("sequence" in included_experts),
+                "include_lob": str("lob" in included_experts),
+                "include_tradability": str("tradability" in included_experts),
+            },
+            runtime_recommendations={
+                "source_family": "train_v5_fusion",
+                "fusion_variant_name": "linear",
+                "fusion_stacker_family": "linear",
+                "fusion_input_variant_name": input_variant_name,
+                "fusion_included_experts": included_experts,
+                "fusion_excluded_experts": excluded_experts,
+            },
+            leaderboard_row={
+                "test_ev_net_top5": ev,
+                "test_precision_top5": precision,
+                "test_pr_auc": pr_auc,
+                "test_log_loss": log_loss,
+            },
+            walk_forward_report={"realized_pnl_quote": pnl},
+        )
+        _write_json(
+            run_dir / "fusion_variant_report.json",
+            {
+                "policy": "v5_fusion_variant_report_v1",
+                "chosen_variant_name": "linear",
+                "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE",
+                "baseline_kept_reason_code": "NO_CLEAR_EDGE",
+                "selected_variant_summary": {
+                    "variant_name": "linear",
+                    "contract_pass": True,
+                    "utility_summary": {
+                        "test_ev_net_top5": ev,
+                        "test_precision_top5": precision,
+                        "test_pr_auc": pr_auc,
+                        "test_log_loss": log_loss,
+                    },
+                    "pnl_summary": {
+                        "walk_forward_realized_pnl_quote": pnl,
+                    },
+                    "sell_side_quality_summary": {
+                        "quality_status": "healthy",
+                        "selected": {"timeout_exit_share": 0.20, "payoff_ratio": 0.90},
+                    },
+                    "entry_boundary_summary": {
+                        "support_quality_policy": {
+                            "support_score_threshold": 1.0,
+                            "reduced_context_severe_loss_risk_multiplier": 1.10,
+                        }
+                    },
+                },
+                "input_provenance": {
+                    "input_variant_name": input_variant_name,
+                    "included_experts": included_experts,
+                    "excluded_experts": excluded_experts,
+                },
+            },
+        )
+        return {
+            "trainer": "v5_fusion",
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "chosen_variant_name": "linear",
+            "variant_report_path": str(run_dir / "fusion_variant_report.json"),
+            "evaluated_variant_count": 3,
+            "reused": False,
+            "source_mode": "fresh_train",
+            "chosen_reason_code": "BASELINE_RETAINED_NO_CLEAR_EDGE",
+            "baseline_kept_reason_code": "NO_CLEAR_EDGE",
+            "default_eligible": True,
+            "runtime_viability_pass": True,
+            "runtime_deploy_contract_ready": True,
+            "input_provenance": {
+                "input_variant_name": input_variant_name,
+                "included_experts": included_experts,
+                "excluded_experts": excluded_experts,
+            },
+        }
+
+    monkeypatch.setattr("autobot.models.v5_variant_selection._run_v5_fusion_variant_matrix", fake_run)
+
+    payload = run_v5_fusion_input_ablation_matrix(
+        TrainV5FusionOptions(
+            panel_input_path=tmp_path / "panel.parquet",
+            sequence_input_path=tmp_path / "sequence.parquet",
+            lob_input_path=tmp_path / "lob.parquet",
+            tradability_input_path=tmp_path / "tradability.parquet",
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-01",
+            end="2026-03-07",
+            seed=42,
+            run_scope="scheduled_daily",
+        )
+    )
+
+    assert payload["chosen_input_variant_name"] == "panel_only"
+    assert payload["chosen_variant_name"] == "linear"
+    assert payload["offline_winner_input_variant_name"] == "panel_only"
+    report = json.loads(Path(payload["input_ablation_report_path"]).read_text(encoding="utf-8"))
+    assert report["chosen_input_variant_name"] == "panel_only"
+    assert report["selection_evidence"]["clear_edge_assessment"]["reason_code"] == "INPUT_ABLATION_CLEAR_EDGE"
+    chosen_runtime = json.loads((registry_root / "train_v5_fusion" / "fusion-panel_only" / "runtime_recommendations.json").read_text(encoding="utf-8"))
+    assert chosen_runtime["fusion_input_ablation_selected_variant_name"] == "panel_only"
+    assert chosen_runtime["fusion_input_ablation_report_path"].endswith("fusion_input_ablation_report.json")

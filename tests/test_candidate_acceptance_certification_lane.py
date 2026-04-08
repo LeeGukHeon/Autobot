@@ -60,6 +60,8 @@ def _make_fake_python_exe(
     candidate_runtime_rows_total: int = 100,
     candidate_rows_above_alpha_floor: int = 10,
     candidate_entry_gate_allowed_count: int = 10,
+    candidate_fusion_evidence_reason_code: str = "LINEAR_BASELINE_WINNER",
+    candidate_fusion_non_regression_summary: dict[str, object] | None = None,
     feature_rows_by_window: dict[str, int] | None = None,
     feature_min_rows_for_train: int = 4000,
     history_anchor_backtest_by_window: dict[str, dict[str, float | int]] | None = None,
@@ -103,6 +105,8 @@ def _make_fake_python_exe(
             CANDIDATE_RUNTIME_ROWS_TOTAL = {int(candidate_runtime_rows_total)}
             CANDIDATE_ROWS_ABOVE_ALPHA_FLOOR = {int(candidate_rows_above_alpha_floor)}
             CANDIDATE_ENTRY_GATE_ALLOWED_COUNT = {int(candidate_entry_gate_allowed_count)}
+            CANDIDATE_FUSION_EVIDENCE_REASON_CODE = {candidate_fusion_evidence_reason_code!r}
+            CANDIDATE_FUSION_NON_REGRESSION_SUMMARY = {json.dumps(candidate_fusion_non_regression_summary or {})}
             FEATURE_ROWS_BY_WINDOW = {json.dumps(feature_rows_by_window or {})}
             FEATURE_MIN_ROWS_FOR_TRAIN = {int(feature_min_rows_for_train)}
             HISTORY_ANCHOR_BACKTEST_BY_WINDOW = {json.dumps(history_anchor_backtest_by_window or {})}
@@ -562,7 +566,7 @@ def _make_fake_python_exe(
                             "fusion_variant_name": "linear",
                             "fusion_candidate_default_eligible": True,
                             "fusion_evidence_winner": "linear",
-                            "fusion_evidence_reason_code": "LINEAR_BASELINE_WINNER",
+                            "fusion_evidence_reason_code": CANDIDATE_FUSION_EVIDENCE_REASON_CODE,
                             "runtime_deploy_contract_ready": CANDIDATE_RUNTIME_DEPLOY_CONTRACT_READY,
                             "runtime_deploy_contract_summary": {{
                                 "evaluation_contract_id": "runtime_deploy_contract_v1",
@@ -578,6 +582,11 @@ def _make_fake_python_exe(
                                     "trade_action": {{"required": False, "ready": True, "reason_codes": []}},
                                     "risk_control": {{"required": False, "ready": True, "reason_codes": []}},
                                 }},
+                            }},
+                            "fusion_non_regression_summary": CANDIDATE_FUSION_NON_REGRESSION_SUMMARY or {{
+                                "paper_non_regression": True,
+                                "paired_non_regression": False,
+                                "canary_non_regression": None,
                             }},
                             "lob_backbone_name": "deeplob_v1",
                             "tradability_source_run_id": "tradability-run-fixture",
@@ -2634,7 +2643,11 @@ def test_candidate_acceptance_fails_fast_on_runtime_deploy_contract_not_ready(tm
     assert report["steps"]["runtime_deploy_contract_preflight"]["pass"] is False
     assert report["candidate"]["runtime_deploy_contract_ready"] is False
     assert report["candidate"]["runtime_deploy_contract_summary"]["primary_reason_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
+    assert report["candidate"]["fusion_non_regression_summary"]["paper_non_regression"] is True
+    assert report["candidate"]["fusion_non_regression_summary"]["paired_non_regression"] is False
+    assert report["candidate"]["decision_language_summary"]["contract_id"] == "decision_language_summary_v1"
+    assert report["candidate"]["decision_language_summary"]["deploy_runtime"]["runtime_deploy_contract_primary_reason_code"] == "FUSION_RUNTIME_DEPLOY_CONTRACT_EXECUTION_NOT_READY"
+    assert "paired_non_regression" in report["candidate"]["decision_language_summary"]["deploy_runtime"]
     assert "backtest_candidate" not in report["steps"]
     assert "backtest_runtime_parity_candidate" not in report["steps"]
     assert backtests == []
-
