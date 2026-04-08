@@ -53,6 +53,10 @@ _DASHBOARD_OPS_LOCK = threading.Lock()
 _PROJECT_SIZE_LOCK = threading.Lock()
 _PROJECT_SIZE_STALE_CACHE_MAX_AGE_SEC = 15 * 60
 _PROJECT_SIZE_STALE_CACHE: dict[str, tuple[int, float]] = {}
+_PROJECT_SIZE_REFRESH_LOCK = threading.Lock()
+_PROJECT_SIZE_REFRESH_IN_FLIGHT: set[str] = set()
+_PROJECT_SIZE_BACKGROUND_TIMEOUT_SEC = 180
+_PROJECT_SIZE_CACHE_FILENAME = "project_size_cache.json"
 _TREE_COUNT_LOCK = threading.Lock()
 _TREE_FILE_COUNT_CACHE: dict[str, tuple[int, float]] = {}
 _TREE_FILE_COUNT_CACHE_MAX_AGE_SEC = 15 * 60
@@ -170,24 +174,16 @@ def _cached_project_size(project_root_str: str, bucket: int) -> int:
     project_root = Path(project_root_str)
     if shutil.which("du"):
         try:
-            completed = subprocess.run(
-                ["du", "-s", "-B1", str(project_root)],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=8,
-            )
-            if completed.returncode == 0:
-                first = str(completed.stdout).strip().split()[0]
-                value = int(first)
-                if value >= 0:
-                    _remember_project_size_value(project_root_str, value)
-                    return value
+            value = _du_project_size_bytes(project_root, timeout_sec=8)
+            if value >= 0:
+                _remember_project_size_value(project_root_str, value)
+                return value
         except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
             pass
         cached_value = _load_recent_project_size_value(project_root_str)
         if cached_value is not None:
             return cached_value
+        _schedule_project_size_refresh(project_root)
         return -1
     total = _walk_project_size_bytes(project_root)
     _remember_project_size_value(project_root_str, total)
@@ -207,7 +203,7 @@ def _filesystem_usage(project_root: Path) -> dict[str, Any]:
         "used_bytes": int(usage.used),
         "free_bytes": int(usage.free),
         "project_used_bytes": (int(project_used_bytes) if project_used_bytes >= 0 else None),
-        "project_used_bytes_status": ("ok" if project_used_bytes >= 0 else "unavailable"),
+        "project_used_bytes_status": ("ok" if project_used_bytes >= 0 else "pending"),
     }
 
 
@@ -216,17 +212,100 @@ def _remember_project_size_value(project_root_str: str, value: int) -> None:
         return
     with _PROJECT_SIZE_LOCK:
         _PROJECT_SIZE_STALE_CACHE[str(project_root_str)] = (int(value), time.time())
+    _write_project_size_cache(str(project_root_str), int(value))
 
 
 def _load_recent_project_size_value(project_root_str: str) -> int | None:
     with _PROJECT_SIZE_LOCK:
         payload = _PROJECT_SIZE_STALE_CACHE.get(str(project_root_str))
     if not payload:
+        payload = _load_project_size_cache(str(project_root_str))
+        if payload:
+            with _PROJECT_SIZE_LOCK:
+                _PROJECT_SIZE_STALE_CACHE[str(project_root_str)] = payload
+    if not payload:
         return None
     value, captured_at = payload
     if (time.time() - float(captured_at)) > float(_PROJECT_SIZE_STALE_CACHE_MAX_AGE_SEC):
         return None
     return int(value)
+
+
+def _project_size_cache_path(project_root_str: str) -> Path:
+    return Path(project_root_str) / "logs" / "dashboard" / _PROJECT_SIZE_CACHE_FILENAME
+
+
+def _write_project_size_cache(project_root_str: str, value: int) -> None:
+    path = _project_size_cache_path(project_root_str)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "project_root": str(project_root_str),
+        "project_used_bytes": int(value),
+        "captured_at_ts": float(time.time()),
+        "captured_at_utc": _utc_now_iso(),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_project_size_cache(project_root_str: str) -> tuple[int, float] | None:
+    payload = _load_json(_project_size_cache_path(project_root_str))
+    try:
+        value = int(payload.get("project_used_bytes"))
+        captured_at = float(payload.get("captured_at_ts"))
+    except (TypeError, ValueError):
+        return None
+    if value < 0 or captured_at <= 0:
+        return None
+    return (value, captured_at)
+
+
+def _du_project_size_bytes(project_root: Path, *, timeout_sec: int) -> int:
+    completed = subprocess.run(
+        ["du", "-s", "-B1", str(project_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=max(int(timeout_sec), 1),
+    )
+    if completed.returncode != 0:
+        raise OSError(f"du failed for {project_root}: rc={completed.returncode}")
+    first = str(completed.stdout).strip().split()[0]
+    value = int(first)
+    if value < 0:
+        raise ValueError(f"negative project size reported for {project_root}")
+    return value
+
+
+def _schedule_project_size_refresh(project_root: Path) -> None:
+    resolved = str(project_root.resolve())
+    with _PROJECT_SIZE_REFRESH_LOCK:
+        if resolved in _PROJECT_SIZE_REFRESH_IN_FLIGHT:
+            return
+        _PROJECT_SIZE_REFRESH_IN_FLIGHT.add(resolved)
+    thread = threading.Thread(
+        target=_refresh_project_size_worker,
+        args=(resolved,),
+        name="dashboard-project-size-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _refresh_project_size_worker(project_root_str: str) -> None:
+    try:
+        project_root = Path(project_root_str)
+        if shutil.which("du"):
+            try:
+                value = _du_project_size_bytes(project_root, timeout_sec=_PROJECT_SIZE_BACKGROUND_TIMEOUT_SEC)
+            except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+                value = -1
+        else:
+            value = _walk_project_size_bytes(project_root)
+        if int(value) >= 0:
+            _remember_project_size_value(project_root_str, int(value))
+    finally:
+        with _PROJECT_SIZE_REFRESH_LOCK:
+            _PROJECT_SIZE_REFRESH_IN_FLIGHT.discard(str(project_root_str))
 
 
 def _walk_project_size_bytes(project_root: Path) -> int:
@@ -4307,6 +4386,7 @@ def _build_handler(project_root: Path) -> type[DashboardRequestHandler]:
 def serve_dashboard(*, project_root: Path, host: str, port: int) -> None:
     resolved_root = project_root.resolve()
     _autoload_dashboard_dotenv(resolved_root)
+    _schedule_project_size_refresh(resolved_root)
     server = ThreadingHTTPServer((host, port), _build_handler(resolved_root))
     try:
         server.serve_forever()

@@ -72,6 +72,28 @@ def test_cached_project_size_fallback_dedupes_hardlinked_files(tmp_path: Path, m
     assert dashboard_server_module._cached_project_size(str(project_root), 1) == 16
 
 
+def test_cached_project_size_uses_persisted_cache_after_process_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autobot.dashboard_server as dashboard_server_module
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    dashboard_server_module._cached_project_size.cache_clear()
+    dashboard_server_module._PROJECT_SIZE_STALE_CACHE.clear()
+    dashboard_server_module._remember_project_size_value(str(project_root), 456)
+    dashboard_server_module._PROJECT_SIZE_STALE_CACHE.clear()
+    dashboard_server_module._cached_project_size.cache_clear()
+
+    monkeypatch.setattr(dashboard_server_module.shutil, "which", lambda name: "/usr/bin/du" if name == "du" else None)
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(dashboard_server_module.subprocess, "run", _timeout)
+
+    assert dashboard_server_module._cached_project_size(str(project_root), 1) == 456
+
+
 def _init_live_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
