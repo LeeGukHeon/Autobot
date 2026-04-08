@@ -169,8 +169,8 @@ def _truncate(value: str | None, limit: int = 120) -> str | None:
     return text[: limit - 1] + "…"
 
 
-@lru_cache(maxsize=4)
 def _cached_project_size(project_root_str: str, bucket: int) -> int:
+    _ = bucket
     project_root = Path(project_root_str)
     if shutil.which("du"):
         try:
