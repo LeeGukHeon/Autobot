@@ -1140,3 +1140,45 @@ So Step 4 should currently be treated as:
 
 - `trace draft: strong`
 - `completion judgment: still open`
+
+
+## 19. Representative Rerun Archive Baseline
+
+The representative Step 4 rerun performed on `2026-04-08` should be kept as the
+current baseline artifact set for further model / gate / execution analysis.
+
+Server archive location:
+
+- `/home/ubuntu/MyApps/Autobot/logs/analysis/acceptance_full_rerun_20260408`
+- `/home/ubuntu/MyApps/Autobot/logs/analysis/acceptance_full_rerun_20260408.tgz`
+
+What is preserved there:
+
+- full rerun acceptance logs:
+  - `acceptance_latest.json`
+  - `acceptance_latest.md`
+  - `v5_candidate_acceptance_20260408-121605.json`
+  - `v5_candidate_acceptance_20260408-121605.md`
+  - `common_runtime_universe.json`
+- candidate fusion run artifacts for:
+  - `20260407T214609Z-s42-96ff5673`
+- champion comparison artifacts for:
+  - `20260328T090226Z-s42-d2b602aa`
+
+Current working rule:
+
+- further Step 4 improvement analysis should continue against this archived rerun
+  baseline first
+- do not rely only on moving `latest.json` pointers when investigating why the
+  candidate failed
+- use this archive as the stable evidence set for:
+  - model-side diagnosis
+  - gate-side diagnosis
+  - execution/runtime-parity diagnosis
+
+This does **not** mean Step 4 is closed.
+
+It means:
+
+- the current rerun result is now frozen enough to serve as the canonical
+  analysis baseline while further fixes are explored.
