@@ -49,6 +49,7 @@ param(
     [int]$ExecutionContractMinRows = 20,
     [ValidateSet("combined", "promote_only", "spawn_only")]
     [string]$Mode = "combined",
+    [bool]$PreflightAutoRecoveryEnabled = $true,
     [switch]$SkipDailyPipeline,
     [switch]$SkipFeatureContractRefresh,
     [switch]$SkipReportRefresh,
@@ -182,107 +183,105 @@ function Invoke-PreflightCapture {
         "-CheckCandidateStateConsistency",
         "-FailOnDirtyWorktree"
     )
-    if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
-        $requiredUnits = @()
-        foreach ($value in @($ChampionUnit, $ChallengerUnit) + @($PromotionUnits) + @($CandidateUnits)) {
+    $requiredUnits = @()
+    foreach ($value in @($ChampionUnit, $ChallengerUnit) + @($PromotionUnits) + @($CandidateUnits)) {
+        $text = [string]$value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        $trimmed = $text.Trim()
+        if ($requiredUnits -contains $trimmed) {
+            continue
+        }
+        $requiredUnits += $trimmed
+    }
+    if ($requiredUnits -notcontains $PairedPaperUnitName) {
+        $requiredUnits += $PairedPaperUnitName
+    }
+    foreach ($timerUnit in @($SpawnTimerUnitName, $PromoteTimerUnitName)) {
+        if ($requiredUnits -contains $timerUnit) {
+            continue
+        }
+        $requiredUnits += $timerUnit
+    }
+    if ($requiredUnits.Count -gt 0) {
+        $serializedUnits = Join-DelimitedStringArray -Values $requiredUnits
+        $failedUnitsList = @($requiredUnits)
+        foreach ($value in @($SpawnServiceUnitName, $PromoteServiceUnitName)) {
+            if ($failedUnitsList -contains $value) {
+                continue
+            }
+            $failedUnitsList += $value
+        }
+        $failedUnits = Join-DelimitedStringArray -Values $failedUnitsList
+        $expectedUnitStates = @()
+        $explicitEnabledUnits = @()
+        foreach ($value in @($ExpectedEnabledUnits)) {
             $text = [string]$value
             if ([string]::IsNullOrWhiteSpace($text)) {
                 continue
             }
             $trimmed = $text.Trim()
-            if ($requiredUnits -contains $trimmed) {
+            if ($explicitEnabledUnits -contains $trimmed) {
                 continue
             }
-            $requiredUnits += $trimmed
+            $explicitEnabledUnits += $trimmed
         }
-        if ($requiredUnits -notcontains $PairedPaperUnitName) {
-            $requiredUnits += $PairedPaperUnitName
-        }
-        foreach ($timerUnit in @($SpawnTimerUnitName, $PromoteTimerUnitName)) {
-            if ($requiredUnits -contains $timerUnit) {
+        $explicitDisabledUnits = @()
+        foreach ($value in @($ExpectedDisabledUnits)) {
+            $text = [string]$value
+            if ([string]::IsNullOrWhiteSpace($text)) {
                 continue
             }
-            $requiredUnits += $timerUnit
-        }
-        if ($requiredUnits.Count -gt 0) {
-            $serializedUnits = Join-DelimitedStringArray -Values $requiredUnits
-            $failedUnitsList = @($requiredUnits)
-            foreach ($value in @($SpawnServiceUnitName, $PromoteServiceUnitName)) {
-                if ($failedUnitsList -contains $value) {
-                    continue
-                }
-                $failedUnitsList += $value
+            $trimmed = $text.Trim()
+            if ($explicitDisabledUnits -contains $trimmed) {
+                continue
             }
-            $failedUnits = Join-DelimitedStringArray -Values $failedUnitsList
-            $expectedUnitStates = @()
-            $explicitEnabledUnits = @()
-            foreach ($value in @($ExpectedEnabledUnits)) {
+            $explicitDisabledUnits += $trimmed
+        }
+        if (($explicitEnabledUnits.Count -gt 0) -or ($explicitDisabledUnits.Count -gt 0)) {
+            foreach ($unitName in $explicitDisabledUnits) {
+                $expectedUnitStates += ($unitName + "=disabled")
+            }
+            foreach ($unitName in $explicitEnabledUnits) {
+                $expectedUnitStates += ($unitName + "=enabled")
+            }
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace($ChampionUnit)) {
+                $expectedUnitStates += ($ChampionUnit.Trim() + "=disabled")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ChallengerUnit)) {
+                $expectedUnitStates += ($ChallengerUnit.Trim() + "=disabled")
+            }
+            $expectedUnitStates += @(
+                ($PairedPaperUnitName + "=enabled"),
+                ($SpawnTimerUnitName + "=enabled"),
+                ($PromoteTimerUnitName + "=enabled"),
+                "autobot-paper-v4-replay.service=disabled",
+                "autobot-live-alpha-replay-shadow.service=disabled"
+            )
+            foreach ($value in @($PromotionUnits) + @($CandidateUnits)) {
                 $text = [string]$value
                 if ([string]::IsNullOrWhiteSpace($text)) {
                     continue
                 }
-                $trimmed = $text.Trim()
-                if ($explicitEnabledUnits -contains $trimmed) {
-                    continue
-                }
-                $explicitEnabledUnits += $trimmed
+                $expectedUnitStates += ($text.Trim() + "=enabled")
             }
-            $explicitDisabledUnits = @()
-            foreach ($value in @($ExpectedDisabledUnits)) {
-                $text = [string]$value
-                if ([string]::IsNullOrWhiteSpace($text)) {
-                    continue
-                }
-                $trimmed = $text.Trim()
-                if ($explicitDisabledUnits -contains $trimmed) {
-                    continue
-                }
-                $explicitDisabledUnits += $trimmed
-            }
-            if (($explicitEnabledUnits.Count -gt 0) -or ($explicitDisabledUnits.Count -gt 0)) {
-                foreach ($unitName in $explicitDisabledUnits) {
-                    $expectedUnitStates += ($unitName + "=disabled")
-                }
-                foreach ($unitName in $explicitEnabledUnits) {
-                    $expectedUnitStates += ($unitName + "=enabled")
-                }
-            } else {
-                if (-not [string]::IsNullOrWhiteSpace($ChampionUnit)) {
-                    $expectedUnitStates += ($ChampionUnit.Trim() + "=disabled")
-                }
-                if (-not [string]::IsNullOrWhiteSpace($ChallengerUnit)) {
-                    $expectedUnitStates += ($ChallengerUnit.Trim() + "=disabled")
-                }
-                $expectedUnitStates += @(
-                    ($PairedPaperUnitName + "=enabled"),
-                    ($SpawnTimerUnitName + "=enabled"),
-                    ($PromoteTimerUnitName + "=enabled"),
-                    "autobot-paper-v4-replay.service=disabled",
-                    "autobot-live-alpha-replay-shadow.service=disabled"
-                )
-                foreach ($value in @($PromotionUnits) + @($CandidateUnits)) {
-                    $text = [string]$value
-                    if ([string]::IsNullOrWhiteSpace($text)) {
-                        continue
-                    }
-                    $expectedUnitStates += ($text.Trim() + "=enabled")
-                }
-            }
-            $requiredStateDbPaths = @(
-                $CandidateStateDbPath,
-                "data/state/live_state.db"
-            )
-            $args += @(
-                "-RequiredUnitFiles",
-                $serializedUnits,
-                "-BlockOnFailedUnits",
-                $failedUnits,
-                "-ExpectedUnitStates",
-                (Join-DelimitedStringArray -Values $expectedUnitStates),
-                "-RequiredStateDbPaths",
-                (Join-DelimitedStringArray -Values $requiredStateDbPaths)
-            )
         }
+        $requiredStateDbPaths = @(
+            $CandidateStateDbPath,
+            "data/state/live_state.db"
+        )
+        $args += @(
+            "-RequiredUnitFiles",
+            $serializedUnits,
+            "-BlockOnFailedUnits",
+            $failedUnits,
+            "-ExpectedUnitStates",
+            (Join-DelimitedStringArray -Values $expectedUnitStates),
+            "-RequiredStateDbPaths",
+            (Join-DelimitedStringArray -Values $requiredStateDbPaths)
+        )
     }
     $output = & $PwshExe @args 2>&1
     $exitCode = [int]$LASTEXITCODE
@@ -292,6 +291,241 @@ function Invoke-PreflightCapture {
         Command = ($PwshExe + " " + (($args | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "))
         ReportPath = (Join-Path $Root "logs/ops/server_preflight/latest.json")
     }
+}
+
+function Invoke-SystemctlCommandCapture {
+    param(
+        [string[]]$ArgList,
+        [switch]$AllowFailure
+    )
+    return Invoke-CommandCapture -Exe "sudo" -ArgList (@("systemctl") + @($ArgList)) -AllowFailure:$AllowFailure
+}
+
+function Try-Enable-UnitBestEffort {
+    param(
+        [string]$UnitName,
+        [System.Collections.Generic.List[object]]$Actions,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+    if ([string]::IsNullOrWhiteSpace($UnitName)) {
+        return
+    }
+    $enableExec = Invoke-SystemctlCommandCapture -ArgList @("enable", $UnitName) -AllowFailure
+    $restartExec = Invoke-SystemctlCommandCapture -ArgList @("restart", $UnitName) -AllowFailure
+    $Actions.Add([ordered]@{
+        type = "enable_unit"
+        unit = $UnitName
+        enable_exit_code = [int]$enableExec.ExitCode
+        restart_exit_code = [int]$restartExec.ExitCode
+    }) | Out-Null
+    if (($enableExec.ExitCode -ne 0) -or ($restartExec.ExitCode -ne 0)) {
+        $Errors.Add(("enable_unit_failed:" + $UnitName)) | Out-Null
+    }
+}
+
+function Try-ResetFailed-UnitBestEffort {
+    param(
+        [string]$UnitName,
+        [System.Collections.Generic.List[object]]$Actions,
+        [System.Collections.Generic.List[string]]$Errors
+    )
+    if ([string]::IsNullOrWhiteSpace($UnitName)) {
+        return
+    }
+    $resetExec = Invoke-SystemctlCommandCapture -ArgList @("reset-failed", $UnitName) -AllowFailure
+    $Actions.Add([ordered]@{
+        type = "reset_failed_unit"
+        unit = $UnitName
+        exit_code = [int]$resetExec.ExitCode
+    }) | Out-Null
+    if ($resetExec.ExitCode -ne 0) {
+        $Errors.Add(("reset_failed_unit_failed:" + $UnitName)) | Out-Null
+    }
+}
+
+function Invoke-PreflightAutoRecovery {
+    param(
+        [Parameter(Mandatory = $false)]$PreflightReport
+    )
+    $step = [ordered]@{
+        attempted = $true
+        enabled = [bool]$PreflightAutoRecoveryEnabled
+        recoverable = $false
+        applied = $false
+        reason = ""
+        recovered_violation_codes = @()
+        unhandled_violation_codes = @()
+        actions = @()
+        errors = @()
+    }
+    if (-not $PreflightAutoRecoveryEnabled) {
+        $step.reason = "DISABLED"
+        return $step
+    }
+    if ($DryRun) {
+        $step.reason = "DRY_RUN"
+        return $step
+    }
+    if (-not (Test-ObjectHasValues -ObjectValue $PreflightReport)) {
+        $step.reason = "PREFLIGHT_REPORT_MISSING"
+        return $step
+    }
+
+    $actions = New-Object System.Collections.Generic.List[object]
+    $errors = New-Object System.Collections.Generic.List[string]
+    $recoverableCodes = New-Object System.Collections.Generic.List[string]
+    $unhandledCodes = New-Object System.Collections.Generic.List[string]
+    $timersToEnable = New-Object System.Collections.Generic.List[string]
+    $failedUnitsToReset = New-Object System.Collections.Generic.List[string]
+    $stopCandidateLaneUnits = $false
+    $clearLatestCandidatePointers = $false
+    $clearCurrentState = $false
+
+    $checks = @(
+        @(Get-PropValue -ObjectValue $PreflightReport -Name "checks" -DefaultValue @()) |
+            Where-Object { [string](Get-PropValue -ObjectValue $_ -Name "status" -DefaultValue "") -eq "violation" }
+    )
+    if (@($checks).Count -le 0) {
+        $step.reason = "NO_VIOLATIONS"
+        return $step
+    }
+
+    foreach ($check in @($checks)) {
+        $code = [string](Get-PropValue -ObjectValue $check -Name "code" -DefaultValue "")
+        $evidence = Get-PropValue -ObjectValue $check -Name "evidence" -DefaultValue @{}
+        switch ($code) {
+            "UNIT_FILE_STATE_MISMATCH" {
+                $unitName = [string](Get-PropValue -ObjectValue $evidence -Name "unit" -DefaultValue "")
+                $expectedState = [string](Get-PropValue -ObjectValue $evidence -Name "expected_state" -DefaultValue "")
+                if (($expectedState -eq "enabled") -and ($unitName.EndsWith(".timer"))) {
+                    if ($timersToEnable -notcontains $unitName) {
+                        $timersToEnable.Add($unitName) | Out-Null
+                    }
+                    if ($recoverableCodes -notcontains $code) {
+                        $recoverableCodes.Add($code) | Out-Null
+                    }
+                } else {
+                    if ($unhandledCodes -notcontains $code) {
+                        $unhandledCodes.Add($code) | Out-Null
+                    }
+                }
+            }
+            "FAILED_UNIT_PRESENT" {
+                $unitName = [string](Get-PropValue -ObjectValue $evidence -Name "unit" -DefaultValue "")
+                if (-not [string]::IsNullOrWhiteSpace($unitName)) {
+                    if ($failedUnitsToReset -notcontains $unitName) {
+                        $failedUnitsToReset.Add($unitName) | Out-Null
+                    }
+                    if ($recoverableCodes -notcontains $code) {
+                        $recoverableCodes.Add($code) | Out-Null
+                    }
+                } else {
+                    if ($unhandledCodes -notcontains $code) {
+                        $unhandledCodes.Add($code) | Out-Null
+                    }
+                }
+            }
+            "POINTER_CONSISTENCY_VIOLATION" {
+                $reasonCodes = @(Get-StringArray -Value (Get-PropValue -ObjectValue $evidence -Name "reason_codes" -DefaultValue @()))
+                $handledReason = $false
+                foreach ($reasonCode in @($reasonCodes)) {
+                    switch ([string]$reasonCode) {
+                        "CANDIDATE_UNITS_ACTIVE_WITHOUT_LATEST_CANDIDATE" {
+                            $stopCandidateLaneUnits = $true
+                            $clearCurrentState = $true
+                            $handledReason = $true
+                        }
+                        "LATEST_CANDIDATE_WITH_NO_ACTIVE_CANDIDATE_LANE" {
+                            if ($Mode -eq "spawn_only") {
+                                $clearLatestCandidatePointers = $true
+                                $clearCurrentState = $true
+                                $handledReason = $true
+                            }
+                        }
+                    }
+                }
+                if ($handledReason) {
+                    if ($recoverableCodes -notcontains $code) {
+                        $recoverableCodes.Add($code) | Out-Null
+                    }
+                } else {
+                    if ($unhandledCodes -notcontains $code) {
+                        $unhandledCodes.Add($code) | Out-Null
+                    }
+                }
+            }
+            default {
+                if ($unhandledCodes -notcontains $code) {
+                    $unhandledCodes.Add($code) | Out-Null
+                }
+            }
+        }
+    }
+
+    $step.recoverable = (@($recoverableCodes).Count -gt 0) -and (@($unhandledCodes).Count -eq 0)
+    $step.recovered_violation_codes = @($recoverableCodes)
+    $step.unhandled_violation_codes = @($unhandledCodes)
+    if (-not $step.recoverable) {
+        $step.reason = "UNHANDLED_VIOLATIONS_PRESENT"
+        return $step
+    }
+
+    foreach ($unitName in @($timersToEnable)) {
+        Try-Enable-UnitBestEffort -UnitName $unitName -Actions $actions -Errors $errors
+    }
+    foreach ($unitName in @($failedUnitsToReset)) {
+        Try-ResetFailed-UnitBestEffort -UnitName $unitName -Actions $actions -Errors $errors
+    }
+    if ($stopCandidateLaneUnits) {
+        $unitsToStop = @()
+        foreach ($value in @($PairedPaperUnitName, $CanaryUnitName) + @($resolvedCandidateTargetUnits)) {
+            $text = [string]$value
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                continue
+            }
+            $trimmed = $text.Trim()
+            if ($unitsToStop -contains $trimmed) {
+                continue
+            }
+            $unitsToStop += $trimmed
+        }
+        $stopStep = Stop-ConfiguredUnits -Units $unitsToStop
+        $actions.Add([ordered]@{
+            type = "stop_candidate_lane_units"
+            result = $stopStep
+        }) | Out-Null
+    }
+    if ($clearLatestCandidatePointers) {
+        $clearPointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family $resolvedModelFamily
+        $actions.Add([ordered]@{
+            type = "clear_latest_candidate_pointers"
+            result = $clearPointerStep
+        }) | Out-Null
+    }
+    if ($clearCurrentState) {
+        $removed = $false
+        if (Test-Path $statePath) {
+            Remove-Item -Path $statePath -Force -ErrorAction SilentlyContinue
+            $removed = -not (Test-Path $statePath)
+        }
+        $actions.Add([ordered]@{
+            type = "clear_current_state"
+            path = $statePath
+            removed = $removed
+        }) | Out-Null
+    }
+
+    $step.actions = @($actions.ToArray())
+    $step.errors = @($errors.ToArray())
+    $step.applied = @($step.actions).Count -gt 0
+    if (-not $step.applied) {
+        $step.reason = "NO_ACTIONS_APPLIED"
+    } elseif (@($step.errors).Count -gt 0) {
+        $step.reason = "RECOVERY_ACTION_FAILED"
+    } else {
+        $step.reason = "RECOVERY_APPLIED"
+    }
+    return $step
 }
 
 function Resolve-ReportedJsonPath {
@@ -1276,6 +1510,55 @@ $report.steps.preflight = [ordered]@{
     summary = Get-PropValue -ObjectValue $preflightReport -Name "summary" -DefaultValue @{}
 }
 if ($preflightExec.ExitCode -ne 0) {
+    $preflightRecoveryStep = Invoke-PreflightAutoRecovery -PreflightReport $preflightReport
+    $report.steps.preflight_recovery = $preflightRecoveryStep
+    if (
+        [bool](Get-PropValue -ObjectValue $preflightRecoveryStep -Name "recoverable" -DefaultValue $false) -and
+        [bool](Get-PropValue -ObjectValue $preflightRecoveryStep -Name "applied" -DefaultValue $false) -and
+        (@(Get-StringArray -Value (Get-PropValue -ObjectValue $preflightRecoveryStep -Name "errors" -DefaultValue @())).Count -eq 0)
+    ) {
+        $preflightRetryExec = Invoke-PreflightCapture `
+            -PwshExe $psExe `
+            -PreflightScriptPath $preflightScriptPath `
+            -Root $resolvedProjectRoot `
+            -PythonPath $resolvedPythonExe `
+            -ChampionPointerFamily $resolvedChampionCompareModelFamily `
+            -ChampionUnit $ChampionUnitName `
+            -ChallengerUnit $ChallengerUnitName `
+            -PromotionUnits $resolvedPromotionTargetUnits `
+            -CandidateUnits $resolvedCandidateTargetUnits `
+            -ExpectedEnabledUnits $resolvedPreflightExpectedEnabledUnits `
+            -ExpectedDisabledUnits $resolvedPreflightExpectedDisabledUnits
+        $preflightRetryReport = Load-JsonOrEmpty -PathValue $preflightRetryExec.ReportPath
+        $report.steps.preflight_retry = [ordered]@{
+            attempted = $true
+            exit_code = [int]$preflightRetryExec.ExitCode
+            command = $preflightRetryExec.Command
+            output_preview = [string]$preflightRetryExec.Output
+            report_path = $preflightRetryExec.ReportPath
+            summary = Get-PropValue -ObjectValue $preflightRetryReport -Name "summary" -DefaultValue @{}
+        }
+        if ($preflightRetryExec.ExitCode -eq 0) {
+            $preflightExec = $preflightRetryExec
+            $preflightReport = $preflightRetryReport
+            $report.steps.preflight = [ordered]@{
+                attempted = $true
+                exit_code = [int]$preflightExec.ExitCode
+                command = $preflightExec.Command
+                output_preview = [string]$preflightExec.Output
+                report_path = $preflightExec.ReportPath
+                summary = Get-PropValue -ObjectValue $preflightReport -Name "summary" -DefaultValue @{}
+                recovered = $true
+            }
+        }
+    }
+} else {
+    $report.steps.preflight_recovery = [ordered]@{
+        attempted = $false
+        reason = "NOT_REQUIRED"
+    }
+}
+if ($preflightExec.ExitCode -ne 0) {
     $exitCode = 2
     Set-DailyFailure -Stage "acceptance_gate" -Code "SERVER_PREFLIGHT_FAILED" -ReportPath $preflightExec.ReportPath
     $report.exception = [ordered]@{
@@ -2120,7 +2403,8 @@ $report.steps.rollback = [ordered]@{
     attempted = $false
     reason = "NOT_REQUIRED"
 }
-if ((-not [bool](Get-PropValue -ObjectValue $report.gates -Name "overall_pass" -DefaultValue $false)) -and [string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
+$reportGates = Get-PropValue -ObjectValue $report -Name "gates" -DefaultValue @{}
+if ((-not [bool](Get-PropValue -ObjectValue $reportGates -Name "overall_pass" -DefaultValue $false)) -and [string]::IsNullOrWhiteSpace([string]$report.failure_stage)) {
     $trainCandidateStep = Get-PropValue -ObjectValue $report.steps -Name "train_candidate" -DefaultValue @{}
     Set-DailyFailure `
         -Stage "acceptance_gate" `

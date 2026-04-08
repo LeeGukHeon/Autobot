@@ -51,84 +51,168 @@ def _make_fake_sudo(tmp_path: Path) -> Path:
 
 
 def _make_fake_systemctl(tmp_path: Path) -> Path:
+    driver_path = tmp_path / "fake_systemctl_driver.py"
+    driver_path.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            KNOWN_UNITS = [
+                "autobot-paper-v4.service",
+                "autobot-paper-v4-challenger.service",
+                "autobot-paper-v4-paired.service",
+                "autobot-live-alpha.service",
+                "autobot-live-alpha-candidate.service",
+                "autobot-v4-challenger-spawn.service",
+                "autobot-v4-challenger-promote.service",
+                "autobot-v4-challenger-spawn.timer",
+                "autobot-v4-challenger-promote.timer",
+                "autobot-paper-v4-replay.service",
+                "autobot-live-alpha-replay-shadow.service",
+            ]
+
+            def _split_env(name: str) -> list[str]:
+                raw = os.environ.get(name, "")
+                return [item.strip() for item in raw.split(",") if item.strip()]
+
+            def _default_state() -> dict:
+                unit_file_states = {
+                    "autobot-paper-v4.service": "disabled",
+                    "autobot-paper-v4-challenger.service": "disabled",
+                    "autobot-paper-v4-paired.service": "enabled",
+                    "autobot-live-alpha.service": "enabled",
+                    "autobot-live-alpha-candidate.service": "enabled",
+                    "autobot-v4-challenger-spawn.timer": "enabled",
+                    "autobot-v4-challenger-promote.timer": "enabled",
+                    "autobot-paper-v4-replay.service": "disabled",
+                    "autobot-live-alpha-replay-shadow.service": "disabled",
+                }
+                for unit in _split_env("FAKE_DISABLED_UNIT_FILES"):
+                    unit_file_states[unit] = "disabled"
+                return {
+                    "active_units": _split_env("FAKE_ACTIVE_UNITS"),
+                    "failed_units": _split_env("FAKE_FAILED_UNITS"),
+                    "unit_file_states": unit_file_states,
+                }
+
+            def _state_path() -> Path | None:
+                raw = os.environ.get("FAKE_SYSTEMCTL_STATE", "").strip()
+                if raw:
+                    return Path(raw)
+                return Path(__file__).with_name("fake_systemctl_state.json")
+
+            def load_state() -> dict:
+                state_path = _state_path()
+                if state_path and state_path.exists():
+                    return json.loads(state_path.read_text(encoding="utf-8"))
+                state = _default_state()
+                if state_path:
+                    state_path.parent.mkdir(parents=True, exist_ok=True)
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                return state
+
+            def save_state(state: dict) -> None:
+                state_path = _state_path()
+                if not state_path:
+                    return
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            def log_command(argv: list[str]) -> None:
+                log_path = os.environ.get("FAKE_SYSTEMCTL_LOG", "").strip()
+                if log_path:
+                    Path(log_path).write_text(
+                        (Path(log_path).read_text(encoding="utf-8") if Path(log_path).exists() else "") + " ".join(argv) + "\\n",
+                        encoding="utf-8",
+                    )
+
+            argv = sys.argv[1:]
+            log_command(argv)
+            state = load_state()
+            active_units = set(state.get("active_units", []))
+            failed_units = set(state.get("failed_units", []))
+            unit_file_states = dict(state.get("unit_file_states", {}))
+
+            def persist() -> None:
+                save_state(
+                    {
+                        "active_units": sorted(active_units),
+                        "failed_units": sorted(failed_units),
+                        "unit_file_states": unit_file_states,
+                    }
+                )
+
+            if not argv:
+                sys.exit(0)
+
+            cmd = argv[0]
+            if cmd == "list-units":
+                for unit in KNOWN_UNITS:
+                    if unit in failed_units:
+                        print(f"{unit} loaded failed failed Fake Unit")
+                    elif unit in active_units:
+                        sub = "waiting" if unit.endswith(".timer") else "running"
+                        print(f"{unit} loaded active {sub} Fake Unit")
+                    else:
+                        print(f"{unit} loaded inactive dead Fake Unit")
+                sys.exit(0)
+            if cmd == "list-unit-files":
+                for unit in KNOWN_UNITS:
+                    if not (unit.endswith(".service") or unit.endswith(".timer")):
+                        continue
+                    print(f"{unit} {unit_file_states.get(unit, 'enabled')} enabled")
+                sys.exit(0)
+            if cmd == "is-active":
+                target = argv[2] if len(argv) > 2 and argv[1] == "--quiet" else (argv[1] if len(argv) > 1 else "")
+                sys.exit(0 if target in active_units else 1)
+            if cmd == "enable":
+                for unit in argv[1:]:
+                    unit_file_states[unit] = "enabled"
+                persist()
+                sys.exit(0)
+            if cmd in {"start", "restart"}:
+                for unit in argv[1:]:
+                    active_units.add(unit)
+                    failed_units.discard(unit)
+                persist()
+                sys.exit(0)
+            if cmd == "stop":
+                for unit in argv[1:]:
+                    active_units.discard(unit)
+                    failed_units.discard(unit)
+                persist()
+                sys.exit(0)
+            if cmd == "reset-failed":
+                for unit in argv[1:]:
+                    failed_units.discard(unit)
+                persist()
+                sys.exit(0)
+            if cmd == "status":
+                target = argv[1] if len(argv) > 1 else ""
+                active = "active" if target in active_units else ("failed" if target in failed_units else "inactive")
+                sub = "running" if target in active_units and target.endswith(".service") else ("waiting" if target in active_units else ("failed" if target in failed_units else "dead"))
+                print(f"{target} {active} {sub}")
+                sys.exit(0)
+            sys.exit(0)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
     if os.name == "nt":
         wrapper_path = tmp_path / "systemctl.cmd"
         wrapper_path.write_text(
-            "@echo off\r\n"
-            "if not \"%FAKE_SYSTEMCTL_LOG%\"==\"\" echo %*>>\"%FAKE_SYSTEMCTL_LOG%\"\r\n"
-            "if \"%1\"==\"list-units\" goto list_units\r\n"
-            "if \"%1\"==\"list-unit-files\" goto list_unit_files\r\n"
-            "if \"%1\"==\"is-active\" goto is_active\r\n"
-            "exit /b 0\r\n"
-            ":list_units\r\n"
-            "for %%U in (autobot-paper-v4.service autobot-paper-v4-challenger.service autobot-live-alpha.service autobot-live-alpha-candidate.service autobot-v4-challenger-spawn.service autobot-v4-challenger-promote.service) do (\r\n"
-            "  set \"TARGET=%%U\"\r\n"
-            "  echo ,%FAKE_ACTIVE_UNITS%, | findstr /I /C:\",%%U,\" >nul\r\n"
-            "  if not errorlevel 1 (\r\n"
-            "    echo %%U loaded active running Fake Unit\r\n"
-            "  ) else (\r\n"
-            "    echo %%U loaded inactive dead Fake Unit\r\n"
-            "  )\r\n"
-            ")\r\n"
-            "exit /b 0\r\n"
-            ":list_unit_files\r\n"
-            "echo autobot-paper-v4.service disabled enabled\r\n"
-            "echo autobot-paper-v4-challenger.service disabled enabled\r\n"
-            "echo autobot-paper-v4-paired.service enabled enabled\r\n"
-            "echo autobot-live-alpha.service enabled enabled\r\n"
-            "echo autobot-live-alpha-candidate.service enabled enabled\r\n"
-            "echo autobot-v4-challenger-spawn.timer enabled enabled\r\n"
-            "echo autobot-v4-challenger-promote.timer enabled enabled\r\n"
-            "echo autobot-paper-v4-replay.service disabled enabled\r\n"
-            "echo autobot-live-alpha-replay-shadow.service disabled enabled\r\n"
-            "exit /b 0\r\n"
-            ":is_active\r\n"
-            "set \"TARGET=%2\"\r\n"
-            "if \"%2\"==\"--quiet\" set \"TARGET=%3\"\r\n"
-            "echo ,%FAKE_ACTIVE_UNITS%, | findstr /I /C:\",%TARGET%,\" >nul\r\n"
-            "if not errorlevel 1 exit /b 0\r\n"
-            "exit /b 1\r\n",
+            f"@echo off\r\n\"{sys.executable}\" \"%~dp0fake_systemctl_driver.py\" %*\r\n",
             encoding="utf-8",
         )
     else:
         wrapper_path = tmp_path / "systemctl"
         wrapper_path.write_text(
             "#!/bin/sh\n"
-            "if [ -n \"$FAKE_SYSTEMCTL_LOG\" ]; then\n"
-            "  echo \"$@\" >> \"$FAKE_SYSTEMCTL_LOG\"\n"
-            "fi\n"
-            "if [ \"$1\" = \"list-units\" ]; then\n"
-            "  for unit in autobot-paper-v4.service autobot-paper-v4-challenger.service autobot-live-alpha.service autobot-live-alpha-candidate.service autobot-v4-challenger-spawn.service autobot-v4-challenger-promote.service; do\n"
-            "    case \",$FAKE_ACTIVE_UNITS,\" in\n"
-            "      *,$unit,*) echo \"$unit loaded active running Fake Unit\" ;;\n"
-            "      *) echo \"$unit loaded inactive dead Fake Unit\" ;;\n"
-            "    esac\n"
-            "  done\n"
-            "  exit 0\n"
-            "fi\n"
-            "if [ \"$1\" = \"list-unit-files\" ]; then\n"
-            "  echo \"autobot-paper-v4.service disabled enabled\"\n"
-            "  echo \"autobot-paper-v4-challenger.service disabled enabled\"\n"
-            "  echo \"autobot-paper-v4-paired.service enabled enabled\"\n"
-            "  echo \"autobot-live-alpha.service enabled enabled\"\n"
-            "  echo \"autobot-live-alpha-candidate.service enabled enabled\"\n"
-            "  echo \"autobot-v4-challenger-spawn.timer enabled enabled\"\n"
-            "  echo \"autobot-v4-challenger-promote.timer enabled enabled\"\n"
-            "  echo \"autobot-paper-v4-replay.service disabled enabled\"\n"
-            "  echo \"autobot-live-alpha-replay-shadow.service disabled enabled\"\n"
-            "  exit 0\n"
-            "fi\n"
-            "if [ \"$1\" = \"is-active\" ]; then\n"
-            "  target=\"$2\"\n"
-            "  if [ \"$2\" = \"--quiet\" ]; then\n"
-            "    target=\"$3\"\n"
-            "  fi\n"
-            "  case \",${FAKE_ACTIVE_UNITS},\" in\n"
-            "    *,$target,*) exit 0 ;;\n"
-            "  esac\n"
-            "  exit 1\n"
-            "fi\n"
-            "exit 0\n",
+            f'"{sys.executable}" "$(dirname "$0")/fake_systemctl_driver.py" "$@"\n',
             encoding="utf-8",
         )
         wrapper_path.chmod(0o755)
@@ -179,6 +263,126 @@ def _make_fake_python(tmp_path: Path, compare_payload: dict | None = None) -> Pa
             "  *'autobot.cli model promote'*) printf '{}\\n' ;;\n"
             "  *) printf '{}\\n' ;;\n"
             "esac\n",
+            encoding="utf-8",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def _make_fake_preflight_python(tmp_path: Path) -> Path:
+    driver_path = tmp_path / "fake_preflight_python_driver.py"
+    driver_path.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            def _arg_value(name: str, default: str = "") -> str:
+                if name not in sys.argv:
+                    return default
+                index = sys.argv.index(name)
+                if index + 1 >= len(sys.argv):
+                    return default
+                return sys.argv[index + 1]
+
+            def _load_state() -> dict:
+                raw = os.environ.get("FAKE_SYSTEMCTL_STATE", "").strip()
+                if raw and Path(raw).exists():
+                    return json.loads(Path(raw).read_text(encoding="utf-8"))
+                return {
+                    "active_units": [item.strip() for item in os.environ.get("FAKE_ACTIVE_UNITS", "").split(",") if item.strip()],
+                }
+
+            args = sys.argv[1:]
+            project_root = Path(_arg_value("--project-root")).resolve() if "--project-root" in args else Path.cwd()
+            command_key = tuple(args[:2])
+
+            if command_key == ("-m", "autobot.ops.runtime_topology_report"):
+                report_path = project_root / "logs" / "runtime_topology" / "latest.json"
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(
+                    json.dumps(
+                        {
+                            "summary": {
+                                "topology_health_status": "healthy",
+                                "topology_health_reason_codes": [],
+                                "champion_run_id": "champion-run-001",
+                                "latest_candidate_run_id": None,
+                            },
+                            "topology_health": {"status": "healthy", "reason_codes": []},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                print(report_path)
+                sys.exit(0)
+
+            if command_key == ("-m", "autobot.ops.pointer_consistency_report"):
+                state = _load_state()
+                active_units = set(state.get("active_units", []))
+                family_dir = project_root / "models" / "registry" / "train_v4_crypto_cs"
+                latest_candidate_path = family_dir / "latest_candidate.json"
+                latest_candidate = json.loads(latest_candidate_path.read_text(encoding="utf-8")) if latest_candidate_path.exists() else {}
+                latest_candidate_run_id = str(latest_candidate.get("run_id", "")).strip() or None
+                candidate_lane_active = "autobot-live-alpha-candidate.service" in active_units
+                checks = []
+                reason_codes = []
+                status = "pass"
+                if candidate_lane_active and not latest_candidate_run_id:
+                    checks.append(
+                        {
+                            "code": "POINTER_CONSISTENCY_VIOLATION",
+                            "status": "violation",
+                            "message": "pointer consistency report summary is in violation state.",
+                            "evidence": {
+                                "status": "violation",
+                                "reason_codes": ["CANDIDATE_UNITS_ACTIVE_WITHOUT_LATEST_CANDIDATE"],
+                            },
+                        }
+                    )
+                    reason_codes = ["CANDIDATE_UNITS_ACTIVE_WITHOUT_LATEST_CANDIDATE"]
+                    status = "violation"
+                report_path = project_root / "logs" / "ops" / "pointer_consistency" / "latest.json"
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(
+                    json.dumps(
+                        {
+                            "checks": checks,
+                            "summary": {
+                                "status": status,
+                                "violation_count": len(checks),
+                                "warning_count": 0,
+                                "reason_codes": reason_codes,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                print(report_path)
+                sys.exit(0)
+
+            print("{}")
+            sys.exit(0)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        wrapper_path = tmp_path / "fake_preflight_python.cmd"
+        wrapper_path.write_text(
+            f"@echo off\r\n\"{sys.executable}\" \"%~dp0fake_preflight_python_driver.py\" %*\r\n",
+            encoding="utf-8",
+        )
+    else:
+        wrapper_path = tmp_path / "fake_preflight_python"
+        wrapper_path.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$(dirname "$0")/fake_preflight_python_driver.py" "$@"\n',
             encoding="utf-8",
         )
         wrapper_path.chmod(0o755)
@@ -469,12 +673,14 @@ def _run_spawn_only(
     extra_args: list[str] | None = None,
     active_units: list[str] | None = None,
     python_exe: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     _seed_preflight_minimum(project_root)
     sudo_dir = acceptance_script.parent
     _make_fake_sudo(sudo_dir)
     _make_fake_systemctl(sudo_dir)
     resolved_python_exe = str(python_exe or _make_fake_python(sudo_dir))
+    systemctl_state_path = sudo_dir / "fake_systemctl_state.json"
     args = [
         _powershell_exe(),
         "-NoProfile",
@@ -504,6 +710,8 @@ def _run_spawn_only(
             **os.environ,
             "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
             "FAKE_ACTIVE_UNITS": ",".join(active_units or []),
+            "FAKE_SYSTEMCTL_STATE": str(systemctl_state_path),
+            **(extra_env or {}),
         },
     )
 
@@ -1058,6 +1266,56 @@ def test_spawn_only_fails_fast_on_server_preflight_violation(tmp_path: Path) -> 
     assert preflight_report["check_candidate_state_consistency"] is True
 
 
+def test_spawn_only_can_auto_recover_recoverable_server_preflight_violations(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    acceptance_script = _make_fake_acceptance_script(
+        tmp_path,
+        {
+            "steps": {
+                "train": {"candidate_run_id": "candidate-run-001"},
+            },
+            "gates": {
+                "backtest": {"pass": False},
+                "overall_pass": False,
+            },
+            "reasons": ["BACKTEST_ACCEPTANCE_FAILED"],
+        },
+        exit_code=2,
+    )
+    systemctl_log = tmp_path / "systemctl.log"
+
+    completed = _run_spawn_only(
+        project_root,
+        acceptance_script,
+        dry_run=False,
+        active_units=["autobot-live-alpha-candidate.service"],
+        python_exe=str(_make_fake_preflight_python(tmp_path)),
+        extra_env={
+            "FAKE_DISABLED_UNIT_FILES": "autobot-v4-challenger-spawn.timer,autobot-v4-challenger-promote.timer",
+            "FAKE_FAILED_UNITS": "autobot-v4-challenger-promote.service",
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert latest["steps"]["preflight"]["exit_code"] == 0
+    assert latest["steps"]["preflight_recovery"]["attempted"] is True
+    assert latest["steps"]["preflight_recovery"]["applied"] is True
+    assert latest["steps"]["preflight_recovery"]["reason"] == "RECOVERY_APPLIED"
+    assert latest["steps"]["preflight_retry"]["exit_code"] == 0
+    assert (project_root / "logs" / "fake_acceptance" / "report.json").exists()
+
+    systemctl_commands = systemctl_log.read_text(encoding="utf-8")
+    assert "enable autobot-v4-challenger-spawn.timer" in systemctl_commands
+    assert "enable autobot-v4-challenger-promote.timer" in systemctl_commands
+    assert "restart autobot-v4-challenger-spawn.timer" in systemctl_commands
+    assert "restart autobot-v4-challenger-promote.timer" in systemctl_commands
+    assert "reset-failed autobot-v4-challenger-promote.service" in systemctl_commands
+    assert "stop autobot-live-alpha-candidate.service" in systemctl_commands
+
+
 def test_spawn_only_clears_stale_previous_challenger_state_before_training(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -1244,6 +1502,8 @@ def test_promote_only_starts_allowed_inactive_live_target_units(tmp_path: Path) 
             "promote_only",
             "-PromotionTargetUnits",
             "autobot-live-alpha.service",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
