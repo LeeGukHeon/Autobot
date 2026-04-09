@@ -18,6 +18,7 @@ param(
     [string]$TrainingCriticalEndDate = "",
     [int]$MaxCandlesSummaryAgeMinutes = 120,
     [int]$MaxTicksSummaryAgeMinutes = 120,
+    [switch]$ForceRebuild,
     [switch]$SkipDeadline,
     [switch]$DryRun
 )
@@ -86,6 +87,123 @@ function To-Bool {
         return [bool]$Value
     } catch {
         return $DefaultValue
+    }
+}
+
+function Get-StringArray {
+    param([Parameter(Mandatory = $false)]$Value)
+    if ($null -eq $Value) {
+        return @()
+    }
+    if (($Value -is [System.Collections.IEnumerable]) -and (-not ($Value -is [string]))) {
+        return @(
+            @($Value) |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @()
+    }
+    return @($text)
+}
+
+function Test-WindowContractMatch {
+    param(
+        [Parameter(Mandatory = $false)]$ExistingWindow,
+        [Parameter(Mandatory = $false)]$ExpectedWindow
+    )
+    $existingStart = [string](Get-PropValue -ObjectValue $ExistingWindow -Name "start" -DefaultValue "")
+    $existingEnd = [string](Get-PropValue -ObjectValue $ExistingWindow -Name "end" -DefaultValue "")
+    $expectedStart = [string](Get-PropValue -ObjectValue $ExpectedWindow -Name "start" -DefaultValue "")
+    $expectedEnd = [string](Get-PropValue -ObjectValue $ExpectedWindow -Name "end" -DefaultValue "")
+    return (
+        [string]::Equals($existingStart.Trim(), $expectedStart.Trim(), [System.StringComparison]::OrdinalIgnoreCase) `
+        -and [string]::Equals($existingEnd.Trim(), $expectedEnd.Trim(), [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Get-ReusableTrainSnapshotCloseSummary {
+    param(
+        [string]$SummaryFile,
+        [string]$PointerFile,
+        [string]$ProjectRootValue,
+        [string]$BatchDateValue,
+        [string]$TrainingCriticalStartDateValue,
+        [string]$TrainingCriticalEndDateValue,
+        [Parameter(Mandatory = $false)]$ExpectedTrainWindow,
+        [Parameter(Mandatory = $false)]$ExpectedCertificationWindow,
+        [Parameter(Mandatory = $false)]$ExpectedCoverageWindow,
+        [int]$ExpectedFeatureTopN
+    )
+    if ($ForceRebuild -or $DryRun) {
+        return $null
+    }
+    $existingSummary = Load-JsonOrEmpty -PathValue $SummaryFile
+    if ($null -eq $existingSummary) {
+        return $null
+    }
+    $existingPolicy = [string](Get-PropValue -ObjectValue $existingSummary -Name "policy" -DefaultValue "")
+    if (-not [string]::Equals($existingPolicy.Trim(), "v5_train_snapshot_close_v1", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    $existingBatchDate = [string](Get-PropValue -ObjectValue $existingSummary -Name "batch_date" -DefaultValue "")
+    if (-not [string]::Equals($existingBatchDate.Trim(), $BatchDateValue.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    if (-not (To-Bool (Get-PropValue -ObjectValue $existingSummary -Name "overall_pass" -DefaultValue $false) $false)) {
+        return $null
+    }
+    if (@(Get-StringArray -Value (Get-PropValue -ObjectValue $existingSummary -Name "failure_reasons" -DefaultValue @())).Count -gt 0) {
+        return $null
+    }
+    $existingStartDate = [string](Get-PropValue -ObjectValue $existingSummary -Name "training_critical_start_date" -DefaultValue "")
+    $existingEndDate = [string](Get-PropValue -ObjectValue $existingSummary -Name "training_critical_end_date" -DefaultValue "")
+    if (
+        (-not [string]::Equals($existingStartDate.Trim(), $TrainingCriticalStartDateValue.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) `
+        -or (-not [string]::Equals($existingEndDate.Trim(), $TrainingCriticalEndDateValue.Trim(), [System.StringComparison]::OrdinalIgnoreCase))
+    ) {
+        return $null
+    }
+    if (-not (Test-WindowContractMatch -ExistingWindow (Get-PropValue -ObjectValue $existingSummary -Name "train_window" -DefaultValue @{}) -ExpectedWindow $ExpectedTrainWindow)) {
+        return $null
+    }
+    if (-not (Test-WindowContractMatch -ExistingWindow (Get-PropValue -ObjectValue $existingSummary -Name "certification_window" -DefaultValue @{}) -ExpectedWindow $ExpectedCertificationWindow)) {
+        return $null
+    }
+    if (-not (Test-WindowContractMatch -ExistingWindow (Get-PropValue -ObjectValue $existingSummary -Name "coverage_window" -DefaultValue @{}) -ExpectedWindow $ExpectedCoverageWindow)) {
+        return $null
+    }
+    $existingFeatureTopN = [int](Get-PropValue -ObjectValue (Get-PropValue -ObjectValue $existingSummary -Name "feature_contract_refresh" -DefaultValue @{}) -Name "top_n" -DefaultValue 0)
+    if (($ExpectedFeatureTopN -gt 0) -and ($existingFeatureTopN -ne [int]$ExpectedFeatureTopN)) {
+        return $null
+    }
+    $snapshotId = [string](Get-PropValue -ObjectValue $existingSummary -Name "snapshot_id" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($snapshotId)) {
+        return $null
+    }
+    $snapshotRoot = [string](Get-PropValue -ObjectValue $existingSummary -Name "snapshot_root" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($snapshotRoot) -or (-not (Test-Path $snapshotRoot))) {
+        return $null
+    }
+    $snapshotSummaryPath = [string](Get-PropValue -ObjectValue $existingSummary -Name "snapshot_summary_path" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($snapshotSummaryPath)) {
+        $snapshotSummaryPath = Join-Path $ProjectRootValue ("data/snapshots/data_platform/" + $snapshotId + "/_meta/summary.json")
+    }
+    if (-not (Test-Path $snapshotSummaryPath)) {
+        return $null
+    }
+    $pointerPayload = Load-JsonOrEmpty -PathValue $PointerFile
+    $pointerSnapshotId = [string](Get-PropValue -ObjectValue $pointerPayload -Name "snapshot_id" -DefaultValue "")
+    if (-not [string]::Equals($pointerSnapshotId.Trim(), $snapshotId.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    return [PSCustomObject]@{
+        Summary = $existingSummary
+        SnapshotId = $snapshotId
+        SnapshotRoot = $snapshotRoot
+        SnapshotSummaryPath = $snapshotSummaryPath
     }
 }
 
@@ -369,6 +487,7 @@ $resolvedCandlesSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -Pa
 $resolvedTicksSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $TicksSummaryPath
 $resolvedMicroRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MicroRoot
 $batchDateValue = Resolve-BatchDateValue -DateText $BatchDate
+$pointerPath = Join-Path $resolvedProjectRoot "data/_meta/data_platform_ready_snapshot.json"
 $trainingCriticalWindow = Resolve-DateWindowForTrainingCriticalRefresh `
     -BatchDateValue $batchDateValue `
     -RequestedTrainLookbackDays $TrainLookbackDays `
@@ -385,6 +504,39 @@ $windowContract = Resolve-TrainSnapshotWindowContract `
     -CoverageEndDate $trainingCriticalEndDate `
     -CoverageSource ([string](Get-PropValue -ObjectValue $trainingCriticalWindow -Name "source" -DefaultValue ""))
 $pwshExe = Resolve-PwshExe
+
+$reusableSummary = Get-ReusableTrainSnapshotCloseSummary `
+    -SummaryFile $resolvedSummaryPath `
+    -PointerFile $pointerPath `
+    -ProjectRootValue $resolvedProjectRoot `
+    -BatchDateValue $batchDateValue `
+    -TrainingCriticalStartDateValue $trainingCriticalStartDate `
+    -TrainingCriticalEndDateValue $trainingCriticalEndDate `
+    -ExpectedTrainWindow (Get-PropValue -ObjectValue $windowContract -Name "train_window" -DefaultValue @{}) `
+    -ExpectedCertificationWindow (Get-PropValue -ObjectValue $windowContract -Name "certification_window" -DefaultValue @{}) `
+    -ExpectedCoverageWindow (Get-PropValue -ObjectValue $windowContract -Name "coverage_window" -DefaultValue @{}) `
+    -ExpectedFeatureTopN ([Math]::Max([int]$FeatureTopN, 1))
+if ($null -ne $reusableSummary) {
+    $reuseSourceGeneratedAt = [string](Get-PropValue -ObjectValue $reusableSummary.Summary -Name "generated_at_utc" -DefaultValue "")
+    $reusedSummary = [ordered]@{}
+    foreach ($property in @($reusableSummary.Summary.PSObject.Properties)) {
+        if ($null -eq $property -or [string]::IsNullOrWhiteSpace([string]$property.Name)) {
+            continue
+        }
+        $reusedSummary[[string]$property.Name] = $property.Value
+    }
+    $reusedSummary.generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    $reusedSummary.reused_existing_summary = $true
+    $reusedSummary.reused_source_generated_at_utc = $reuseSourceGeneratedAt
+    $reusedSummary.reuse_reason = "MATCHING_BATCH_DATE_SNAPSHOT_CLOSE"
+    $reusedSummary.reuse_snapshot_id = [string]$reusableSummary.SnapshotId
+    $reusedSummary.reuse_snapshot_summary_path = [string]$reusableSummary.SnapshotSummaryPath
+    ($reusedSummary | ConvertTo-Json -Depth 10) | Set-Content -Path $resolvedSummaryPath -Encoding UTF8
+    Write-Host ("[train-snapshot-close] reuse_snapshot_id={0}" -f [string]$reusableSummary.SnapshotId)
+    Write-Host ("[train-snapshot-close] reuse_snapshot_summary_path={0}" -f [string]$reusableSummary.SnapshotSummaryPath)
+    Write-Host $resolvedSummaryPath
+    exit 0
+}
 
 Set-Location $resolvedProjectRoot
 
@@ -467,7 +619,6 @@ if (@($failureReasons).Count -eq 0) {
 $snapshotId = ""
 $snapshotRoot = ""
 $snapshotSummaryPath = ""
-$pointerPath = Join-Path $resolvedProjectRoot "data/_meta/data_platform_ready_snapshot.json"
 $snapshotPublishExec = $null
 if (@($failureReasons).Count -eq 0) {
     $publishArgs = @(
