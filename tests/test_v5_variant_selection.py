@@ -1202,6 +1202,98 @@ def test_fusion_variant_matrix_records_forced_input_variant_provenance(tmp_path:
     assert set(report["input_provenance"]["excluded_experts"]) == {"sequence", "lob", "tradability"}
 
 
+def test_fusion_variant_matrix_skips_regime_moe_when_sequence_excluded(tmp_path: Path, monkeypatch) -> None:
+    registry_root = tmp_path / "models" / "registry"
+    logs_root = tmp_path / "logs"
+
+    seq_dir = registry_root / "train_v5_sequence" / "seq-winner"
+    lob_dir = registry_root / "train_v5_lob" / "lob-winner"
+    panel_dir = registry_root / "train_v5_panel_ensemble" / "panel-run"
+    trad_dir = registry_root / "train_v5_tradability" / "trad-run"
+    for run_dir, train_config, runtime_recommendations in (
+        (seq_dir, {"sequence_variant_name": "patchtst_v1__none"}, {"sequence_variant_name": "patchtst_v1__none"}),
+        (lob_dir, {"lob_variant_name": "deeplob_v1"}, {"lob_variant_name": "deeplob_v1"}),
+        (panel_dir, {}, {}),
+        (trad_dir, {}, {}),
+    ):
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={"trainer": "seed", "model_family": run_dir.parent.name, **train_config},
+            runtime_recommendations=runtime_recommendations,
+            leaderboard_row={"test_ev_net_top5": 0.1},
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+
+    seen_stackers: list[str] = []
+
+    def fake_train(options: TrainV5FusionOptions):
+        seen_stackers.append(str(options.stacker_family))
+        variant_name = options.stacker_family
+        run_id = f"fusion-{variant_name}"
+        run_dir = registry_root / options.model_family / run_id
+        _make_common_run_artifacts(
+            run_dir,
+            train_config={
+                "trainer": "v5_fusion",
+                "model_family": options.model_family,
+                "start": options.start,
+                "end": options.end,
+                "quote": options.quote,
+                "run_scope": options.run_scope,
+                "stacker_family": options.stacker_family,
+                "input_variant_name": options.input_variant_name,
+                "include_sequence": False,
+                "include_lob": True,
+                "include_tradability": False,
+                "fusion_variant_name": variant_name,
+            },
+            runtime_recommendations={
+                "source_family": "train_v5_fusion",
+                "fusion_variant_name": variant_name,
+                "fusion_stacker_family": variant_name,
+                "fusion_input_variant_name": options.input_variant_name,
+                "fusion_included_experts": ["panel", "lob"],
+                "fusion_excluded_experts": ["sequence", "tradability"],
+            },
+            leaderboard_row={
+                "test_ev_net_top5": 0.10,
+                "test_precision_top5": 0.60,
+                "test_pr_auc": 0.60,
+                "test_log_loss": 0.40,
+            },
+            walk_forward_report={"realized_pnl_quote": 10.0},
+        )
+        _write_json(run_dir / "fusion_model_contract.json", {"policy": "v5_fusion_v1"})
+        _write_json(run_dir / "fusion_runtime_input_contract.json", {"policy": "v5_fusion_runtime_input_contract_v1"})
+        _write_json(run_dir / "domain_weighting_report.json", {"policy": "v5_domain_weighting_v1", "effective_sample_weight_summary": {"mean": 1.0}})
+        return SimpleNamespace(run_dir=run_dir)
+
+    monkeypatch.setattr("autobot.models.v5_variant_selection.train_and_register_v5_fusion", fake_train)
+
+    payload = run_v5_fusion_variant_matrix(
+        TrainV5FusionOptions(
+            panel_input_path=panel_dir / "expert_prediction_table.parquet",
+            sequence_input_path=seq_dir / "expert_prediction_table.parquet",
+            lob_input_path=lob_dir / "expert_prediction_table.parquet",
+            tradability_input_path=trad_dir / "expert_prediction_table.parquet",
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-01",
+            end="2026-03-07",
+            seed=42,
+            run_scope="scheduled_daily",
+            input_variant_name="panel_plus_lob",
+        )
+    )
+
+    assert "regime_moe" not in seen_stackers
+    assert sorted(seen_stackers) == ["linear", "monotone_gbdt"]
+    report = json.loads(Path(payload["variant_report_path"]).read_text(encoding="utf-8"))
+    assert report["input_provenance"]["input_variant_name"] == "panel_plus_lob"
+
+
 def test_fusion_input_ablation_matrix_selects_clear_edge_variant(tmp_path: Path, monkeypatch) -> None:
     registry_root = tmp_path / "models" / "registry"
     logs_root = tmp_path / "logs"

@@ -95,6 +95,18 @@ class FusionInputAblationRecord:
     matrix_payload: dict[str, Any]
 
 
+def _fusion_variant_specs_for_input_variant(*, options: TrainV5FusionOptions) -> tuple[dict[str, Any], ...]:
+    input_variant = _resolve_fusion_input_variant(options)
+    include_sequence = bool(input_variant.get("include_sequence", True))
+    if include_sequence:
+        return FUSION_VARIANTS
+    return tuple(
+        spec
+        for spec in FUSION_VARIANTS
+        if str(spec.get("stacker_family") or "").strip().lower() != "regime_moe"
+    )
+
+
 def run_v5_sequence_variant_matrix(options: TrainV5SequenceOptions) -> dict[str, Any]:
     records = [
         _run_or_reuse_sequence_variant(options=replace(options, backbone_family=str(spec["backbone_family"]), pretrain_method=str(spec["pretrain_method"])), spec=spec)
@@ -169,9 +181,10 @@ def run_v5_lob_variant_matrix(options: TrainV5LobOptions) -> dict[str, Any]:
 
 
 def _run_v5_fusion_variant_matrix(options: TrainV5FusionOptions, *, publish_latest: bool = True) -> dict[str, Any]:
+    variant_specs = _fusion_variant_specs_for_input_variant(options=options)
     records = [
         _run_or_reuse_fusion_variant(options=replace(options, stacker_family=str(spec["stacker_family"])), spec=spec)
-        for spec in FUSION_VARIANTS
+        for spec in variant_specs
     ]
     selected = _select_fusion_winner(records)
     input_provenance = _resolve_fusion_input_variant_provenance(options=options)
