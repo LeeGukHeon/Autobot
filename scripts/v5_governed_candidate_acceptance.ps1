@@ -34,6 +34,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PaperFeatureProvider "live_v5" `
     -PromotionPolicy "paper_final_balanced" `
     -TrainerEvidenceMode "required" `
+    -ReuseDependencyRuns:$false `
     -BacktestTopPct 0.5 `
     -BacktestMinProb 0.0 `
     -BacktestMinCandidatesPerTs 1 `
@@ -48,7 +49,7 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
     -PaperMinPolicyEvents 0 `
     -TrainDataQualityFloorDate $trainDataQualityFloorDate `
     -EnableVariantMatrixSelection `
-    -EnableFusionInputAblationMatrix:$true `
+    -EnableFusionInputAblationMatrix:$EnableFusionInputAblationMatrix `
     -SplitPolicyHistoricalSelectorEnabled:$false `
     -KnownRuntimeUnits $knownRuntimeUnits `
     -OutDir "logs/model_v5_acceptance" `

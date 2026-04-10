@@ -493,7 +493,7 @@ def test_candidate_acceptance_reuses_matching_dependency_runs(tmp_path: Path) ->
             + json.dumps("logs/test_acceptance_v5_dependency_reuse")
             + " -BatchDate "
             + json.dumps("2026-03-08")
-            + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote "
+            + " -TrainLookbackDays 2 -BacktestLookbackDays 2 -SkipDailyPipeline -SkipPaperSoak -SkipPromote -ReuseDependencyRuns:$true "
             + "-ModelFamily train_v5_fusion -Trainer v5_fusion -DependencyTrainers @(\"v5_panel_ensemble\",\"v5_sequence\",\"v5_lob\",\"v5_tradability\")\n"
         ),
         encoding="utf-8",

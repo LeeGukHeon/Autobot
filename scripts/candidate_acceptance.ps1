@@ -94,6 +94,7 @@ param(
     [string[]]$RestartUnits = @(),
     [string[]]$KnownRuntimeUnits = @("autobot-paper-v5.service", "autobot-live-alpha.service"),
     [bool]$AutoRestartKnownUnits = $true,
+    [bool]$ReuseDependencyRuns = $false,
     [switch]$EnableVariantMatrixSelection,
     [switch]$EnableFusionInputAblationMatrix,
     [switch]$SkipDailyPipeline,
@@ -666,15 +667,29 @@ function Invoke-DependencyTrainerChain {
             throw ("unsupported dependency trainer: " + $trainerName)
         }
         $dependencyRunScope = ([string]$RunScope).Trim() + "_dependency_" + $trainerName
-        $reusableDependencyRun = Resolve-ReusableDependencyTrainerRun `
-            -RegistryRoot $resolvedRegistryRoot `
-            -TrainerName $trainerName `
-            -ModelFamily $dependencyModelFamily `
-            -TrainStartDate $TrainStartDate `
-            -TrainEndDate $TrainEndDate `
-            -ExecutionEvalStartDate $ExecutionEvalStartDate `
-            -ExecutionEvalEndDate $ExecutionEvalEndDate `
-            -ExpectedSnapshotId $script:dataPlatformReadySnapshotId
+        $reusableDependencyRun = if ($ReuseDependencyRuns) {
+            Resolve-ReusableDependencyTrainerRun `
+                -RegistryRoot $resolvedRegistryRoot `
+                -TrainerName $trainerName `
+                -ModelFamily $dependencyModelFamily `
+                -TrainStartDate $TrainStartDate `
+                -TrainEndDate $TrainEndDate `
+                -ExecutionEvalStartDate $ExecutionEvalStartDate `
+                -ExecutionEvalEndDate $ExecutionEvalEndDate `
+                -ExpectedSnapshotId $script:dataPlatformReadySnapshotId
+        } else {
+            [ordered]@{
+                reusable = $false
+                reason = "DEPENDENCY_REUSE_DISABLED"
+                required_artifacts_complete = $false
+                trainer = $trainerName
+                model_family = $dependencyModelFamily
+                run_dir = ""
+                run_id = ""
+                data_platform_ready_snapshot_id = ""
+                tail_mode = ""
+            }
+        }
         if ($useVariantMatrix -and [bool](Get-PropValue -ObjectValue $reusableDependencyRun -Name "reusable" -DefaultValue $false)) {
             $reusableVariantMetadata = Resolve-RunVariantMetadata `
                 -RunDir ([string](Get-PropValue -ObjectValue $reusableDependencyRun -Name "run_dir" -DefaultValue "")) `
