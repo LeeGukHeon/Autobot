@@ -106,8 +106,15 @@ def normalize_runtime_exit_payload(exit_payload: dict[str, Any] | None) -> dict[
         objective_score=normalized.get("risk_objective_score"),
     )
     if family_compare_status and (family_compare_status != "supported" or not family_compare_supported):
+        fallback_mode = str(
+            normalized.get("mode")
+            or normalized.get("chosen_family")
+            or "hold"
+        ).strip().lower()
+        if fallback_mode not in _EXIT_MODE_VALUES:
+            fallback_mode = "hold"
         derived = {
-            "recommended_exit_mode": "",
+            "recommended_exit_mode": fallback_mode,
             "recommended_exit_mode_source": "execution_backtest_family_compare",
             "recommended_exit_mode_reason_code": "EXIT_FAMILY_INSUFFICIENT_EVIDENCE",
             "exit_mode_compare": {

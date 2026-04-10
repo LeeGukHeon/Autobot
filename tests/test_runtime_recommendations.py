@@ -433,6 +433,63 @@ def test_resolve_runtime_model_alpha_settings_keeps_manual_exit_when_family_comp
     assert state["exit_family_compare_status"] == "insufficient_support"
 
 
+def test_normalize_runtime_recommendations_keeps_concrete_exit_mode_when_family_compare_is_insufficient() -> None:
+    payload = normalize_runtime_recommendations_payload(
+        {
+            "exit": {
+                "mode": "hold",
+                "recommended_exit_mode": "",
+                "recommended_exit_mode_source": "execution_backtest_family_compare",
+                "recommended_exit_mode_reason_code": "EXIT_FAMILY_INSUFFICIENT_EVIDENCE",
+                "recommended_hold_bars": 12,
+                "summary": {
+                    "orders_filled": 0,
+                    "realized_pnl_quote": 0.0,
+                    "fill_rate": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "slippage_bps_mean": 0.0,
+                },
+                "risk_summary": {
+                    "orders_filled": 0,
+                    "realized_pnl_quote": 0.0,
+                    "fill_rate": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "slippage_bps_mean": 0.0,
+                },
+                "grid_point": {"hold_bars": 12},
+                "risk_grid_point": {
+                    "hold_bars": 12,
+                    "risk_scaling_mode": "volatility_scaled",
+                    "risk_vol_feature": "rv_36",
+                    "tp_vol_multiplier": 2.5,
+                    "sl_vol_multiplier": 1.5,
+                    "trailing_vol_multiplier": 0.75,
+                },
+                "hold_family": {"status": "insufficient_support", "best_rule_id": "hold_h12", "best_comparable_rule_id": ""},
+                "risk_family": {"status": "supported", "best_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75", "best_comparable_rule_id": "risk_h12_rv_36_tp2p5_sl1p5_tr0p75"},
+                "family_compare": {
+                    "status": "insufficient_support",
+                    "decision": "not_comparable",
+                    "comparable": False,
+                    "reason_codes": ["HOLD_FAMILY_NO_COMPARABLE_RULE"],
+                },
+                "family_compare_status": "insufficient_support",
+                "chosen_family": "hold",
+                "chosen_rule_id": "hold_h12",
+            }
+        }
+    )
+
+    exit_doc = payload["exit"]
+
+    assert exit_doc["recommended_exit_mode"] == "hold"
+    assert exit_doc["recommended_exit_mode_reason_code"] == "EXIT_FAMILY_INSUFFICIENT_EVIDENCE"
+    assert exit_doc["family_compare_status"] == "insufficient_support"
+    assert exit_doc["contract_status"] == "backfilled"
+    assert "recommended_exit_mode" in exit_doc["contract_backfilled_fields"]
+    assert "RECOMMENDED_EXIT_MODE_MISSING" not in exit_doc["contract_issues"]
+
+
 def test_resolve_runtime_model_alpha_settings_surfaces_missing_fusion_top_level_contract_docs() -> None:
     predictor = _dummy_predictor(
         runtime_recommendations={

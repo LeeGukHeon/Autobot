@@ -491,6 +491,100 @@ def test_train_v5_fusion_writes_core_contract_artifacts(tmp_path: Path) -> None:
     assert not (tmp_path / "registry" / "latest.json").exists()
 
 
+def test_train_v5_fusion_deploy_readiness_accepts_backfilled_exit_mode_fallback(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    snapshot_id = "snapshot-fusion-exit-fallback-001"
+    paths = _write_basic_fusion_inputs(registry_root=registry_root, snapshot_id=snapshot_id)
+
+    panel_run_dir = registry_root / "train_v5_panel_ensemble" / "panel-run-basic-001"
+    panel_runtime_recommendations_path = panel_run_dir / "runtime_recommendations.json"
+    panel_runtime_recommendations = json.loads(panel_runtime_recommendations_path.read_text(encoding="utf-8"))
+    panel_runtime_recommendations["exit"] = {
+        "version": 1,
+        "recommended_exit_mode": "",
+        "recommended_exit_mode_source": "execution_backtest_family_compare",
+        "recommended_exit_mode_reason_code": "EXIT_FAMILY_INSUFFICIENT_EVIDENCE",
+        "recommended_hold_bars": 3,
+        "summary": {
+            "orders_filled": 0,
+            "realized_pnl_quote": 0.0,
+            "fill_rate": 0.0,
+            "max_drawdown_pct": 0.0,
+            "slippage_bps_mean": 0.0,
+        },
+        "risk_summary": {
+            "orders_filled": 0,
+            "realized_pnl_quote": 0.0,
+            "fill_rate": 0.0,
+            "max_drawdown_pct": 0.0,
+            "slippage_bps_mean": 0.0,
+        },
+        "grid_point": {"hold_bars": 3},
+        "risk_grid_point": {
+            "hold_bars": 3,
+            "risk_scaling_mode": "volatility_scaled",
+            "risk_vol_feature": "rv_12",
+            "tp_vol_multiplier": 1.5,
+            "sl_vol_multiplier": 1.0,
+            "trailing_vol_multiplier": 0.0,
+        },
+        "mode": "hold",
+        "chosen_family": "hold",
+        "chosen_rule_id": "hold_h3",
+        "hold_family": {
+            "status": "insufficient_support",
+            "best_rule_id": "hold_h3",
+            "best_comparable_rule_id": "",
+        },
+        "risk_family": {
+            "status": "insufficient_support",
+            "best_rule_id": "risk_h3_rv_12_tp1p5_sl1p0_tr0p0",
+            "best_comparable_rule_id": "",
+        },
+        "family_compare": {
+            "status": "insufficient_support",
+            "decision": "not_comparable",
+            "comparable": False,
+            "reason_codes": [
+                "HOLD_FAMILY_NO_COMPARABLE_RULE",
+                "RISK_FAMILY_NO_COMPARABLE_RULE",
+            ],
+        },
+        "family_compare_status": "insufficient_support",
+        "contract_status": "backfilled",
+        "contract_backfilled_fields": ["version", "recommended_exit_mode"],
+    }
+    panel_runtime_recommendations_path.write_text(
+        json.dumps(panel_runtime_recommendations, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=paths["panel"],
+            sequence_input_path=paths["sequence"],
+            lob_input_path=paths["lob"],
+            tradability_input_path=paths["tradability"],
+            registry_root=registry_root,
+            logs_root=tmp_path / "logs",
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            seed=7,
+        )
+    )
+
+    readiness = load_json(result.run_dir / "runtime_deploy_contract_readiness.json")
+
+    assert readiness["pass"] is True
+    assert readiness["primary_reason_code"] == "PASS"
+    assert readiness["component_readiness"]["exit"]["ready"] is True
+    assert readiness["component_readiness"]["exit"]["recommended_exit_mode"] == "hold"
+    assert readiness["component_readiness"]["exit"]["raw_recommended_exit_mode"] == "hold"
+    assert readiness["component_readiness"]["exit"]["fallback_exit_mode"] == "hold"
+
+
 def test_train_v5_fusion_panel_only_input_variant_excludes_auxiliary_experts(tmp_path: Path) -> None:
     registry_root = tmp_path / "registry"
     snapshot_id = "snapshot-fusion-panel-only-001"

@@ -334,7 +334,7 @@ def _load_panel_inference_dataset_window(
     start: str,
     end: str,
     selected_markets_override: tuple[str, ...] | None = None,
-) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any]]:
+) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any], Path]:
     train_config = load_json(run_dir / "train_config.yaml")
     if not train_config:
         raise FileNotFoundError(f"missing train_config.yaml in {run_dir}")
@@ -397,7 +397,7 @@ def _load_panel_inference_dataset_window(
         y_rank_column=str(train_config.get("y_rank_column") or "y_rank"),
         drop_missing_targets=False,
     )
-    return dataset, options, train_config
+    return dataset, options, train_config, runtime_source_root
 
 
 def _panel_runtime_source_market_filter_id(markets: tuple[str, ...]) -> str:
@@ -503,14 +503,14 @@ def _resolve_panel_runtime_export_dataset(
     start: str,
     end: str,
     selected_markets_override: tuple[str, ...] | None = None,
-) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any], list[str], str, str]:
+) -> tuple[Any, TrainV5PanelEnsembleOptions, dict[str, Any], Path, list[str], str, str]:
     requested_selected_markets = (
         [str(item).strip().upper() for item in selected_markets_override if str(item).strip()]
         if selected_markets_override is not None
         else []
     )
     if selected_markets_override is not None:
-        dataset, options, train_config = _load_panel_inference_dataset_window(
+        dataset, options, train_config, runtime_source_root = _load_panel_inference_dataset_window(
             run_dir=run_dir,
             start=start,
             end=end,
@@ -520,6 +520,7 @@ def _resolve_panel_runtime_export_dataset(
             dataset,
             options,
             train_config,
+            runtime_source_root,
             requested_selected_markets,
             "acceptance_common_runtime_universe",
             "",
@@ -529,7 +530,7 @@ def _resolve_panel_runtime_export_dataset(
     options = None
     train_config = None
     try:
-        dataset, options, train_config = _load_panel_inference_dataset_window(run_dir=run_dir, start=start, end=end)
+        dataset, options, train_config, runtime_source_root = _load_panel_inference_dataset_window(run_dir=run_dir, start=start, end=end)
         requested_selected_markets = [
             str(item).strip().upper()
             for item in ((train_config or {}).get("selected_markets") or [])
@@ -539,6 +540,7 @@ def _resolve_panel_runtime_export_dataset(
             dataset,
             options,
             train_config,
+            runtime_source_root,
             requested_selected_markets,
             "train_selected_markets",
             "",
@@ -552,7 +554,7 @@ def _resolve_panel_runtime_export_dataset(
         ]
         if (not requested_selected_markets) or "no feature rows found for the requested train dataset" not in str(exc):
             raise
-        dataset, options, train_config = _load_panel_inference_dataset_window(
+        dataset, options, train_config, runtime_source_root = _load_panel_inference_dataset_window(
             run_dir=run_dir,
             start=start,
             end=end,
@@ -562,10 +564,35 @@ def _resolve_panel_runtime_export_dataset(
             dataset,
             options,
             train_config,
+            runtime_source_root,
             requested_selected_markets,
             "window_available_markets_fallback",
             "TRAIN_SELECTED_MARKETS_EMPTY_IN_RUNTIME_WINDOW",
         )
+
+
+def _with_execution_eval_feature_dataset_root(
+    *,
+    run_dir: Path,
+    options: TrainV5PanelEnsembleOptions,
+) -> TrainV5PanelEnsembleOptions:
+    window = _build_execution_evaluation_window_doc(options=options)
+    start_ts_ms = int(window.get("start_ts_ms") or 0)
+    end_ts_ms = int(window.get("end_ts_ms") or 0)
+    if start_ts_ms <= 0 or end_ts_ms <= 0:
+        return options
+    try:
+        _, _, _, runtime_source_root = _load_panel_inference_dataset_window(
+            run_dir=run_dir,
+            start=str(getattr(options, "execution_acceptance_eval_start", "") or getattr(options, "start", "")).strip(),
+            end=str(getattr(options, "execution_acceptance_eval_end", "") or getattr(options, "end", "")).strip(),
+        )
+    except Exception:
+        return options
+    return replace(
+        options,
+        execution_acceptance_model_feature_dataset_root=runtime_source_root,
+    )
 
 
 def _export_panel_expert_prediction_table_window(
@@ -577,7 +604,7 @@ def _export_panel_expert_prediction_table_window(
     resolve_markets_only: bool = False,
 ) -> dict[str, Any]:
     run_dir = Path(run_dir).resolve()
-    dataset, options, train_config, requested_selected_markets, selected_markets_source, fallback_reason = _resolve_panel_runtime_export_dataset(
+    dataset, options, train_config, runtime_source_root, requested_selected_markets, selected_markets_source, fallback_reason = _resolve_panel_runtime_export_dataset(
         run_dir=run_dir,
         start=start,
         end=end,
@@ -627,6 +654,7 @@ def _export_panel_expert_prediction_table_window(
             "fallback_reason": str(existing_metadata.get("fallback_reason") or ""),
             "export_path": str(export_path),
             "metadata_path": str(metadata_path),
+            "runtime_feature_dataset_root": str(runtime_source_root),
             "reused": True,
             "source_mode": "existing_export",
         }
@@ -659,6 +687,7 @@ def _export_panel_expert_prediction_table_window(
         "selected_markets": [str(item).strip().upper() for item in getattr(dataset, "selected_markets", ())],
         "selected_markets_source": selected_markets_source,
         "fallback_reason": fallback_reason,
+        "runtime_feature_dataset_root": str(runtime_source_root),
     }
     if resolve_markets_only:
         return {
@@ -994,6 +1023,10 @@ def _run_or_reuse_execution_acceptance(
     if existing:
         update_artifact_status(run_dir, execution_acceptance_complete=True)
         return dict(existing)
+    execution_options = _with_execution_eval_feature_dataset_root(
+        run_dir=run_dir,
+        options=options,
+    )
     if duplicate_candidate:
         execution_acceptance = v4._build_duplicate_candidate_execution_acceptance(
             run_id=run_id,
@@ -1001,7 +1034,7 @@ def _run_or_reuse_execution_acceptance(
         )
     else:
         execution_acceptance = v4._run_execution_acceptance_v4(
-            options=options,
+            options=execution_options,
             run_id=run_id,
         )
     execution_acceptance = _annotate_panel_tail_artifact(
@@ -1030,6 +1063,10 @@ def _run_or_reuse_runtime_recommendations(
     resumed: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     live_domain_reweighting = dict(tail_context.get("live_domain_reweighting") or {})
+    execution_options = _with_execution_eval_feature_dataset_root(
+        run_dir=run_dir,
+        options=options,
+    )
     runtime_recommendations = _load_existing_runtime_recommendations(
         existing_tail_artifacts=existing_tail_artifacts
     )
@@ -1041,7 +1078,7 @@ def _run_or_reuse_runtime_recommendations(
             )
         else:
             runtime_recommendations = v4._build_runtime_recommendations_v4(
-                options=options,
+                options=execution_options,
                 run_id=run_id,
                 search_budget_decision=search_budget_decision,
                 runtime_recommendation_cache_path=_runtime_recommendation_search_cache_path(run_dir),
@@ -3202,6 +3239,11 @@ def _options_from_v5_panel_train_config(train_config: dict[str, Any]) -> TrainV5
         execution_acceptance_enabled=bool(base.get("execution_acceptance_enabled", False)),
         execution_acceptance_dataset_name=str(base.get("execution_acceptance_dataset_name", "candles_v1")),
         execution_acceptance_parquet_root=Path(str(base.get("execution_acceptance_parquet_root", "data/parquet"))),
+        execution_acceptance_model_feature_dataset_root=(
+            Path(str(base.get("execution_acceptance_model_feature_dataset_root")))
+            if base.get("execution_acceptance_model_feature_dataset_root")
+            else None
+        ),
         execution_acceptance_output_root=Path(str(base.get("execution_acceptance_output_root", "data/backtest"))),
         execution_acceptance_eval_start=base.get("execution_acceptance_eval_start"),
         execution_acceptance_eval_end=base.get("execution_acceptance_eval_end"),

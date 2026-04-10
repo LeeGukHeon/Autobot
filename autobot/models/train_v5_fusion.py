@@ -1875,13 +1875,20 @@ def _build_fusion_exit_contract_readiness(
     reason_codes: list[str] = []
     seed_dependency_expert_only = _is_dependency_expert_only_runtime_doc(doc, parent_context=parent_context)
     contract_status = str(doc.get("contract_status") or "").strip().lower()
+    recommended_exit_mode = str(doc.get("recommended_exit_mode") or "").strip().lower()
+    fallback_exit_mode = str(doc.get("mode") or doc.get("chosen_family") or "").strip().lower()
+    effective_exit_mode = (
+        recommended_exit_mode
+        if recommended_exit_mode in {"hold", "risk"}
+        else (fallback_exit_mode if fallback_exit_mode in {"hold", "risk"} else "")
+    )
     if seed_dependency_expert_only:
         reason_codes.append("PANEL_DEPENDENCY_EXPERT_ONLY_RUNTIME_SEED")
     if not doc:
         reason_codes.append("EXIT_DOC_MISSING")
     elif contract_status == "invalid":
         reason_codes.append("EXIT_DOC_INVALID")
-    elif str(doc.get("recommended_exit_mode") or "").strip().lower() not in {"hold", "risk"}:
+    elif not effective_exit_mode:
         reason_codes.append("EXIT_MODE_MISSING")
     return {
         "component": "exit",
@@ -1891,7 +1898,9 @@ def _build_fusion_exit_contract_readiness(
         "seed_dependency_expert_only": seed_dependency_expert_only,
         "contract_status": str(doc.get("contract_status") or "").strip(),
         "contract_issues": list(doc.get("contract_issues") or []),
-        "recommended_exit_mode": str(doc.get("recommended_exit_mode") or "").strip().lower(),
+        "recommended_exit_mode": effective_exit_mode,
+        "raw_recommended_exit_mode": recommended_exit_mode,
+        "fallback_exit_mode": fallback_exit_mode,
         "recommended_hold_bars": int(doc.get("recommended_hold_bars") or 0) if doc.get("recommended_hold_bars") not in (None, "") else 0,
         "family_compare_status": str(doc.get("family_compare_status") or "").strip(),
     }

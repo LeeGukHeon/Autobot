@@ -37,6 +37,54 @@ class DummyRegressor:
         return np.asarray(x, dtype=np.float64)[:, 0] + self.bias
 
 
+def test_with_execution_eval_feature_dataset_root_uses_runtime_source_dataset(tmp_path, monkeypatch) -> None:
+    options = TrainV5PanelEnsembleOptions(
+        dataset_root=tmp_path / "features",
+        registry_root=tmp_path / "registry",
+        logs_root=tmp_path / "logs",
+        model_family="train_v5_panel_ensemble",
+        tf="5m",
+        quote="KRW",
+        top_n=20,
+        start="2026-03-01",
+        end="2026-03-31",
+        feature_set="v4",
+        label_set="v3",
+        task="cls",
+        booster_sweep_trials=1,
+        seed=42,
+        nthread=1,
+        batch_rows=128,
+        train_ratio=0.6,
+        valid_ratio=0.2,
+        test_ratio=0.2,
+        embargo_bars=0,
+        fee_bps_est=5.0,
+        safety_bps=2.0,
+        ev_scan_steps=5,
+        ev_min_selected=1,
+        execution_acceptance_enabled=True,
+        execution_acceptance_eval_start="2026-04-02",
+        execution_acceptance_eval_end="2026-04-09",
+    )
+
+    runtime_source_root = tmp_path / "runtime_source" / "2026-04-02__2026-04-09"
+    runtime_source_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        panel_module,
+        "_load_panel_inference_dataset_window",
+        lambda **kwargs: (SimpleNamespace(rows=0), options, {}, runtime_source_root),
+    )
+
+    resolved = panel_module._with_execution_eval_feature_dataset_root(
+        run_dir=tmp_path / "run",
+        options=options,
+    )
+
+    assert resolved.execution_acceptance_model_feature_dataset_root == runtime_source_root
+
+
 def test_train_v5_panel_ensemble_writes_core_contract_artifacts(tmp_path, monkeypatch) -> None:
     dataset = SimpleNamespace(
         rows=4,

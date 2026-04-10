@@ -34,6 +34,7 @@ class ExecutionAcceptanceOptions:
     start_ts_ms: int
     end_ts_ms: int
     feature_set: str
+    model_feature_dataset_root: Path | None = None
     evaluation_window_label: str = "train_window"
     evaluation_window_source: str = "train_command_window"
     dense_grid: bool = False
@@ -141,7 +142,11 @@ def run_model_execution_backtest(
             model_family=str(options.model_family).strip() or None,
             feature_set=str(options.feature_set).strip().lower() or "v4",
             model_registry_root=str(options.registry_root),
-            model_feature_dataset_root=None,
+            model_feature_dataset_root=(
+                str(options.model_feature_dataset_root)
+                if options.model_feature_dataset_root is not None
+                else None
+            ),
             model_alpha=effective_model_alpha_settings,
             output_root_dir=str(options.output_root_dir),
             micro_gate=options.micro_gate,

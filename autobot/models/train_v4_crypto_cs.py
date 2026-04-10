@@ -165,6 +165,7 @@ class TrainV4CryptoCsOptions:
     execution_acceptance_enabled: bool = False
     execution_acceptance_dataset_name: str = "candles_v1"
     execution_acceptance_parquet_root: Path = Path("data/parquet")
+    execution_acceptance_model_feature_dataset_root: Path | None = None
     execution_acceptance_output_root: Path = Path("data/backtest")
     execution_acceptance_eval_start: str | None = None
     execution_acceptance_eval_end: str | None = None

@@ -31,6 +31,7 @@ def _options(tmp_path: Path) -> SimpleNamespace:
         ),
         execution_acceptance_parquet_root=tmp_path / "parquet",
         execution_acceptance_dataset_name="candles_v1",
+        execution_acceptance_model_feature_dataset_root=tmp_path / "runtime_features",
         execution_acceptance_output_root=tmp_path / "backtest",
         execution_acceptance_top_n=20,
         execution_acceptance_dense_grid=False,
@@ -63,6 +64,7 @@ def test_run_execution_acceptance_v4_uses_explicit_evaluation_window(tmp_path: P
         captured["end_ts_ms"] = execution_options.end_ts_ms
         captured["label"] = execution_options.evaluation_window_label
         captured["source"] = execution_options.evaluation_window_source
+        captured["model_feature_dataset_root"] = execution_options.model_feature_dataset_root
         return {"status": "compared"}
 
     report = run_execution_acceptance_v4(
@@ -77,6 +79,7 @@ def test_run_execution_acceptance_v4_uses_explicit_evaluation_window(tmp_path: P
     assert captured["end_ts_ms"] == parse_date_to_ts_ms("2026-03-22", end_of_day=True)
     assert captured["label"] == "certification"
     assert captured["source"] == "candidate_acceptance_certification_window"
+    assert captured["model_feature_dataset_root"] == tmp_path / "runtime_features"
 
 
 def test_build_runtime_recommendations_v4_uses_explicit_evaluation_window(tmp_path: Path) -> None:
@@ -87,6 +90,7 @@ def test_build_runtime_recommendations_v4_uses_explicit_evaluation_window(tmp_pa
         captured["end_ts_ms"] = options.end_ts_ms
         captured["label"] = options.evaluation_window_label
         captured["source"] = options.evaluation_window_source
+        captured["model_feature_dataset_root"] = options.model_feature_dataset_root
         captured["candidate_ref"] = candidate_ref
         captured["grid"] = grid
         captured["cache_path"] = cache_path
@@ -123,6 +127,7 @@ def test_build_runtime_recommendations_v4_uses_explicit_evaluation_window(tmp_pa
     assert captured["end_ts_ms"] == parse_date_to_ts_ms("2026-03-22", end_of_day=True)
     assert captured["label"] == "certification"
     assert captured["source"] == "candidate_acceptance_certification_window"
+    assert captured["model_feature_dataset_root"] == tmp_path / "runtime_features"
     assert captured["candidate_ref"] == "run-001"
     assert captured["grid"] == {"profile": "compact"}
     assert captured["cache_path"] == tmp_path / "runtime_cache.json"
