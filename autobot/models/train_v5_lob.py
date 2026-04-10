@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import gc
 import json
 from pathlib import Path
 import time
@@ -77,6 +78,7 @@ LOB_BACKBONE_IMPL_FAMILIES: dict[str, str] = {
     "hlob_v1": "hlob",
 }
 VALID_LOB_BACKBONES = tuple(LOB_BACKBONE_ALIASES.keys())
+LOB_EXPERT_PREDICTION_CHUNK_ROWS = 2048
 
 
 @dataclass(frozen=True)
@@ -496,6 +498,39 @@ def _build_lob_batch(samples: _LobSamples) -> dict[str, np.ndarray]:
     }
 
 
+def _predict_lob_contract_chunked(
+    *,
+    estimator: V5LobEstimator,
+    batch: dict[str, np.ndarray],
+    chunk_rows: int = LOB_EXPERT_PREDICTION_CHUNK_ROWS,
+) -> dict[str, np.ndarray]:
+    resolved_chunk_rows = max(int(chunk_rows), 1)
+    row_count = 0
+    for value in batch.values():
+        array = np.asarray(value)
+        if array.ndim <= 0:
+            continue
+        row_count = int(array.shape[0])
+        break
+    if row_count <= 0 or row_count <= resolved_chunk_rows:
+        return estimator.predict_lob_contract(batch)
+
+    payload_parts: dict[str, list[np.ndarray]] = {}
+    for start_idx in range(0, row_count, resolved_chunk_rows):
+        end_idx = min(start_idx + resolved_chunk_rows, row_count)
+        chunk_batch = {
+            key: np.asarray(value)[start_idx:end_idx]
+            for key, value in batch.items()
+        }
+        chunk_payload = estimator.predict_lob_contract(chunk_batch)
+        for key, value in chunk_payload.items():
+            payload_parts.setdefault(str(key), []).append(np.asarray(value))
+    return {
+        key: np.concatenate(parts, axis=0) if parts else np.empty(0, dtype=np.float64)
+        for key, parts in payload_parts.items()
+    }
+
+
 def _write_lob_expert_prediction_table(
     *,
     run_dir: Path,
@@ -504,26 +539,99 @@ def _write_lob_expert_prediction_table(
     estimator: V5LobEstimator,
     output_path: Path | None = None,
 ) -> Path:
-    payload = estimator.predict_lob_contract(_build_lob_batch(samples))
     frame = pl.DataFrame(
-        {
-            "market": np.asarray(samples.markets, dtype=object),
-            "ts_ms": np.asarray(samples.ts_ms, dtype=np.int64),
-            "split": np.asarray(split_labels, dtype=object),
-            "support_level": np.asarray(samples.support_level, dtype=object),
-            "y_cls": np.asarray(samples.y_cls, dtype=np.int64),
-            "y_reg": np.asarray(samples.y_rank, dtype=np.float64),
-            "micro_alpha_1s": np.asarray(payload["micro_alpha_1s"], dtype=np.float64),
-            "micro_alpha_5s": np.asarray(payload["micro_alpha_5s"], dtype=np.float64),
-            "micro_alpha_30s": np.asarray(payload["micro_alpha_30s"], dtype=np.float64),
-            "micro_alpha_60s": np.asarray(payload["micro_alpha_60s"], dtype=np.float64),
-            "micro_uncertainty": np.asarray(payload["micro_uncertainty"], dtype=np.float64),
-            "adverse_excursion_30s": np.asarray(payload["adverse_excursion_30s"], dtype=np.float64),
+        schema={
+            "market": pl.Utf8,
+            "ts_ms": pl.Int64,
+            "split": pl.Utf8,
+            "support_level": pl.Utf8,
+            "y_cls": pl.Int64,
+            "y_reg": pl.Float64,
+            "micro_alpha_1s": pl.Float64,
+            "micro_alpha_5s": pl.Float64,
+            "micro_alpha_30s": pl.Float64,
+            "micro_alpha_60s": pl.Float64,
+            "micro_uncertainty": pl.Float64,
+            "adverse_excursion_30s": pl.Float64,
         }
-    ).sort(["ts_ms", "market"])
+    )
     resolved_output_path = Path(output_path) if output_path is not None else (run_dir / "expert_prediction_table.parquet")
     resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(resolved_output_path)
+    temp_output_path = resolved_output_path.with_suffix(resolved_output_path.suffix + ".tmp")
+    if temp_output_path.exists():
+        temp_output_path.unlink()
+    row_count = int(samples.rows)
+    if row_count <= 0:
+        frame.write_parquet(temp_output_path)
+        temp_output_path.replace(resolved_output_path)
+        return resolved_output_path
+
+    market_keys = np.asarray([str(item) for item in samples.markets], dtype=object)
+    sort_order = np.lexsort((market_keys, np.asarray(samples.ts_ms, dtype=np.int64)))
+
+    try:
+        import pyarrow.parquet as pq
+
+        writer = None
+        try:
+            for start_idx in range(0, row_count, LOB_EXPERT_PREDICTION_CHUNK_ROWS):
+                end_idx = min(start_idx + LOB_EXPERT_PREDICTION_CHUNK_ROWS, row_count)
+                chunk_indices = np.asarray(sort_order[start_idx:end_idx], dtype=np.int64)
+                chunk_samples = _slice_lob_samples_by_indices(samples, chunk_indices)
+                chunk_split_labels = np.asarray(split_labels[chunk_indices], dtype=object)
+                chunk_payload = estimator.predict_lob_contract(_build_lob_batch(chunk_samples))
+                chunk_frame = pl.DataFrame(
+                    {
+                        "market": np.asarray(chunk_samples.markets, dtype=object),
+                        "ts_ms": np.asarray(chunk_samples.ts_ms, dtype=np.int64),
+                        "split": np.asarray(chunk_split_labels, dtype=object),
+                        "support_level": np.asarray(chunk_samples.support_level, dtype=object),
+                        "y_cls": np.asarray(chunk_samples.y_cls, dtype=np.int64),
+                        "y_reg": np.asarray(chunk_samples.y_rank, dtype=np.float64),
+                        "micro_alpha_1s": np.asarray(chunk_payload["micro_alpha_1s"], dtype=np.float64),
+                        "micro_alpha_5s": np.asarray(chunk_payload["micro_alpha_5s"], dtype=np.float64),
+                        "micro_alpha_30s": np.asarray(chunk_payload["micro_alpha_30s"], dtype=np.float64),
+                        "micro_alpha_60s": np.asarray(chunk_payload["micro_alpha_60s"], dtype=np.float64),
+                        "micro_uncertainty": np.asarray(chunk_payload["micro_uncertainty"], dtype=np.float64),
+                        "adverse_excursion_30s": np.asarray(chunk_payload["adverse_excursion_30s"], dtype=np.float64),
+                    },
+                    schema=frame.schema,
+                )
+                chunk_table = chunk_frame.to_arrow()
+                if writer is None:
+                    writer = pq.ParquetWriter(str(temp_output_path), chunk_table.schema, compression="zstd")
+                writer.write_table(chunk_table)
+            if writer is None:
+                frame.write_parquet(temp_output_path)
+            else:
+                writer.close()
+                writer = None
+        finally:
+            if writer is not None:
+                writer.close()
+    except ImportError:
+        payload = _predict_lob_contract_chunked(
+            estimator=estimator,
+            batch=_build_lob_batch(samples),
+        )
+        frame = pl.DataFrame(
+            {
+                "market": np.asarray(samples.markets, dtype=object),
+                "ts_ms": np.asarray(samples.ts_ms, dtype=np.int64),
+                "split": np.asarray(split_labels, dtype=object),
+                "support_level": np.asarray(samples.support_level, dtype=object),
+                "y_cls": np.asarray(samples.y_cls, dtype=np.int64),
+                "y_reg": np.asarray(samples.y_rank, dtype=np.float64),
+                "micro_alpha_1s": np.asarray(payload["micro_alpha_1s"], dtype=np.float64),
+                "micro_alpha_5s": np.asarray(payload["micro_alpha_5s"], dtype=np.float64),
+                "micro_alpha_30s": np.asarray(payload["micro_alpha_30s"], dtype=np.float64),
+                "micro_alpha_60s": np.asarray(payload["micro_alpha_60s"], dtype=np.float64),
+                "micro_uncertainty": np.asarray(payload["micro_uncertainty"], dtype=np.float64),
+                "adverse_excursion_30s": np.asarray(payload["adverse_excursion_30s"], dtype=np.float64),
+            }
+        ).sort(["ts_ms", "market"])
+        frame.write_parquet(temp_output_path)
+    temp_output_path.replace(resolved_output_path)
     return resolved_output_path
 
 
@@ -1748,6 +1856,15 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
         sample_weight=samples.sample_weight,
         extra_columns=_build_lob_runtime_extra_columns(samples),
     )
+    del train_loader, valid_loader, optimizer, best_state
+    del valid_outputs, test_outputs, all_outputs
+    del valid_scores, test_scores
+    del train_idx, valid_idx, test_idx
+    del valid_eval_idx, test_eval_idx, valid_eval_positions, test_eval_positions
+    del bridge_fit_mask, support_weight, data_quality_weight, weight_components
+    del bridge_score_model, bridge_alpha_models, bridge_uncertainty_model, bridge_adverse_model
+    del model
+    gc.collect()
     expert_prediction_table_path, train_report_path = _run_lob_expert_tail(
         run_dir=run_dir,
         run_id=run_id,

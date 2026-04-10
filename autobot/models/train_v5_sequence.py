@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import gc
 import hashlib
 import json
 from pathlib import Path
@@ -95,6 +96,7 @@ SEQUENCE_PRETRAIN_IMPL_METHODS: dict[str, str] = {
 }
 VALID_PRETRAIN_METHODS = tuple(SEQUENCE_PRETRAIN_METHOD_ALIASES.keys())
 LEADER_MARKETS: tuple[str, ...] = ("KRW-BTC", "KRW-ETH")
+SEQUENCE_EXPERT_PREDICTION_CHUNK_ROWS = 2048
 
 
 @dataclass(frozen=True)
@@ -428,15 +430,76 @@ def _build_sequence_batch(samples: _SequenceSamples) -> dict[str, np.ndarray]:
     }
 
 
-def _write_sequence_expert_prediction_table(
+def _predict_sequence_contract_chunked(
     *,
-    run_dir: Path,
+    estimator: V5SequenceEstimator,
+    batch: dict[str, np.ndarray],
+    chunk_rows: int = SEQUENCE_EXPERT_PREDICTION_CHUNK_ROWS,
+) -> dict[str, np.ndarray]:
+    resolved_chunk_rows = max(int(chunk_rows), 1)
+    row_count = 0
+    for value in batch.values():
+        array = np.asarray(value)
+        if array.ndim <= 0:
+            continue
+        row_count = int(array.shape[0])
+        break
+    if row_count <= 0 or row_count <= resolved_chunk_rows:
+        return estimator.predict_cache_batch(batch)
+
+    directional_parts: list[np.ndarray] = []
+    uncertainty_parts: list[np.ndarray] = []
+    quantile_parts: list[np.ndarray] = []
+    regime_parts: list[np.ndarray] = []
+    for start_idx in range(0, row_count, resolved_chunk_rows):
+        end_idx = min(start_idx + resolved_chunk_rows, row_count)
+        chunk_batch = {
+            key: np.asarray(value)[start_idx:end_idx]
+            for key, value in batch.items()
+        }
+        chunk_payload = estimator.predict_cache_batch(chunk_batch)
+        directional_parts.append(np.asarray(chunk_payload["directional_probability_primary"], dtype=np.float64))
+        uncertainty_parts.append(np.asarray(chunk_payload["sequence_uncertainty_primary"], dtype=np.float64))
+        quantile_parts.append(np.asarray(chunk_payload["return_quantiles_by_horizon"], dtype=np.float64))
+        regime_parts.append(np.asarray(chunk_payload["regime_embedding"], dtype=np.float64))
+    return {
+        "directional_probability_primary": np.concatenate(directional_parts, axis=0) if directional_parts else np.empty(0, dtype=np.float64),
+        "sequence_uncertainty_primary": np.concatenate(uncertainty_parts, axis=0) if uncertainty_parts else np.empty(0, dtype=np.float64),
+        "return_quantiles_by_horizon": np.concatenate(quantile_parts, axis=0) if quantile_parts else np.empty((0, 0, 0), dtype=np.float64),
+        "regime_embedding": np.concatenate(regime_parts, axis=0) if regime_parts else np.empty((0, 0), dtype=np.float64),
+    }
+
+
+def _build_sequence_expert_prediction_schema(
+    *,
+    samples: _SequenceSamples,
+    regime_embedding_dim: int,
+) -> dict[str, pl.DataType]:
+    schema: dict[str, pl.DataType] = {
+        "market": pl.Utf8,
+        "ts_ms": pl.Int64,
+        "split": pl.Utf8,
+        "support_level": pl.Utf8,
+        "y_cls": pl.Int64,
+        "y_reg": pl.Float64,
+        "directional_probability_primary": pl.Float64,
+        "sequence_uncertainty_primary": pl.Float64,
+    }
+    for horizon in samples.horizons_minutes:
+        for quantile in samples.quantile_levels:
+            schema[f"return_quantile_h{int(horizon)}_q{int(round(float(quantile) * 100))}"] = pl.Float64
+    for emb_idx in range(max(int(regime_embedding_dim), 0)):
+        schema[f"regime_embedding_{int(emb_idx)}"] = pl.Float64
+    return schema
+
+
+def _build_sequence_expert_prediction_chunk_payload(
+    *,
     samples: _SequenceSamples,
     split_labels: np.ndarray,
-    estimator: V5SequenceEstimator,
-    output_path: Path | None = None,
-) -> Path:
-    payload = estimator.predict_cache_batch(_build_sequence_batch(samples))
+    payload: dict[str, np.ndarray],
+    regime_embedding_dim: int,
+) -> dict[str, Any]:
     quantiles = np.asarray(payload["return_quantiles_by_horizon"], dtype=np.float64)
     regime = np.asarray(payload["regime_embedding"], dtype=np.float64)
     frame_payload: dict[str, Any] = {
@@ -453,12 +516,86 @@ def _write_sequence_expert_prediction_table(
         for quantile_idx, quantile in enumerate(samples.quantile_levels):
             frame_payload[f"return_quantile_h{int(horizon)}_q{int(round(float(quantile) * 100))}"] = quantiles[:, horizon_idx, quantile_idx]
     if regime.ndim == 2:
-        for emb_idx in range(regime.shape[1]):
+        for emb_idx in range(min(regime.shape[1], max(int(regime_embedding_dim), 0))):
             frame_payload[f"regime_embedding_{int(emb_idx)}"] = regime[:, emb_idx]
-    frame = pl.DataFrame(frame_payload).sort(["ts_ms", "market"])
+    return frame_payload
+
+
+def _write_sequence_expert_prediction_table(
+    *,
+    run_dir: Path,
+    samples: _SequenceSamples,
+    split_labels: np.ndarray,
+    estimator: V5SequenceEstimator,
+    output_path: Path | None = None,
+) -> Path:
+    schema = _build_sequence_expert_prediction_schema(
+        samples=samples,
+        regime_embedding_dim=int(getattr(estimator, "regime_embedding_dim", 0) or 0),
+    )
+    frame = pl.DataFrame(schema=schema)
     resolved_output_path = Path(output_path) if output_path is not None else (run_dir / "expert_prediction_table.parquet")
     resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(resolved_output_path)
+    temp_output_path = resolved_output_path.with_suffix(resolved_output_path.suffix + ".tmp")
+    if temp_output_path.exists():
+        temp_output_path.unlink()
+    row_count = int(samples.rows)
+    if row_count <= 0:
+        frame.write_parquet(temp_output_path)
+        temp_output_path.replace(resolved_output_path)
+        return resolved_output_path
+
+    market_keys = np.asarray([str(item) for item in samples.markets], dtype=object)
+    sort_order = np.lexsort((market_keys, np.asarray(samples.ts_ms, dtype=np.int64)))
+
+    try:
+        import pyarrow.parquet as pq
+
+        writer = None
+        try:
+            for start_idx in range(0, row_count, SEQUENCE_EXPERT_PREDICTION_CHUNK_ROWS):
+                end_idx = min(start_idx + SEQUENCE_EXPERT_PREDICTION_CHUNK_ROWS, row_count)
+                chunk_indices = np.asarray(sort_order[start_idx:end_idx], dtype=np.int64)
+                chunk_samples = _slice_sequence_samples_by_indices(samples, chunk_indices)
+                chunk_split_labels = np.asarray(split_labels[chunk_indices], dtype=object)
+                chunk_payload = estimator.predict_cache_batch(_build_sequence_batch(chunk_samples))
+                chunk_frame = pl.DataFrame(
+                    _build_sequence_expert_prediction_chunk_payload(
+                        samples=chunk_samples,
+                        split_labels=chunk_split_labels,
+                        payload=chunk_payload,
+                        regime_embedding_dim=int(getattr(estimator, "regime_embedding_dim", 0) or 0),
+                    ),
+                    schema=schema,
+                )
+                chunk_table = chunk_frame.to_arrow()
+                if writer is None:
+                    writer = pq.ParquetWriter(str(temp_output_path), chunk_table.schema, compression="zstd")
+                writer.write_table(chunk_table)
+            if writer is None:
+                frame.write_parquet(temp_output_path)
+            else:
+                writer.close()
+                writer = None
+        finally:
+            if writer is not None:
+                writer.close()
+    except ImportError:
+        payload = _predict_sequence_contract_chunked(
+            estimator=estimator,
+            batch=_build_sequence_batch(samples),
+        )
+        frame = pl.DataFrame(
+            _build_sequence_expert_prediction_chunk_payload(
+                samples=samples,
+                split_labels=np.asarray(split_labels, dtype=object),
+                payload=payload,
+                regime_embedding_dim=int(getattr(estimator, "regime_embedding_dim", 0) or 0),
+            ),
+            schema=schema,
+        ).sort(["ts_ms", "market"])
+        frame.write_parquet(temp_output_path)
+    temp_output_path.replace(resolved_output_path)
     return resolved_output_path
 
 
@@ -2413,6 +2550,15 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
         sample_weight=samples.sample_weight,
         extra_columns=_build_sequence_runtime_extra_columns(samples),
     )
+    del train_loader, valid_loader, optimizer, best_state
+    del valid_outputs, test_outputs, all_outputs
+    del train_idx, valid_idx, test_idx
+    del valid_eval_idx, test_eval_idx, valid_eval_positions, test_eval_positions
+    del bridge_fit_mask, bridge_probability_model, bridge_quantile_models
+    del support_weight, data_quality_weight, weight_components
+    del pretrain_encoder_state, pretrain_report
+    del model
+    gc.collect()
     expert_prediction_table_path, train_report_path = _run_sequence_expert_tail(
         run_dir=run_dir,
         run_id=run_id,

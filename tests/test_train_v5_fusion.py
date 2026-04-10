@@ -6,12 +6,16 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from autobot.live.candidate_canary_report import build_candidate_canary_report
+from autobot.live.state_store import LiveStateStore
+from autobot.models.predictor import load_predictor_from_registry
 from autobot.models.registry import load_json
 from autobot.models.train_v5_fusion import (
     TrainV5FusionOptions,
     resume_v5_fusion_tail,
     train_and_register_v5_fusion,
 )
+from autobot.paper.live_features_v5 import LiveFeatureProviderV5
 from autobot.models.v5_expert_runtime_export import parse_operating_date_to_ts_ms
 
 
@@ -1708,3 +1712,110 @@ def test_train_v5_fusion_fails_on_runtime_lob_coverage_gap(tmp_path: Path) -> No
     )
     with pytest.raises(ValueError, match="(LOB_RUNTIME_WINDOW_GAP|FUSION_RUNTIME_LOB_COVERAGE_GAP)"):
         train_and_register_v5_fusion(options)
+
+
+def test_train_v5_fusion_outputs_feed_candidate_canary_and_live_v5_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project_root = tmp_path / "project"
+    registry_root = project_root / "models" / "registry"
+    logs_root = project_root / "logs"
+    snapshot_id = "snapshot-fusion-consumer-001"
+    paths = _write_basic_fusion_inputs(registry_root=registry_root, snapshot_id=snapshot_id)
+    runtime_rows = _runtime_rows_for("2026-03-28")
+    panel_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_panel_ensemble" / "panel-run-basic-001" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "final_rank_score": 0.41, "final_expected_return": 0.11, "final_expected_es": 0.02, "final_tradability": 0.8, "final_uncertainty": 0.05, "final_alpha_lcb": 0.04} for row in runtime_rows],
+    )
+    _write_runtime_export_metadata(panel_runtime, start="2026-03-28", end="2026-03-28", coverage_dates=["2026-03-28"])
+    sequence_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_sequence" / "sequence-run-basic-001" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "directional_probability_primary": 0.51, "sequence_uncertainty_primary": 0.04, "return_quantile_h3_q10": 0.01, "return_quantile_h3_q50": 0.02, "return_quantile_h3_q90": 0.03, "regime_embedding_0": 0.1} for row in runtime_rows],
+    )
+    _write_runtime_export_metadata(
+        sequence_runtime,
+        start="2026-03-28",
+        end="2026-03-28",
+        coverage_dates=["2026-03-28"],
+        anchor_export_path=str(panel_runtime.resolve()),
+    )
+    lob_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_lob" / "lob-run-basic-001" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=[{**row, "support_level": "strict_full", "micro_alpha_1s": 0.11, "micro_alpha_5s": 0.12, "micro_alpha_30s": 0.13, "micro_alpha_60s": 0.14, "micro_uncertainty": 0.03, "adverse_excursion_30s": 0.02} for row in runtime_rows],
+    )
+    _write_runtime_export_metadata(
+        lob_runtime,
+        start="2026-03-28",
+        end="2026-03-28",
+        coverage_dates=["2026-03-28"],
+        anchor_export_path=str(panel_runtime.resolve()),
+    )
+    tradability_runtime = _write_runtime_export(
+        table_path=registry_root / "train_v5_tradability" / "tradability-run-basic-001" / "_runtime_exports" / "2026-03-28__2026-03-28" / "expert_prediction_table.parquet",
+        rows=_tradability_rows(runtime_rows),
+    )
+    _write_runtime_export_metadata(
+        tradability_runtime,
+        start="2026-03-28",
+        end="2026-03-28",
+        coverage_dates=["2026-03-28"],
+        anchor_export_path=str(panel_runtime.resolve()),
+    )
+
+    result = train_and_register_v5_fusion(
+        TrainV5FusionOptions(
+            panel_input_path=paths["panel"],
+            sequence_input_path=paths["sequence"],
+            lob_input_path=paths["lob"],
+            tradability_input_path=paths["tradability"],
+            panel_runtime_input_path=panel_runtime,
+            sequence_runtime_input_path=sequence_runtime,
+            lob_runtime_input_path=lob_runtime,
+            tradability_runtime_input_path=tradability_runtime,
+            registry_root=registry_root,
+            logs_root=logs_root,
+            model_family="train_v5_fusion",
+            quote="KRW",
+            start="2026-03-27",
+            end="2026-03-27",
+            runtime_start="2026-03-28",
+            runtime_end="2026-03-28",
+            seed=29,
+            stacker_family="linear",
+        )
+    )
+
+    db_path = project_root / "data" / "state" / "live_canary" / "live_state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with LiveStateStore(db_path):
+        pass
+        report = build_candidate_canary_report(db_path, run_id=result.run_id)
+        assert report["variant_profile"]["fusion_stacker_family"] == "linear"
+        assert report["variant_profile"]["fusion_variant_name"] == "linear"
+        assert report["variant_profile"]["run_id"] == result.run_id
+
+    predictor = load_predictor_from_registry(
+        registry_root=registry_root,
+        model_ref=result.run_id,
+        model_family="train_v5_fusion",
+    )
+    provider = LiveFeatureProviderV5.__new__(LiveFeatureProviderV5)
+    provider._predictor = predictor  # type: ignore[attr-defined]
+    provider._registry_root = registry_root  # type: ignore[attr-defined]
+    provider._panel_predictor = None  # type: ignore[attr-defined]
+    provider._sequence_predictor = None  # type: ignore[attr-defined]
+    provider._lob_predictor = None  # type: ignore[attr-defined]
+
+    captured: list[tuple[str, str]] = []
+
+    def _fake_load_predictor_from_registry(*, registry_root: Path, model_ref: str, model_family: str):
+        captured.append((model_family, model_ref))
+        return {"model_family": model_family, "run_id": model_ref}
+
+    monkeypatch.setattr("autobot.paper.live_features_v5.load_predictor_from_registry", _fake_load_predictor_from_registry)
+
+    provider._mode = provider._resolve_mode()  # type: ignore[attr-defined]
+    provider._configure_child_predictors()  # type: ignore[attr-defined]
+
+    assert provider._mode == "FUSION"  # type: ignore[attr-defined]
+    assert ("train_v5_panel_ensemble", "panel-run-basic-001") in captured
+    assert ("train_v5_sequence", "sequence-run-basic-001") in captured
+    assert ("train_v5_lob", "lob-run-basic-001") in captured

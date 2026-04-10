@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import gc
 import hashlib
 import json
 from pathlib import Path
@@ -2903,6 +2904,18 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         runtime_recommendations["runtime_deploy_contract_summary"]
     )
     promotion_payload["fusion_non_regression_summary"] = dict(runtime_recommendations["fusion_non_regression_summary"])
+    tail_input_contract = train_input_bundle.input_contract | {
+        "feature_contract": train_input_bundle.input_contract.get("feature_contract", {})
+    }
+    del merged, x, y_cls, y_reg, y_es, y_tradability, ts_ms, markets
+    del labels, masks, train_mask, valid_mask, test_mask
+    del weight_components, sample_weight
+    del valid_return_pred, uncertainty_target
+    del valid_contract, test_contract
+    del runtime_merged, runtime_x, runtime_y_cls, runtime_y_reg, runtime_markets, runtime_ts_ms, runtime_split_labels
+    del runtime_weight_components
+    del train_input_bundle, runtime_input_bundle
+    gc.collect()
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_id,
@@ -2912,7 +2925,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
         test_metrics=test_metrics,
         data_platform_ready_snapshot_id=data_fingerprint.get("data_platform_ready_snapshot_id"),
         runtime_dataset_root=runtime_dataset_written_root,
-        input_contract=train_input_bundle.input_contract | {"feature_contract": train_input_bundle.input_contract.get("feature_contract", {})},
+        input_contract=tail_input_contract,
         runtime_input_contract=runtime_input_contract,
         runtime_recommendations=runtime_recommendations,
         promotion_payload=promotion_payload,
@@ -3159,6 +3172,10 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         runtime_recommendations["runtime_deploy_contract_summary"]
     )
     promotion_payload["fusion_non_regression_summary"] = dict(runtime_recommendations["fusion_non_regression_summary"])
+    tail_input_contract = dict(input_bundle.input_contract)
+    del merged, x, labels, masks, valid_mask, y_reg, valid_contract
+    del runtime_merged, runtime_x, runtime_weight_components
+    gc.collect()
     runtime_artifacts, train_report_path = _run_fusion_tail(
         run_dir=run_dir,
         run_id=run_dir.name,
@@ -3168,7 +3185,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
         test_metrics=test_metrics,
         data_platform_ready_snapshot_id=data_platform_ready_snapshot_id,
         runtime_dataset_root=runtime_dataset_written_root,
-        input_contract=input_bundle.input_contract,
+        input_contract=tail_input_contract,
         runtime_input_contract=runtime_input_contract,
         runtime_recommendations=runtime_recommendations,
         promotion_payload=promotion_payload,
