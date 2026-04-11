@@ -8,6 +8,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+_JSONL_FLUSH_EVERY = 256
+_CSV_FLUSH_EVERY = 64
+
 
 def _to_jsonable(value: Any) -> Any:
     if is_dataclass(value):
@@ -62,8 +65,15 @@ class JsonlEventStore:
         if self._equity_fp is not None and self._equity_writer is not None and self._equity_fp.tell() == 0:
             self._equity_writer.writeheader()
             self._equity_fp.flush()
+        self._pending_jsonl_writes = {
+            "events": 0,
+            "orders": 0,
+            "fills": 0,
+        }
+        self._pending_equity_writes = 0
 
     def close(self) -> None:
+        self.flush()
         if self._events_fp is not None:
             self._events_fp.close()
         if self._orders_fp is not None:
@@ -88,16 +98,19 @@ class JsonlEventStore:
             "payload": _to_jsonable(payload or {}),
         }
         self._write_jsonl(self._events_fp, record)
+        self._bump_jsonl_counter("events")
 
     def append_order(self, order: Any) -> None:
         if self._orders_fp is None:
             return
         self._write_jsonl(self._orders_fp, _to_jsonable(order))
+        self._bump_jsonl_counter("orders")
 
     def append_fill(self, fill: Any) -> None:
         if self._fills_fp is None:
             return
         self._write_jsonl(self._fills_fp, _to_jsonable(fill))
+        self._bump_jsonl_counter("fills")
 
     def append_equity(self, snapshot: Any) -> None:
         if self._equity_writer is None or self._equity_fp is None:
@@ -118,9 +131,37 @@ class JsonlEventStore:
             "open_positions": int(open_positions),
         }
         self._equity_writer.writerow(row)
-        self._equity_fp.flush()
+        self._pending_equity_writes += 1
+        if self._pending_equity_writes >= _CSV_FLUSH_EVERY:
+            self._equity_fp.flush()
+            self._pending_equity_writes = 0
+
+    def flush(self) -> None:
+        if self._events_fp is not None:
+            self._events_fp.flush()
+            self._pending_jsonl_writes["events"] = 0
+        if self._orders_fp is not None:
+            self._orders_fp.flush()
+            self._pending_jsonl_writes["orders"] = 0
+        if self._fills_fp is not None:
+            self._fills_fp.flush()
+            self._pending_jsonl_writes["fills"] = 0
+        if self._equity_fp is not None:
+            self._equity_fp.flush()
+            self._pending_equity_writes = 0
+
+    def _bump_jsonl_counter(self, key: str) -> None:
+        self._pending_jsonl_writes[key] = int(self._pending_jsonl_writes.get(key, 0)) + 1
+        if self._pending_jsonl_writes[key] >= _JSONL_FLUSH_EVERY:
+            handle = {
+                "events": self._events_fp,
+                "orders": self._orders_fp,
+                "fills": self._fills_fp,
+            }.get(key)
+            if handle is not None:
+                handle.flush()
+            self._pending_jsonl_writes[key] = 0
 
     @staticmethod
     def _write_jsonl(handle: Any, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-        handle.flush()
