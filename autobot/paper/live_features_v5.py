@@ -25,6 +25,7 @@ from autobot.models.train_v5_sequence import (
     _build_pooled_sequence_features,
     _pooled_feature_names,
 )
+from autobot.models.train_v5_tradability import _select_tradability_feature_matrix
 from autobot.strategy.micro_snapshot import MicroSnapshot, MicroSnapshotProvider
 from autobot.upbit.ws.models import TickerEvent
 
@@ -91,6 +92,7 @@ class LiveFeatureProviderV5:
         self._panel_predictor: ModelPredictor | None = None
         self._sequence_predictor: ModelPredictor | None = None
         self._lob_predictor: ModelPredictor | None = None
+        self._tradability_predictor: ModelPredictor | None = None
         self._configure_child_predictors()
 
         base_feature_columns: Sequence[str] = ()
@@ -149,6 +151,7 @@ class LiveFeatureProviderV5:
         self._panel_predictor = self._load_predictor_from_input_path(input_experts.get("panel"))
         self._sequence_predictor = self._load_predictor_from_input_path(input_experts.get("sequence"))
         self._lob_predictor = self._load_predictor_from_input_path(input_experts.get("lob"))
+        self._tradability_predictor = self._load_predictor_from_input_path(input_experts.get("tradability"))
 
     def _load_predictor_from_input_path(self, path_value: Any) -> ModelPredictor | None:
         payload = dict(path_value or {}) if isinstance(path_value, dict) else {}
@@ -649,6 +652,43 @@ class LiveFeatureProviderV5:
             "lob_global_tensor": lob_global_batch,
             "known_covariates": known_covariates_batch,
             "pooled_features": pooled,
+            "support_payload": self._build_support_payload(
+                second_frame=second_frame,
+                minute_frame=minute_frame,
+                micro_frame=micro_frame,
+                lob_frame=lob_frame,
+            ),
+        }
+
+    def _build_support_payload(
+        self,
+        *,
+        second_frame: pl.DataFrame,
+        minute_frame: pl.DataFrame,
+        micro_frame: pl.DataFrame,
+        lob_frame: pl.DataFrame,
+    ) -> dict[str, float]:
+        required_steps = {
+            "second": 120,
+            "minute": 30,
+            "micro": 30,
+            "lob": 32,
+        }
+        ratios = {
+            "second": min(float(second_frame.height) / float(required_steps["second"]), 1.0),
+            "minute": min(float(minute_frame.height) / float(required_steps["minute"]), 1.0),
+            "micro": min(float(micro_frame.height) / float(required_steps["micro"]), 1.0),
+            "lob": min(float(lob_frame.height) / float(required_steps["lob"]), 1.0),
+        }
+        is_strict = all(value >= 0.999999 for value in ratios.values())
+        return {
+            "second_coverage_ratio": float(ratios["second"]),
+            "minute_coverage_ratio": float(ratios["minute"]),
+            "micro_coverage_ratio": float(ratios["micro"]),
+            "lob_coverage_ratio": float(ratios["lob"]),
+            "support_is_strict": 1.0 if is_strict else 0.0,
+            "support_is_reduced": 0.0 if is_strict else 1.0,
+            "support_score": 2.0 if is_strict else 1.0,
         }
 
     def _build_sequence_feature_values(self, *, market: str, ts_ms: int) -> dict[str, float]:
@@ -681,6 +721,7 @@ class LiveFeatureProviderV5:
         payload = self._build_online_sequence_payload(market=market, ts_ms=ts_ms)
         if payload is None:
             return {}
+        support_payload = dict(payload.get("support_payload") or {})
 
         panel_matrix = np.asarray(
             [[float(_safe_float(base_row.get(name)) or 0.0) for name in self._panel_predictor.feature_columns]],
@@ -692,6 +733,9 @@ class LiveFeatureProviderV5:
             if key == "uncertainty_available":
                 continue
             fusion_values[f"panel_{key}"] = float(np.asarray(values, dtype=np.float64)[0])
+        fusion_values["sequence_support_is_strict"] = float(support_payload.get("support_is_strict", 0.0) or 0.0)
+        fusion_values["sequence_support_is_reduced"] = float(support_payload.get("support_is_reduced", 0.0) or 0.0)
+        fusion_values["sequence_support_score"] = float(support_payload.get("support_score", 0.0) or 0.0)
 
         sequence_estimator = self._sequence_predictor.model_bundle.get("estimator")
         if sequence_estimator is None or not hasattr(sequence_estimator, "predict_cache_batch"):
@@ -736,6 +780,24 @@ class LiveFeatureProviderV5:
         )
         for key, values in lob_payload.items():
             fusion_values[f"lob_{key}"] = float(np.asarray(values, dtype=np.float64)[0])
+        fusion_values["lob_support_is_strict"] = float(support_payload.get("support_is_strict", 0.0) or 0.0)
+        fusion_values["lob_support_is_reduced"] = float(support_payload.get("support_is_reduced", 0.0) or 0.0)
+        fusion_values["lob_support_score"] = float(support_payload.get("support_score", 0.0) or 0.0)
+
+        if self._tradability_predictor is not None:
+            tradability_estimator = self._tradability_predictor.model_bundle.get("estimator")
+            tradability_feature_names = tuple(
+                str(name).strip() for name in self._tradability_predictor.feature_columns if str(name).strip()
+            )
+            if tradability_estimator is not None and hasattr(tradability_estimator, "predict_tradability_contract") and tradability_feature_names:
+                tradability_frame = pl.DataFrame(
+                    [{name: float(_safe_float(fusion_values.get(name)) or 0.0) for name in tradability_feature_names}]
+                )
+                tradability_matrix = _select_tradability_feature_matrix(tradability_frame, tradability_feature_names)
+                tradability_payload = tradability_estimator.predict_tradability_contract(tradability_matrix)
+                for key, values in tradability_payload.items():
+                    fusion_values[f"tradability_{key}"] = float(np.asarray(values, dtype=np.float64)[0])
+                fusion_values["tradability_present"] = 1.0
         fusion_values["panel_present"] = 1.0
         fusion_values["sequence_present"] = 1.0
         fusion_values["lob_present"] = 1.0

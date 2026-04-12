@@ -1913,3 +1913,4 @@ def test_train_v5_fusion_outputs_feed_candidate_canary_and_live_v5_provider(tmp_
     assert ("train_v5_panel_ensemble", "panel-run-basic-001") in captured
     assert ("train_v5_sequence", "sequence-run-basic-001") in captured
     assert ("train_v5_lob", "lob-run-basic-001") in captured
+    assert ("train_v5_tradability", "tradability-run-basic-001") in captured
