@@ -123,9 +123,22 @@ def load_feature_platform_runtime_contract(
     retention_registry = _load_dict(Path(project_root) / "data" / "_meta" / "dataset_retention_registry.json")
     quality_budget = dict(certification_report.get("quality_budget") or {}) if isinstance(certification_report.get("quality_budget"), dict) else {}
     lineage = dict(certification_report.get("lineage") or {}) if isinstance(certification_report.get("lineage"), dict) else {}
+    validate_status = str(validate_report.get("status") or "").strip().upper()
+    validate_fail_files = _coerce_int(validate_report.get("fail_files"))
+    validate_leakage_smoke = str(validate_report.get("leakage_smoke") or "").strip().upper()
+    validate_checked_files = _coerce_int(validate_report.get("checked_files")) or 0
+    validate_ok_files = _coerce_int(validate_report.get("ok_files")) or 0
+    validate_warn_files = _coerce_int(validate_report.get("warn_files")) or 0
     validate_pass = (
-        str(validate_report.get("status") or "").strip().upper() in {"PASS", "OK"}
-        and _coerce_int(validate_report.get("fail_files")) in (None, 0)
+        (
+            validate_status in {"PASS", "OK"}
+            and validate_fail_files in (None, 0)
+        )
+        or (
+            validate_fail_files in (None, 0)
+            and validate_leakage_smoke in {"", "PASS", "OK"}
+            and max(validate_checked_files, (validate_ok_files + validate_warn_files)) > 0
+        )
     )
     parity_pass = (
         str(parity_report.get("status") or "").strip().upper() == "PASS"

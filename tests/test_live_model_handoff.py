@@ -11,6 +11,7 @@ import pytest
 
 import autobot.live.daemon as daemon_module
 from autobot.live.daemon import LiveDaemonSettings, run_live_sync_daemon
+from autobot.live.model_handoff import load_feature_platform_runtime_contract
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
 from autobot.live.state_store import LiveStateStore
 
@@ -256,6 +257,41 @@ def _seed_runtime_contract(
         },
     )
     return registry_root, family_dir / "champion.json", ws_raw_root, ws_meta_dir
+
+
+def test_load_feature_platform_runtime_contract_accepts_validate_without_status_when_fail_files_zero(tmp_path: Path) -> None:
+    features_meta_dir = tmp_path / "data" / "features" / "features_v4" / "_meta"
+    _write_json(
+        features_meta_dir / "validate_report.json",
+        {
+            "checked_files": 50,
+            "ok_files": 49,
+            "warn_files": 1,
+            "fail_files": 0,
+            "leakage_smoke": "PASS",
+        },
+    )
+    _write_json(
+        features_meta_dir / "live_feature_parity_report.json",
+        {
+            "status": "PASS",
+            "acceptable": True,
+            "sampled_pairs": 20,
+        },
+    )
+    _write_json(
+        features_meta_dir / "feature_dataset_certification.json",
+        {
+            "status": "PASS",
+            "pass": True,
+        },
+    )
+
+    contract = load_feature_platform_runtime_contract(project_root=tmp_path, feature_set="v4")
+
+    assert contract["artifacts_present"] is True
+    assert contract["feature_platform_ready"] is True
+    assert contract["feature_platform_reason_codes"] == []
 
 
 def test_live_startup_binds_runtime_model_and_ws_public_contract(tmp_path: Path, monkeypatch) -> None:
