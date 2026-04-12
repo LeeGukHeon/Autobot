@@ -25,6 +25,7 @@ from .data import (
     IngestOptions,
     build_candle_inventory,
     default_inventory_window,
+    expected_interval_ms,
     ingest_dataset,
     parse_utc_ts_ms,
     sniff_csv_files,
@@ -787,7 +788,7 @@ def build_parser() -> argparse.ArgumentParser:
     features_subparsers = features_parser.add_subparsers(dest="features_command", required=True)
 
     features_build_parser = features_subparsers.add_parser("build", help="Build features dataset (v1/v2/v3).")
-    features_build_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_build_parser.add_argument("--tf", required=True, help="Timeframe, ex: 1m")
     features_build_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_build_parser.add_argument("--top-n", type=int, help="Universe size")
     features_build_parser.add_argument("--start", help="Start date YYYY-MM-DD")
@@ -814,7 +815,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     features_validate_parser = features_subparsers.add_parser("validate", help="Validate built feature dataset.")
-    features_validate_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_validate_parser.add_argument("--tf", required=True, help="Timeframe, ex: 1m")
     features_validate_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_validate_parser.add_argument("--top-n", type=int, help="Universe size")
     features_validate_parser.add_argument("--start", help="Optional start date YYYY-MM-DD (v3)")
@@ -824,12 +825,12 @@ def build_parser() -> argparse.ArgumentParser:
     features_validate_parser.add_argument("--join-match-fail", type=float, help="v2 join match fail threshold")
 
     features_sample_parser = features_subparsers.add_parser("sample", help="Print feature rows for one market.")
-    features_sample_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    features_sample_parser.add_argument("--tf", required=True, help="Timeframe, ex: 1m")
     features_sample_parser.add_argument("--market", required=True, help="Market, ex: KRW-BTC")
     features_sample_parser.add_argument("--rows", type=int, default=10)
 
     features_stats_parser = features_subparsers.add_parser("stats", help="Show feature dataset summary.")
-    features_stats_parser.add_argument("--tf", default="5m", help="Timeframe, ex: 5m")
+    features_stats_parser.add_argument("--tf", default="5m", help="Timeframe, ex: 1m")
     features_stats_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     features_stats_parser.add_argument("--top-n", type=int, help="Universe size")
     features_stats_parser.add_argument("--feature-set", default="v1", choices=("v1", "v2", "v3", "v4"))
@@ -839,7 +840,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
     model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability", "v5_fusion"))
-    model_train_parser.add_argument("--tf", help="Timeframe, ex: 5m")
+    model_train_parser.add_argument("--tf", help="Timeframe, ex: 1m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
     model_train_parser.add_argument("--start", help="Start date YYYY-MM-DD")
@@ -962,7 +963,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run v5 variant matrix training and emit a single chosen winner payload.",
     )
     model_train_variant_parser.add_argument("--trainer", required=True, choices=("v5_sequence", "v5_lob", "v5_fusion"))
-    model_train_variant_parser.add_argument("--tf", help="Timeframe, ex: 5m")
+    model_train_variant_parser.add_argument("--tf", help="Timeframe, ex: 1m")
     model_train_variant_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_variant_parser.add_argument("--top-n", type=int, help="Universe size")
     model_train_variant_parser.add_argument("--start", help="Start date YYYY-MM-DD")
@@ -1118,7 +1119,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     model_ablate_parser = model_subparsers.add_parser("ablate", help="Run A0~A4 feature ablations on v2 dataset.")
     model_ablate_parser.add_argument("--feature-set", default="v2", choices=("v2",))
-    model_ablate_parser.add_argument("--tf", help="Timeframe, ex: 5m")
+    model_ablate_parser.add_argument("--tf", help="Timeframe, ex: 1m")
     model_ablate_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_ablate_parser.add_argument("--top-n", type=int, help="Universe size")
     model_ablate_parser.add_argument("--start", help="Start date YYYY-MM-DD")
@@ -1135,7 +1136,7 @@ def build_parser() -> argparse.ArgumentParser:
     modelbt_run_parser = modelbt_subparsers.add_parser("run", help="Run model-signal backtest proxy.")
     modelbt_run_parser.add_argument("--model-ref", required=True, help="latest|champion|run_id|run_dir")
     modelbt_run_parser.add_argument("--model-family", help="Registry family, ex: train_v3_mtf_micro")
-    modelbt_run_parser.add_argument("--tf", required=True, help="Timeframe, ex: 5m")
+    modelbt_run_parser.add_argument("--tf", required=True, help="Timeframe, ex: 1m")
     modelbt_run_parser.add_argument("--quote", default="KRW", help="Quote filter, ex: KRW")
     modelbt_run_parser.add_argument("--top-n", type=int, default=50, help="Universe size")
     modelbt_run_parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
@@ -1207,7 +1208,7 @@ def build_parser() -> argparse.ArgumentParser:
     paper_run_parser.add_argument("--quote", help="Quote currency, ex: KRW")
     paper_run_parser.add_argument("--top-n", type=int)
     paper_run_parser.add_argument("--strategy", choices=("candidates_v1", "model_alpha_v1"))
-    paper_run_parser.add_argument("--tf", help="Model timeframe when strategy=model_alpha_v1, ex: 5m")
+    paper_run_parser.add_argument("--tf", help="Model timeframe when strategy=model_alpha_v1, ex: 1m")
     paper_run_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     paper_run_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
     paper_run_parser.add_argument("--feature-set", choices=("v1", "v2", "v3", "v4"))
@@ -1285,7 +1286,7 @@ def build_parser() -> argparse.ArgumentParser:
     paper_alpha_parser.add_argument("--duration-sec", type=int, default=600, help="Run duration in seconds. Use 0 to run until stopped.")
     paper_alpha_parser.add_argument("--quote", help="Quote currency, ex: KRW")
     paper_alpha_parser.add_argument("--top-n", type=int)
-    paper_alpha_parser.add_argument("--tf", help="Model timeframe, ex: 5m")
+    paper_alpha_parser.add_argument("--tf", help="Model timeframe, ex: 1m")
     paper_alpha_parser.add_argument("--model-ref", help="Registry model ref, ex: champion_v3")
     paper_alpha_parser.add_argument("--model-family", help="Registry model family, ex: train_v3_mtf_micro")
     paper_alpha_parser.add_argument("--feature-set", choices=("v1", "v2", "v3", "v4"))
@@ -3093,6 +3094,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                         start=str(args.start or defaults["start"]).strip(),
                         end=str(args.end or defaults["end"]).strip(),
                         seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                        operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                         run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
                         batch_size=int(getattr(args, "sequence_batch_size", None) or 16),
                         pretrain_epochs=int(getattr(args, "sequence_pretrain_epochs", None) or 1),
@@ -3126,6 +3128,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                         start=str(args.start or defaults["start"]).strip(),
                         end=str(args.end or defaults["end"]).strip(),
                         seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                        operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                         run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
                         batch_size=int(getattr(args, "lob_batch_size", None) or 16),
                         epochs=int(getattr(args, "lob_epochs", None) or 5),
@@ -3160,6 +3163,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
                     runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                     input_variant_name=str(getattr(args, "fusion_input_variant_name", None) or "full_fusion").strip() or "full_fusion",
                     run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
                 )
@@ -3211,6 +3215,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
                     runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                     stacker_family=str(getattr(args, "fusion_stacker_family", None) or "linear").strip().lower(),
                     input_variant_name=str(getattr(args, "fusion_input_variant_name", None) or "full_fusion").strip() or "full_fusion",
                 )
@@ -3251,6 +3256,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=str(args.start or defaults["start"]).strip(),
                     end=str(args.end or defaults["end"]).strip(),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                     backbone_family=str(getattr(args, "lob_backbone", None) or "deeplob_v1").strip().lower(),
                     batch_size=int(getattr(args, "lob_batch_size", None) or 16),
                     epochs=int(getattr(args, "lob_epochs", None) or 5),
@@ -3303,6 +3309,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=str(args.start or defaults["start"]).strip(),
                     end=str(args.end or defaults["end"]).strip(),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                 )
                 summary_v5_tradability = train_and_register_v5_tradability(options_v5_tradability)
                 print(
@@ -3341,6 +3348,7 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     start=str(args.start or defaults["start"]).strip(),
                     end=str(args.end or defaults["end"]).strip(),
                     seed=int(args.seed if args.seed is not None else defaults["seed"]),
+                    operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
                     backbone_family=str(getattr(args, "sequence_backbone", None) or "patchtst_v1").strip().lower(),
                     pretrain_method=str(getattr(args, "sequence_pretrain_method", None) or "ts2vec_v1").strip().lower(),
                     batch_size=int(getattr(args, "sequence_batch_size", None) or 16),
@@ -4031,7 +4039,7 @@ def _handle_paper_command(args: argparse.Namespace, config_dir: Path, base_confi
                 model_alpha_execution_defaults.get("use_learned_recommendations", True),
             )
         )
-        paper_tf_value = str(args.tf or defaults.get("tf", "5m")).strip().lower() or "5m"
+        paper_tf_value = str(args.tf or defaults.get("tf", "1m")).strip().lower() or "1m"
         max_positions_value = max(
             int(args.max_positions if args.max_positions is not None else defaults["max_positions"]),
             1,
@@ -5228,6 +5236,10 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             default_risk_sl_pct=float(defaults["default_risk_sl_pct"]),
                             default_risk_tp_pct=float(defaults["default_risk_tp_pct"]),
                             default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
+                            runtime_interval_ms=_resolve_v5_reconcile_interval_ms(
+                                model_family=defaults.get("model_family"),
+                                strategy_tf=defaults.get("strategy_tf"),
+                            ),
                             quote_currency=str(defaults["quote_currency"]),
                             dry_run=True,
                         )
@@ -5302,6 +5314,10 @@ def _handle_live_command(args: argparse.Namespace, config_dir: Path, base_config
                             default_risk_sl_pct=float(defaults["default_risk_sl_pct"]),
                             default_risk_tp_pct=float(defaults["default_risk_tp_pct"]),
                             default_risk_trailing_enabled=bool(defaults["default_risk_trailing_enabled"]),
+                            runtime_interval_ms=_resolve_v5_reconcile_interval_ms(
+                                model_family=defaults.get("model_family"),
+                                strategy_tf=defaults.get("strategy_tf"),
+                            ),
                             quote_currency=str(defaults["quote_currency"]),
                             dry_run=not apply_mode,
                         )
@@ -5814,7 +5830,7 @@ def _paper_defaults(
         "micro_gate": _strategy_micro_gate_defaults(
             micro_gate_cfg=micro_gate_cfg,
             parquet_root=Path(data_defaults["parquet_root"]),
-            default_tf="5m",
+            default_tf="1m",
         ),
         "micro_order_policy": _strategy_micro_order_policy_defaults(micro_order_policy_cfg=micro_order_policy_cfg),
         "paper_micro_provider": "offline_parquet",
@@ -5831,7 +5847,7 @@ def _paper_defaults(
         "paper_live_bootstrap_1m_bars": int(strategy_root.get("paper_live_bootstrap_1m_bars", 2000)),
         "paper_live_micro_max_age_ms": int(strategy_root.get("paper_live_micro_max_age_ms", 300000)),
         "strategy": str(strategy_root.get("paper_strategy_name", "candidates_v1")).strip().lower() or "candidates_v1",
-        "tf": str(model_alpha_cfg.get("tf", "5m")).strip().lower() or "5m",
+        "tf": str(model_alpha_cfg.get("tf", "1m")).strip().lower() or "1m",
         "model_ref": str(model_alpha_cfg.get("model_ref", DEFAULT_MODEL_ALPHA_RUNTIME_REF)).strip()
         or DEFAULT_MODEL_ALPHA_RUNTIME_REF,
         "model_family": (
@@ -6392,6 +6408,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
     env_rollout_mode = str(os.getenv("AUTOBOT_LIVE_ROLLOUT_MODE", "")).strip().lower()
     env_rollout_target_unit = str(os.getenv("AUTOBOT_LIVE_TARGET_UNIT", "")).strip()
     env_sync_mode = str(os.getenv("AUTOBOT_LIVE_SYNC_MODE", "")).strip().lower()
+    env_strategy_tf = str(os.getenv("AUTOBOT_LIVE_STRATEGY_TF", "")).strip().lower()
     env_small_account_max_positions = str(os.getenv("AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS", "")).strip()
     env_small_account_max_open_orders = str(
         os.getenv("AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_OPEN_ORDERS_PER_MARKET", "")
@@ -6471,6 +6488,7 @@ def _live_defaults(base_config: dict[str, Any]) -> dict[str, Any]:
         ),
         "risk_default_trail_pct": max(float(live_risk_cfg.get("default_trail_pct", 1.0)), 0.0),
         "strategy_runtime_enabled": bool(live_strategy_cfg.get("enabled", False)),
+        "strategy_tf": env_strategy_tf or str(live_strategy_cfg.get("tf", "")).strip().lower() or None,
         "strategy_decision_interval_sec": max(float(live_strategy_cfg.get("decision_interval_sec", 1.0)), 0.1),
         "quote_currency": str(universe_cfg.get("quote_currency", "KRW")).strip().upper(),
     }
@@ -6481,6 +6499,18 @@ def _live_strategy_defaults(*, config_dir: Path, base_config: dict[str, Any]) ->
     strategy_doc = _load_yaml_doc(config_dir / "strategy.yaml")
     defaults = _paper_defaults(base_config=base_config, risk_doc=risk_doc, strategy_doc=strategy_doc)
     return dict(defaults)
+
+
+def _resolve_v5_reconcile_interval_ms(*, model_family: Any, strategy_tf: Any) -> int:
+    family_value = str(model_family or "").strip().lower()
+    if family_value != "train_v5_fusion":
+        return 300_000
+    tf_value = str(strategy_tf or "1m").strip().lower() or "1m"
+    try:
+        interval_ms = int(expected_interval_ms(tf_value))
+    except (TypeError, ValueError):
+        return 300_000
+    return max(interval_ms, 1)
 
 
 def _build_model_alpha_settings_from_defaults(defaults: dict[str, Any]) -> ModelAlphaSettings:
@@ -6622,11 +6652,12 @@ def _build_live_model_alpha_runtime_settings(
     live_defaults: dict[str, Any],
     strategy_defaults: dict[str, Any],
 ) -> LiveModelAlphaRuntimeSettings:
+    runtime_tf = str(live_defaults.get("strategy_tf") or strategy_defaults.get("tf", "1m")).strip().lower() or "1m"
     return LiveModelAlphaRuntimeSettings(
         daemon=daemon_settings,
         quote=str(strategy_defaults.get("quote", live_defaults.get("quote_currency", "KRW"))),
         top_n=int(strategy_defaults.get("top_n", 20)),
-        tf=str(strategy_defaults.get("tf", "5m")),
+        tf=runtime_tf,
         decision_interval_sec=float(live_defaults.get("strategy_decision_interval_sec", 1.0)),
         universe_refresh_sec=float(strategy_defaults.get("universe_refresh_sec", 60.0)),
         universe_hold_sec=float(strategy_defaults.get("universe_hold_sec", 120.0)),

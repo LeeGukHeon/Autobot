@@ -518,15 +518,90 @@ def test_pipeline_v4_builds_label_v3_residualized_bundle(tmp_path: Path) -> None
     ).issubset(frame.columns)
 
 
-def _write_candles(dataset_root: Path) -> None:
+def test_pipeline_v4_supports_one_minute_feature_build_dry_run(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    features_root = tmp_path / "features"
+    _write_candles(parquet_root / "candles_api_v1", count_1m=5_000)
+    _write_candles_history(parquet_root / "candles_v1")
+    _write_micro(parquet_root / "micro_v1", tf="1m", count=5_000)
+
+    config = FeaturesV4Config(
+        build=FeaturesV4BuildConfig(
+            output_dataset="features_v4_test_1m",
+            tf="1m",
+            base_candles_dataset="candles_api_v1",
+            micro_dataset="micro_v1",
+            high_tfs=("15m", "60m", "240m"),
+            high_tf_staleness_multiplier=2.0,
+            one_m_required_bars=1,
+            one_m_max_missing_ratio=0.0,
+            sample_weight_half_life_days=60.0,
+            min_rows_for_train=1,
+            require_micro_validate_pass=True,
+        ),
+        parquet_root=parquet_root,
+        features_root=features_root,
+        universe=UniverseConfig(quote="KRW", mode="static_start", top_n=2, lookback_days=7, fixed_list=()),
+        time_range=TimeRangeConfig(start="2026-01-01", end="2026-01-03"),
+        feature_set_v1=FeatureSetV1Config(
+            windows=FeatureWindows(ret=(1, 3, 6, 12), rv=(12, 36), ema=(12, 36), rsi=14, atr=14, vol_z=36),
+            enable_factor_features=False,
+            factor_markets=(),
+            enable_liquidity_rank=False,
+        ),
+        label_v2=LabelV2CryptoCsConfig(
+            horizon_bars=3,
+            horizons_bars=(1, 2, 3, 6),
+            primary_horizon_bars=3,
+            fee_bps_est=0.0,
+            safety_bps=0.0,
+            top_quantile=0.5,
+            bottom_quantile=0.5,
+            neutral_policy="drop",
+        ),
+        label_v3=LabelV3CryptoCsConfig(
+            horizons_bars=(1, 2, 3, 6),
+            primary_horizon_bars=3,
+            fee_bps_est=0.0,
+            safety_bps=0.0,
+            top_quantile=0.5,
+            bottom_quantile=0.5,
+            neutral_policy="drop",
+        ),
+        validation=FeaturesV4ValidateConfig(leakage_fail_on_future_ts=True),
+        float_dtype="float32",
+    )
+
+    summary = build_features_dataset_v4(
+        config,
+        FeatureBuildV4Options(
+            tf="1m",
+            quote="KRW",
+            top_n=2,
+                start="2026-01-01",
+                end="2026-01-03",
+                feature_set="v4",
+                label_set="v2",
+                dry_run=True,
+            ),
+        )
+
+    assert summary.preflight_ok is True
+    report = json.loads((features_root / "features_v4_test_1m" / "_meta" / "build_report.json").read_text(encoding="utf-8"))
+    assert report["tf"] == "1m"
+    assert report["status"] == "PASS"
+    assert report["dry_run"] is True
+
+
+def _write_candles(dataset_root: Path, *, count_1m: int = 3_200) -> None:
     start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-    _write_tf(dataset_root, tf="1m", market="KRW-BTC", start_ts=start_ts, count=3_200, interval_ms=60_000, slope=0.22)
+    _write_tf(dataset_root, tf="1m", market="KRW-BTC", start_ts=start_ts, count=count_1m, interval_ms=60_000, slope=0.22)
     _write_tf(dataset_root, tf="5m", market="KRW-BTC", start_ts=start_ts, count=620, interval_ms=300_000, slope=0.22)
     _write_tf(dataset_root, tf="15m", market="KRW-BTC", start_ts=start_ts, count=230, interval_ms=900_000, slope=0.22)
     _write_tf(dataset_root, tf="60m", market="KRW-BTC", start_ts=start_ts, count=80, interval_ms=3_600_000, slope=0.22)
     _write_tf(dataset_root, tf="240m", market="KRW-BTC", start_ts=start_ts, count=25, interval_ms=14_400_000, slope=0.22)
 
-    _write_tf(dataset_root, tf="1m", market="KRW-ETH", start_ts=start_ts, count=3_200, interval_ms=60_000, slope=0.06)
+    _write_tf(dataset_root, tf="1m", market="KRW-ETH", start_ts=start_ts, count=count_1m, interval_ms=60_000, slope=0.06)
     _write_tf(dataset_root, tf="5m", market="KRW-ETH", start_ts=start_ts, count=620, interval_ms=300_000, slope=0.06)
     _write_tf(dataset_root, tf="15m", market="KRW-ETH", start_ts=start_ts, count=230, interval_ms=900_000, slope=0.06)
     _write_tf(dataset_root, tf="60m", market="KRW-ETH", start_ts=start_ts, count=80, interval_ms=3_600_000, slope=0.06)
@@ -563,17 +638,21 @@ def _write_micro(
     *,
     data_date: str = "2026-01-01",
     report_date: str | None = None,
+    tf: str = "5m",
+    count: int = 520,
 ) -> None:
     start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-    ts = [start_ts + i * 300_000 for i in range(520)]
+    tf_value = str(tf).strip().lower()
+    interval_ms = 60_000 if tf_value == "1m" else 300_000
+    ts = [start_ts + i * interval_ms for i in range(count)]
     report_date_value = report_date or data_date
     for market in ("KRW-BTC", "KRW-ETH"):
-        part_dir = dataset_root / "tf=5m" / f"market={market}" / f"date={data_date}"
+        part_dir = dataset_root / f"tf={tf_value}" / f"market={market}" / f"date={data_date}"
         part_dir.mkdir(parents=True, exist_ok=True)
         pl.DataFrame(
             {
                 "market": [market for _ in ts],
-                "tf": ["5m" for _ in ts],
+                "tf": [tf_value for _ in ts],
                 "ts_ms": ts,
                 "trade_source": ["ws" for _ in ts],
                 "trade_events": [5 for _ in ts],
@@ -608,15 +687,15 @@ def _write_micro(
                     "ok_files": 2,
                     "details": [
                         {
-                            "file": str(dataset_root / "tf=5m" / "market=KRW-BTC" / f"date={report_date_value}" / "part-000.parquet"),
-                            "tf": "5m",
+                            "file": str(dataset_root / f"tf={tf_value}" / "market=KRW-BTC" / f"date={report_date_value}" / "part-000.parquet"),
+                            "tf": tf_value,
                             "market": "KRW-BTC",
                             "date": report_date_value,
                             "rows": len(ts),
                         },
                         {
-                            "file": str(dataset_root / "tf=5m" / "market=KRW-ETH" / f"date={report_date_value}" / "part-000.parquet"),
-                            "tf": "5m",
+                            "file": str(dataset_root / f"tf={tf_value}" / "market=KRW-ETH" / f"date={report_date_value}" / "part-000.parquet"),
+                            "tf": tf_value,
                             "market": "KRW-ETH",
                             "date": report_date_value,
                             "rows": len(ts),

@@ -36,7 +36,7 @@ def build_live_feature_parity_report(
     *,
     project_root: str | Path,
     feature_set: str = "v4",
-    tf: str = "5m",
+    tf: str | None = None,
     quote: str = "KRW",
     top_n: int = 20,
     samples_per_market: int = 1,
@@ -52,7 +52,7 @@ def build_live_feature_parity_report(
         for item in (feature_spec.get("feature_columns") or [])
         if str(item).strip()
     )
-    tf_value = str(tf).strip().lower() or "5m"
+    tf_value = str(tf or "").strip().lower() or str(feature_spec.get("tf") or "").strip().lower() or "5m"
     quote_value = str(quote).strip().upper() or "KRW"
     sampling_window = _resolve_sampling_window(meta_root)
     selected_markets = _select_markets(
@@ -203,7 +203,7 @@ def write_live_feature_parity_report(
     project_root: str | Path,
     output_path: str | Path | None = None,
     feature_set: str = "v4",
-    tf: str = "5m",
+    tf: str | None = None,
     quote: str = "KRW",
     top_n: int = 20,
     samples_per_market: int = 1,
@@ -790,7 +790,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build sampled offline/live feature parity report.")
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--feature-set", default="v4")
-    parser.add_argument("--tf", default="5m")
+    parser.add_argument("--tf", default="")
     parser.add_argument("--quote", default="KRW")
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--samples-per-market", type=int, default=1)
@@ -807,7 +807,7 @@ def main() -> int:
         project_root=Path(str(args.project_root)),
         output_path=output_path,
         feature_set=str(args.feature_set).strip().lower() or "v4",
-        tf=str(args.tf).strip().lower() or "5m",
+        tf=str(args.tf).strip().lower() or None,
         quote=str(args.quote).strip().upper() or "KRW",
         top_n=max(int(args.top_n), 1),
         samples_per_market=max(int(args.samples_per_market), 1),

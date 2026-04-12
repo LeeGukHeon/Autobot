@@ -1,6 +1,8 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
+    [string]$Tf = "1m",
+    [int]$HoldBars = 30,
     [string]$DataPlatformRefreshScript = "",
     [switch]$SkipDataPlatformRefresh,
     [switch]$EnableFusionInputAblationMatrix,
@@ -22,6 +24,8 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
 & (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `
     -ProjectRoot $resolvedProjectRoot `
     -PythonExe $resolvedPythonExe `
+    -Tf $Tf `
+    -HoldBars $HoldBars `
     -ModelFamily "train_v5_fusion" `
     -Trainer "v5_fusion" `
     -DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability") `

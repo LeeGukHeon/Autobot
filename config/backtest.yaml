@@ -1,7 +1,7 @@
 backtest:
   dataset_name: "candles_v1"
   parquet_root: "data/parquet"
-  tf: "5m"
+  tf: "1m"
   from_ts_ms: null
   to_ts_ms: null
   duration_days: null
@@ -16,7 +16,7 @@ backtest:
     dense_grid: false
 
   execution:
-    order_timeout_bars: 5
+    order_timeout_bars: 25
     reprice_max_attempts: 1
     reprice_tick_steps: 1
     rules_ttl_sec: 86400
@@ -24,7 +24,7 @@ backtest:
   strategy:
     name: "model_alpha_v1"   # candidates_v1 | model_alpha_v1
     model_ref: "champion"
-    model_family: "train_v5_panel_ensemble"
+    model_family: "train_v5_fusion"
     feature_set: "v4"
     model_registry_root: "models/registry"
     model_feature_dataset_root: null

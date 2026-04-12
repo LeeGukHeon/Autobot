@@ -10,6 +10,7 @@ param(
     [string]$ModelRegistryRoot = "",
     [string]$SmallAccountMaxPositions = "",
     [string]$SmallAccountMaxOpenOrdersPerMarket = "",
+    [string]$StrategyTf = "",
     [ValidateSet("shadow", "canary", "live")]
     [string]$RolloutMode = "shadow",
     [ValidateSet("poll", "private_ws", "executor_ws")]
@@ -114,6 +115,11 @@ $effectiveStateDbPath = if ([string]::IsNullOrWhiteSpace($StateDbPath)) {
 } else {
     $StateDbPath
 }
+$effectiveStrategyTf = if ([string]::IsNullOrWhiteSpace($StrategyTf)) {
+    ""
+} else {
+    ([string]$StrategyTf).Trim().ToLowerInvariant()
+}
 Seed-CandidateStateDbIfMissing -Root $resolvedProjectRoot -UnitName $UnitName -StateDbPath $effectiveStateDbPath
 
 $liveArgList = @(
@@ -141,6 +147,11 @@ if ($AllowCancelExternal) {
 $liveCommand = ($liveArgList | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " "
 $activatePath = Join-Path $resolvedProjectRoot ".venv/bin/activate"
 $execStart = "/bin/bash -lc " + (Quote-ShellArg ("source " + $activatePath + " && " + $resolvedPythonExe + " " + $liveCommand))
+$strategyTfEnvironmentLine = if ([string]::IsNullOrWhiteSpace($effectiveStrategyTf)) {
+    ""
+} else {
+    "Environment=AUTOBOT_LIVE_STRATEGY_TF=$effectiveStrategyTf`n"
+}
 
 $unitContent = @"
 [Unit]
@@ -163,6 +174,7 @@ Environment=AUTOBOT_LIVE_MODEL_REGISTRY_ROOT=$effectiveModelRegistryRoot
 Environment=AUTOBOT_LIVE_ROLLOUT_MODE=$RolloutMode
 Environment=AUTOBOT_LIVE_TARGET_UNIT=$effectiveTargetUnit
 Environment=AUTOBOT_LIVE_SYNC_MODE=$SyncMode
+$strategyTfEnvironmentLine
 Environment=AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS=$SmallAccountMaxPositions
 Environment=AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_OPEN_ORDERS_PER_MARKET=$SmallAccountMaxOpenOrdersPerMarket
 SyslogIdentifier=$($UnitName -replace '\.service$', '')
@@ -185,6 +197,7 @@ if ($DryRun) {
     Write-Host ("[live-install][dry-run] state_db_path={0}" -f $effectiveStateDbPath)
     Write-Host ("[live-install][dry-run] model_ref_source={0}" -f $effectiveModelRefSource)
     Write-Host ("[live-install][dry-run] model_family={0}" -f $effectiveModelFamily)
+    Write-Host ("[live-install][dry-run] strategy_tf={0}" -f $effectiveStrategyTf)
     Write-Host ("[live-install][dry-run] small_account_max_positions={0}" -f $SmallAccountMaxPositions)
     Write-Host $unitContent
     exit 0

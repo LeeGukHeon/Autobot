@@ -9,6 +9,7 @@ param(
     [string]$PaperRuntimeRole = "",
     [string]$PaperLaneName = "v5",
     [string]$PaperModelRefPinned = "",
+    [string]$PairedPaperTf = "",
     [string]$PaperModelFamilyOverride = "",
     [string]$PaperChampionModelFamilyOverride = "",
     [string]$PaperChallengerModelFamilyOverride = "",
@@ -295,6 +296,12 @@ $paperArgList = @()
 if ($PaperPreset -in @("paired_v4", "paired_v5")) {
     $pairedPresetValue = if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }
     $pairedFeatureProviderValue = if ($PaperPreset -eq "paired_v5") { "live_v5" } else { "live_v4" }
+    $defaultPairedTf = if ($PaperPreset -eq "paired_v5") { "1m" } else { "5m" }
+    $resolvedPairedTf = if ([string]::IsNullOrWhiteSpace($PairedPaperTf)) {
+        $defaultPairedTf
+    } else {
+        ([string]$PairedPaperTf).Trim().ToLowerInvariant()
+    }
     $paperArgList = @(
         "-m", "autobot.paper.paired_runtime",
         "run-service",
@@ -302,7 +309,7 @@ if ($PaperPreset -in @("paired_v4", "paired_v5")) {
         "--config-dir", "config",
         "--quote", "KRW",
         "--top-n", "20",
-        "--tf", "5m",
+        "--tf", $resolvedPairedTf,
         "--model-family", $effectiveRuntimeModelFamily,
         "--champion-model-family", $effectivePairedChampionModelFamily,
         "--challenger-model-family", $effectivePairedChallengerModelFamily,

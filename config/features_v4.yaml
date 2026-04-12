@@ -27,16 +27,16 @@ feature_set_v1:
   enable_liquidity_rank: false
 
 label_v1:
-  horizon_bars: 12
+  horizon_bars: 60
   thr_bps: 15
   neutral_policy: drop
   fee_bps_est: 10
   safety_bps: 5
 
 label_v2:
-  horizon_bars: 12
-  horizons_bars: [3, 6, 12, 24]
-  primary_horizon_bars: 12
+  horizon_bars: 60
+  horizons_bars: [15, 30, 60, 120]
+  primary_horizon_bars: 60
   fee_bps_est: 10
   safety_bps: 5
   top_quantile: 0.2
@@ -44,8 +44,8 @@ label_v2:
   neutral_policy: drop
 
 label_v3:
-  horizons_bars: [3, 6, 12, 24]
-  primary_horizon_bars: 12
+  horizons_bars: [15, 30, 60, 120]
+  primary_horizon_bars: 60
   fee_bps_est: 10
   safety_bps: 5
   top_quantile: 0.2
@@ -54,7 +54,7 @@ label_v3:
 
 features_v4:
   output_dataset: features_v4
-  tf: 5m
+  tf: 1m
   base_candles_dataset: auto
   micro_dataset: micro_v1
   high_tfs: [15m, 60m, 240m]

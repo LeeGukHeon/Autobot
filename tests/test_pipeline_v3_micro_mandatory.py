@@ -47,7 +47,7 @@ def test_pipeline_v3_drops_rows_when_micro_missing(tmp_path: Path) -> None:
             factor_markets=(),
             enable_liquidity_rank=False,
         ),
-        label_v1=LabelV1Config(horizon_bars=2, thr_bps=15.0, neutral_policy="drop", fee_bps_est=10.0, safety_bps=5.0),
+        label_v1=LabelV1Config(horizon_bars=2, thr_bps=0.0, neutral_policy="keep_as_class", fee_bps_est=0.0, safety_bps=0.0),
         validation=FeaturesV3ValidateConfig(leakage_fail_on_future_ts=True),
         float_dtype="float32",
     )
@@ -110,7 +110,7 @@ def test_pipeline_v3_requires_micro_validate_report(tmp_path: Path) -> None:
             factor_markets=(),
             enable_liquidity_rank=False,
         ),
-        label_v1=LabelV1Config(horizon_bars=2, thr_bps=15.0, neutral_policy="drop", fee_bps_est=10.0, safety_bps=5.0),
+        label_v1=LabelV1Config(horizon_bars=2, thr_bps=0.0, neutral_policy="keep_as_class", fee_bps_est=0.0, safety_bps=0.0),
         validation=FeaturesV3ValidateConfig(leakage_fail_on_future_ts=True),
         float_dtype="float32",
     )
@@ -131,10 +131,66 @@ def test_pipeline_v3_requires_micro_validate_report(tmp_path: Path) -> None:
         )
 
 
-def _write_candles(dataset_root: Path) -> None:
+def test_pipeline_v3_supports_one_minute_feature_build_dry_run(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    features_root = tmp_path / "features"
+    _write_candles(parquet_root / "candles_api_v1", count_1m=5_000)
+    _write_micro(parquet_root / "micro_v1", tf="1m", count=5_000)
+
+    config = FeaturesV3Config(
+        build=FeaturesV3BuildConfig(
+            output_dataset="features_v3_test_1m",
+            tf="1m",
+            base_candles_dataset="candles_api_v1",
+            micro_dataset="micro_v1",
+            high_tfs=("15m", "60m", "240m"),
+            high_tf_staleness_multiplier=2.0,
+            one_m_required_bars=1,
+            one_m_max_missing_ratio=0.0,
+            sample_weight_half_life_days=60.0,
+            min_rows_for_train=1,
+            require_micro_validate_pass=True,
+        ),
+        parquet_root=parquet_root,
+        features_root=features_root,
+        universe=UniverseConfig(quote="KRW", mode="static_start", top_n=1, lookback_days=7, fixed_list=()),
+        time_range=TimeRangeConfig(start="2026-01-01", end="2026-01-03"),
+        feature_set_v1=FeatureSetV1Config(
+            windows=FeatureWindows(ret=(1, 3, 6, 12), rv=(12, 36), ema=(12, 36), rsi=14, atr=14, vol_z=36),
+            enable_factor_features=False,
+            factor_markets=(),
+            enable_liquidity_rank=False,
+        ),
+        label_v1=LabelV1Config(horizon_bars=2, thr_bps=0.0, neutral_policy="keep_as_class", fee_bps_est=0.0, safety_bps=0.0),
+        validation=FeaturesV3ValidateConfig(leakage_fail_on_future_ts=True),
+        float_dtype="float32",
+    )
+
+    summary = build_features_dataset_v3(
+        config,
+        FeatureBuildV3Options(
+            tf="1m",
+            quote="KRW",
+            top_n=1,
+                start="2026-01-01",
+                end="2026-01-03",
+                feature_set="v3",
+                label_set="v1",
+                dry_run=True,
+            ),
+        )
+
+    assert summary.preflight_ok is True
+    report = json.loads((features_root / "features_v3_test_1m" / "_meta" / "build_report.json").read_text(encoding="utf-8"))
+    assert report["tf"] == "1m"
+    assert report["status"] == "PASS"
+    assert report["dry_run"] is True
+
+
+def _write_candles(dataset_root: Path, *, count_1m: int = 3_200) -> None:
     start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
     market = "KRW-BTC"
-    _write_tf(dataset_root, tf="1m", market=market, start_ts=start_ts, count=3_200, interval_ms=60_000)
+    _write_tf(dataset_root, tf="1m", market=market, start_ts=start_ts, count=count_1m, interval_ms=60_000)
     _write_tf(dataset_root, tf="5m", market=market, start_ts=start_ts, count=620, interval_ms=300_000)
     _write_tf(dataset_root, tf="15m", market=market, start_ts=start_ts, count=230, interval_ms=900_000)
     _write_tf(dataset_root, tf="60m", market=market, start_ts=start_ts, count=80, interval_ms=3_600_000)
@@ -160,15 +216,17 @@ def _write_tf(dataset_root: Path, *, tf: str, market: str, start_ts: int, count:
     ).write_parquet(part_dir / "part.parquet")
 
 
-def _write_micro(dataset_root: Path, *, write_validate_report: bool = True) -> None:
+def _write_micro(dataset_root: Path, *, write_validate_report: bool = True, tf: str = "5m", count: int = 520) -> None:
     start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-    ts = [start_ts + i * 300_000 for i in range(520)]
-    part_dir = dataset_root / "tf=5m" / "market=KRW-BTC" / "date=2026-01-01"
+    interval_ms = 60_000 if str(tf).strip().lower() == "1m" else 300_000
+    ts = [start_ts + i * interval_ms for i in range(count)]
+    tf_value = str(tf).strip().lower()
+    part_dir = dataset_root / f"tf={tf_value}" / "market=KRW-BTC" / "date=2026-01-01"
     part_dir.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
             "market": ["KRW-BTC" for _ in ts],
-            "tf": ["5m" for _ in ts],
+            "tf": [tf_value for _ in ts],
             "ts_ms": ts,
             "trade_source": ["ws" for _ in ts],
             "trade_events": [5 for _ in ts],
@@ -199,7 +257,7 @@ def _write_micro(dataset_root: Path, *, write_validate_report: bool = True) -> N
                     "details": [
                         {
                             "file": str(part_dir / "part-000.parquet"),
-                            "tf": "5m",
+                            "tf": tf_value,
                             "market": "KRW-BTC",
                             "date": "2026-01-01",
                             "rows": len(ts),

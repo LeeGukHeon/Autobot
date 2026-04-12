@@ -27,7 +27,7 @@ feature_set_v1:
   enable_liquidity_rank: false
 
 label_v1:
-  horizon_bars: 12
+  horizon_bars: 60
   thr_bps: 15
   neutral_policy: drop
   fee_bps_est: 10
@@ -35,7 +35,7 @@ label_v1:
 
 features_v3:
   output_dataset: features_v3
-  tf: 5m
+  tf: 1m
   base_candles_dataset: auto
   micro_dataset: micro_v1
   high_tfs: [15m, 60m, 240m]

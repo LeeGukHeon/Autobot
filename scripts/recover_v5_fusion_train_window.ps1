@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
     [string]$BatchDate = "",
+    [string]$Tf = "1m",
     [string]$TrainingCriticalStartDate = "",
     [string]$TrainingCriticalEndDate = "",
     [string]$TrainSnapshotCloseScript = "",
@@ -168,6 +169,7 @@ try {
         "-ProjectRoot", $resolvedProjectRoot,
         "-PythonExe", $resolvedPythonExe,
         "-BatchDate", $resolvedBatchDate,
+        "-Tf", ([string]$Tf).Trim().ToLowerInvariant(),
         "-TrainingCriticalStartDate", $resolvedTrainingCriticalStartDate,
         "-TrainingCriticalEndDate", $resolvedTrainingCriticalEndDate,
         "-SkipDeadline"
@@ -198,6 +200,7 @@ try {
         "-File", $resolvedGovernedAcceptanceScript,
         "-ProjectRoot", $resolvedProjectRoot,
         "-PythonExe", $resolvedPythonExe,
+        "-Tf", ([string]$Tf).Trim().ToLowerInvariant(),
         "-BatchDate", $resolvedBatchDate,
         "-SkipDailyPipeline",
         "-SkipPaperSoak",

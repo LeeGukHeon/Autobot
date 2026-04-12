@@ -609,6 +609,44 @@ def test_build_paper_run_settings_allows_unbounded_duration_for_service_mode() -
     assert settings.duration_sec == 0
 
 
+def test_build_paper_run_settings_defaults_to_one_minute_for_live_v5_when_tf_blank() -> None:
+    settings = paired_runtime_module._build_paper_run_settings(
+        model_ref="candidate-run",
+        model_family="train_v5_fusion",
+        feature_set="v4",
+        preset="live_v5",
+        quote="KRW",
+        top_n=1,
+        tf="",
+        duration_sec=60,
+        paper_feature_provider="live_v5",
+        paper_micro_provider="live_ws",
+        paper_micro_warmup_sec=60,
+        paper_micro_warmup_min_trade_events_per_market=1,
+    )
+
+    assert settings.tf == "1m"
+
+
+def test_build_paper_run_settings_keeps_five_minute_default_for_live_v4_when_tf_blank() -> None:
+    settings = paired_runtime_module._build_paper_run_settings(
+        model_ref="candidate-run",
+        model_family="train_v4_crypto_cs",
+        feature_set="v4",
+        preset="live_v4",
+        quote="KRW",
+        top_n=1,
+        tf="",
+        duration_sec=60,
+        paper_feature_provider="live_v4",
+        paper_micro_provider="live_ws",
+        paper_micro_warmup_sec=60,
+        paper_micro_warmup_min_trade_events_per_market=1,
+    )
+
+    assert settings.tf == "5m"
+
+
 def test_fanout_public_ws_client_preserves_unbounded_duration_when_zero() -> None:
     source = _RecordingSourceWsClient()
     client = paired_runtime_module.FanoutPublicWsClient(

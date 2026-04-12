@@ -80,6 +80,50 @@ def _write_micro_5m_snapshot(*, micro_root: Path, market: str, ts_ms: int) -> No
     ).write_parquet(part_dir / "part-000.parquet")
 
 
+def _write_micro_snapshot(*, micro_root: Path, market: str, ts_ms: int, tf: str) -> None:
+    tf_value = str(tf).strip().lower()
+    interval_ms = 60_000 if tf_value == "1m" else 300_000
+    part_dir = micro_root / f"tf={tf_value}" / f"market={market}" / "date=1970-01-01"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "market": [market],
+            "tf": [tf_value],
+            "ts_ms": [ts_ms],
+            "trade_source": ["ws"],
+            "trade_events": [1],
+            "book_events": [1],
+            "trade_min_ts_ms": [max(int(ts_ms) - interval_ms, 0)],
+            "trade_max_ts_ms": [ts_ms],
+            "book_min_ts_ms": [max(int(ts_ms) - interval_ms, 0)],
+            "book_max_ts_ms": [ts_ms],
+            "trade_coverage_ms": [interval_ms],
+            "book_coverage_ms": [interval_ms],
+            "micro_trade_available": [True],
+            "micro_book_available": [True],
+            "micro_available": [True],
+            "trade_count": [1],
+            "buy_count": [1],
+            "sell_count": [0],
+            "trade_volume_total": [1.0],
+            "buy_volume": [1.0],
+            "sell_volume": [0.0],
+            "trade_imbalance": [1.0],
+            "vwap": [100.0],
+            "avg_trade_size": [1.0],
+            "max_trade_size": [1.0],
+            "last_trade_price": [100.0],
+            "mid_mean": [100.0],
+            "spread_bps_mean": [1.0],
+            "depth_bid_top5_mean": [1000.0],
+            "depth_ask_top5_mean": [1000.0],
+            "imbalance_top5_mean": [0.0],
+            "microprice_bias_bps_mean": [0.0],
+            "book_update_count": [1],
+        }
+    ).write_parquet(part_dir / "part-000.parquet")
+
+
 def _write_raw_orderbook_row(*, raw_ws_root: Path, market: str, ts_ms: int, bid1_price: float, ask1_price: float) -> None:
     date_value = "1970-01-01"
     hour_value = "00"
@@ -156,6 +200,58 @@ def test_build_live_feature_parity_report_passes_for_matching_offline_and_live_r
     assert report["passing_pairs"] == 1
     assert report["missing_feature_columns_total"] == 0
     assert report["details"][0]["pass"] is True
+
+
+def test_build_live_feature_parity_report_resolves_one_minute_tf_from_feature_metadata(tmp_path: Path) -> None:
+    project_root = tmp_path
+    parquet_root = project_root / "data" / "parquet"
+    candles_root = parquet_root / "candles_api_v1"
+    _write_one_m_candles(dataset_root=candles_root, market="KRW-BTC", count=240)
+    _write_micro_snapshot(micro_root=project_root / "data" / "parquet" / "micro_v1", market="KRW-BTC", ts_ms=7_200_000, tf="1m")
+
+    feature_columns = ("logret_1", "volume_z", "one_m_count", "m_trade_events")
+    provider = LiveFeatureProviderV4(
+        feature_columns=feature_columns,
+        tf="1m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=240,
+        bootstrap_end_ts_ms=7_200_000,
+        micro_snapshot_provider=OfflineMicroSnapshotProvider(
+            micro_root=project_root / "data" / "parquet" / "micro_v1",
+            tf="1m",
+        ),
+        context_micro_required=True,
+    )
+    offline_frame = provider.build_frame(ts_ms=7_200_000, markets=["KRW-BTC"])
+
+    dataset_root = project_root / "data" / "features" / "features_v4"
+    part_dir = dataset_root / "tf=1m" / "market=KRW-BTC" / "date=1970-01-01"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    offline_frame.write_parquet(part_dir / "part-000.parquet")
+    meta_root = dataset_root / "_meta"
+    meta_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"tf": ["1m"], "market": ["KRW-BTC"], "status": ["OK"], "rows_final": [1]}).write_parquet(
+        meta_root / "manifest.parquet"
+    )
+    (meta_root / "feature_spec.json").write_text(
+        json.dumps(
+            {
+                "tf": "1m",
+                "feature_columns": list(feature_columns),
+                "base_candles_root": str(candles_root),
+                "micro_root": str(project_root / "data" / "parquet" / "micro_v1"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = build_live_feature_parity_report(project_root=project_root, top_n=1, samples_per_market=1)
+
+    assert report["tf"] == "1m"
+    assert report["status"] == "PASS"
+    assert report["acceptable"] is True
 
 
 def test_build_live_feature_parity_report_ignores_stale_partitions_outside_latest_build_window(tmp_path: Path) -> None:

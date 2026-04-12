@@ -161,6 +161,7 @@ async def run_live_model_alpha_runtime(
     private_ws_client: Any | None = None,
 ) -> dict[str, Any]:
     daemon_settings = settings.daemon
+    interval_ms = _interval_ms_from_tf(settings.tf)
     started_ts_ms = int(time.time() * 1000)
     started_monotonic = time.monotonic()
     summary: dict[str, Any] = {
@@ -212,7 +213,13 @@ async def run_live_model_alpha_runtime(
     }
 
     if daemon_settings.startup_reconcile:
-        if not _startup_sync(store=store, client=client, settings=daemon_settings, summary=summary):
+        if not _startup_sync(
+            store=store,
+            client=client,
+            settings=daemon_settings,
+            summary=summary,
+            runtime_interval_ms=interval_ms,
+        ):
             summary["ended_ts_ms"] = int(time.time() * 1000)
             return summary
     else:
@@ -381,7 +388,6 @@ async def run_live_model_alpha_runtime(
         initial_order_supervision.get("replaced", 0)
     ) + int(initial_order_supervision.get("aborted", 0))
 
-    interval_ms = _interval_ms_from_tf(settings.tf)
     last_model_decision_ts_ms: int | None = None
     next_sync_monotonic = time.monotonic() + max(int(daemon_settings.poll_interval_sec), 1)
     next_decision_at = time.monotonic()
@@ -594,6 +600,7 @@ async def run_live_model_alpha_runtime(
                     client=client,
                     settings=daemon_settings,
                     ts_ms=int(time.time() * 1000),
+                    runtime_interval_ms=interval_ms,
                 )
                 summary["cycles"] = int(summary["cycles"]) + 1
                 summary["last_report"] = cycle_result["report"]
@@ -832,6 +839,7 @@ def _startup_sync(
     client: Any,
     settings: LiveDaemonSettings,
     summary: dict[str, Any],
+    runtime_interval_ms: int | None = None,
 ) -> bool:
     summary["closed_orders_backfill"] = backfill_recent_bot_closed_orders(
         store=store,
@@ -845,6 +853,7 @@ def _startup_sync(
         client=client,
         settings=settings,
         ts_ms=int(time.time() * 1000),
+        runtime_interval_ms=runtime_interval_ms,
     )
     summary["cycles"] = 1
     summary["last_report"] = cycle_result["report"]

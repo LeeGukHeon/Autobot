@@ -1,4 +1,4 @@
-"""FeatureSet v3: base(5m) + multi-tf + mandatory micro + sample weights."""
+"""FeatureSet v3: active base tf (1m/5m) + multi-tf + mandatory micro + sample weights."""
 
 from __future__ import annotations
 

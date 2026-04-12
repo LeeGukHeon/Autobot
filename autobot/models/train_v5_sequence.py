@@ -110,6 +110,7 @@ class TrainV5SequenceOptions:
     start: str
     end: str
     seed: int
+    operating_tf: str = "1m"
     backbone_family: str = "patchtst_v1"
     pretrain_method: str = "ts2vec_v1"
     batch_size: int = 16
@@ -665,6 +666,7 @@ def _options_from_v5_sequence_train_config(train_config: dict[str, Any]) -> Trai
         registry_root=Path(str(base["registry_root"])),
         logs_root=Path(str(base["logs_root"])),
         model_family=str(base["model_family"]),
+        operating_tf=str(base.get("operating_tf", "1m")).strip().lower() or "1m",
         quote=str(base["quote"]),
         top_n=int(base["top_n"]),
         start=str(base["start"]),
@@ -2539,7 +2541,7 @@ def train_and_register_v5_sequence(options: TrainV5SequenceOptions) -> TrainV5Se
     )
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
-        tf="5m",
+        tf=str(options.operating_tf).strip().lower() or "1m",
         feature_columns=samples.feature_names,
         markets=samples.markets,
         ts_ms=samples.ts_ms,

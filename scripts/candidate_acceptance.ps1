@@ -19,7 +19,7 @@ param(
     [int]$SplitPolicyMaxNewAnchorEvaluationsPerRun = 1,
     [int]$SplitPolicyHistoryBoosterSweepTrials = 1,
     [string]$SplitPolicyHistoryRunScope = "scheduled_split_policy_history",
-    [string]$Tf = "5m",
+    [string]$Tf = "1m",
     [string]$Quote = "KRW",
     [int]$TrainTopN = 50,
     [int]$FeatureParityTopN = 20,

@@ -85,6 +85,7 @@ from .pipeline_v3 import (
 
 DEFAULT_FEATURES_V4_YAML = "features_v4.yaml"
 _RUNTIME_WINDOW_TIMEZONE_V4 = "Asia/Seoul"
+_SUPPORTED_FEATURE_BASE_TFS_V4: tuple[str, ...] = ("1m", "5m")
 
 
 @dataclass(frozen=True)
@@ -459,8 +460,8 @@ def load_features_v4_config(
         high_tfs = ("15m", "60m", "240m")
 
     tf_value = str(root.get("tf", "5m")).strip().lower() or "5m"
-    if tf_value != "5m":
-        raise ValueError("features_v4.tf currently supports only 5m")
+    if tf_value not in _SUPPORTED_FEATURE_BASE_TFS_V4:
+        raise ValueError("features_v4.tf currently supports only 1m or 5m")
 
     label_v2 = LabelV2CryptoCsConfig(
         horizon_bars=max(int(label_cfg.get("horizon_bars", 12)), 1),
@@ -542,8 +543,8 @@ def build_features_dataset_v4(config: FeaturesV4Config, options: FeatureBuildV4O
         raise ValueError("label_set currently supports only v2 or v3 in pipeline_v4")
 
     tf = str(options.tf or config.build.tf).strip().lower()
-    if tf != "5m":
-        raise ValueError("features_v4 currently supports only --tf 5m")
+    if tf not in _SUPPORTED_FEATURE_BASE_TFS_V4:
+        raise ValueError("features_v4 currently supports only --tf 1m or 5m")
     quote = str(options.quote or config.universe.quote).strip().upper()
     top_n = max(1, int(options.top_n if options.top_n is not None else config.universe.top_n))
     start_text = str(options.start or config.time_range.start).strip()

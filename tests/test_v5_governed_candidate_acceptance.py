@@ -22,6 +22,8 @@ def test_v5_governed_candidate_acceptance_targets_v5_fusion_contract() -> None:
     assert '-ModelFamily "train_v5_fusion"' in source
     assert '-Trainer "v5_fusion"' in source
     assert '-DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability")' in source
+    assert '-Tf $Tf' in source
+    assert '-HoldBars $HoldBars' in source
     assert '-EnableVariantMatrixSelection' in source
     assert '-ReuseDependencyRuns:$false' in source
     assert '-EnableFusionInputAblationMatrix:$EnableFusionInputAblationMatrix' in source
@@ -43,9 +45,11 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     )
     fake_candidate_acceptance = scripts_dir / "candidate_acceptance.ps1"
     fake_candidate_acceptance.write_text(
-        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '', [string[]]$DependencyTrainers = @(), [bool]$ReuseDependencyRuns = $true, [switch]$EnableVariantMatrixSelection, [switch]$EnableFusionInputAblationMatrix)\n"
+        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$Tf = '', [int]$HoldBars = -1, [string]$FeatureSet = '', [string]$LabelSet = '', [string]$ChampionModelFamily = '', [string[]]$DependencyTrainers = @(), [bool]$ReuseDependencyRuns = $true, [switch]$EnableVariantMatrixSelection, [switch]$EnableFusionInputAblationMatrix)\n"
         "Write-Host ('[fake-v5] family=' + $ModelFamily)\n"
         "Write-Host ('[fake-v5] trainer=' + $Trainer)\n"
+        "Write-Host ('[fake-v5] tf=' + $Tf)\n"
+        "Write-Host ('[fake-v5] hold_bars=' + [string]$HoldBars)\n"
         "Write-Host ('[fake-v5] feature=' + $FeatureSet)\n"
         "Write-Host ('[fake-v5] label=' + $LabelSet)\n"
         "Write-Host ('[fake-v5] champion_family=' + $ChampionModelFamily)\n"
@@ -84,6 +88,8 @@ def test_v5_governed_candidate_acceptance_delegates_to_candidate_acceptance(tmp_
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
     assert "[fake-v5] family=train_v5_fusion" in completed.stdout
     assert "[fake-v5] trainer=v5_fusion" in completed.stdout
+    assert "[fake-v5] tf=1m" in completed.stdout
+    assert "[fake-v5] hold_bars=30" in completed.stdout
     assert "[fake-v5] feature=v4" in completed.stdout
     assert "[fake-v5] label=v3" in completed.stdout
     assert "[fake-v5] champion_family=" in completed.stdout
@@ -103,7 +109,9 @@ def test_v5_governed_candidate_acceptance_passes_input_ablation_when_requested(t
     )
     fake_candidate_acceptance = scripts_dir / "candidate_acceptance.ps1"
     fake_candidate_acceptance.write_text(
-        "param([bool]$ReuseDependencyRuns = $true, [switch]$EnableFusionInputAblationMatrix)\n"
+        "param([string]$Tf = '', [int]$HoldBars = -1, [bool]$ReuseDependencyRuns = $true, [switch]$EnableFusionInputAblationMatrix)\n"
+        "Write-Host ('[fake-v5] tf=' + $Tf)\n"
+        "Write-Host ('[fake-v5] hold_bars=' + [string]$HoldBars)\n"
         "Write-Host ('[fake-v5] reuse=' + [string]$ReuseDependencyRuns)\n"
         "Write-Host ('[fake-v5] input_ablation=' + [string]$EnableFusionInputAblationMatrix.IsPresent)\n"
         "exit 0\n",
@@ -136,5 +144,7 @@ def test_v5_governed_candidate_acceptance_passes_input_ablation_when_requested(t
     )
 
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    assert "[fake-v5] tf=1m" in completed.stdout
+    assert "[fake-v5] hold_bars=30" in completed.stdout
     assert "[fake-v5] reuse=False" in completed.stdout
     assert "[fake-v5] input_ablation=True" in completed.stdout

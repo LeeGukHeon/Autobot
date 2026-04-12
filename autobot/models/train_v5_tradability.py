@@ -14,6 +14,7 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
+from autobot.data import expected_interval_ms
 from autobot.ops.data_platform_snapshot import resolve_ready_snapshot_id
 from autobot.strategy.v5_post_model_contract import annotate_v5_runtime_recommendations
 
@@ -60,6 +61,7 @@ class TrainV5TradabilityOptions:
     start: str
     end: str
     seed: int
+    operating_tf: str = "1m"
     run_scope: str = "manual_tradability_expert"
 
 
@@ -127,7 +129,13 @@ class _ConstantBinaryModel:
         return np.full(rows, float(self.positive_prob))
 
 
-def _load_private_execution_rows(*, dataset_root: Path, start: str, end: str) -> pl.DataFrame:
+def _load_private_execution_rows(
+    *,
+    dataset_root: Path,
+    start: str,
+    end: str,
+    target_interval_ms: int | None = None,
+) -> pl.DataFrame:
     root = Path(dataset_root).resolve()
     files = sorted(root.glob("market=*/date=*/part-*.parquet"))
     if not files:
@@ -136,6 +144,7 @@ def _load_private_execution_rows(*, dataset_root: Path, start: str, end: str) ->
         "market",
         "ts_ms",
         "decision_bucket_ts_ms",
+        "decision_bar_interval_ms",
         "y_tradeable",
         "y_fill_within_deadline",
         "y_shortfall_bps",
@@ -145,11 +154,15 @@ def _load_private_execution_rows(*, dataset_root: Path, start: str, end: str) ->
     end_ts_ms = _parse_date_to_ts_ms(end, end_of_day=True)
     frames: list[pl.DataFrame] = []
     for path in files:
-        frame = pl.read_parquet(path, columns=required_columns)
+        frame = pl.read_parquet(path)
+        if "decision_bar_interval_ms" not in frame.columns:
+            frame = frame.with_columns(pl.lit(300_000, dtype=pl.Int64).alias("decision_bar_interval_ms"))
+        frame = frame.select([name for name in required_columns if name in frame.columns])
         frame = frame.with_columns(
             pl.col("market").cast(pl.Utf8, strict=False),
             pl.col("ts_ms").cast(pl.Int64, strict=False),
             pl.col("decision_bucket_ts_ms").cast(pl.Int64, strict=False),
+            pl.col("decision_bar_interval_ms").cast(pl.Int64, strict=False),
             pl.col("y_tradeable").cast(pl.Float64, strict=False),
             pl.col("y_fill_within_deadline").cast(pl.Float64, strict=False),
             pl.col("y_shortfall_bps").cast(pl.Float64, strict=False),
@@ -167,6 +180,7 @@ def _load_private_execution_rows(*, dataset_root: Path, start: str, end: str) ->
     required = {
         "market",
         "decision_bucket_ts_ms",
+        "decision_bar_interval_ms",
         "y_tradeable",
         "y_fill_within_deadline",
         "y_shortfall_bps",
@@ -175,8 +189,23 @@ def _load_private_execution_rows(*, dataset_root: Path, start: str, end: str) ->
     missing = [name for name in required if name not in frame.columns]
     if missing:
         raise ValueError(f"private_execution_v1 missing required columns: {', '.join(missing)}")
+    if target_interval_ms is not None:
+        filtered = frame.filter(pl.col("decision_bar_interval_ms") == int(target_interval_ms))
+        if filtered.height <= 0:
+            available_intervals = sorted(
+                {
+                    int(value)
+                    for value in frame.get_column("decision_bar_interval_ms").drop_nulls().to_list()
+                    if int(value) > 0
+                }
+            )
+            raise ValueError(
+                "private_execution_v1 has no labels for operating interval "
+                f"{int(target_interval_ms)}ms; available_intervals_ms={available_intervals or ['none']}"
+            )
+        frame = filtered
     return (
-        frame.group_by(["market", "decision_bucket_ts_ms"])
+        frame.group_by(["market", "decision_bucket_ts_ms", "decision_bar_interval_ms"])
         .agg(
             pl.col("y_tradeable").cast(pl.Float64).mean().alias("y_tradeable"),
             pl.col("y_fill_within_deadline").cast(pl.Float64).mean().alias("y_fill_within_deadline"),
@@ -195,19 +224,25 @@ def _load_and_merge_tradability_inputs(options: TrainV5TradabilityOptions) -> tu
     lob, lob_meta = _load_expert_table(options.lob_input_path, prefix="lob")
     merged = panel.join(sequence, on=["market", "ts_ms"], how="left", coalesce=True)
     merged = merged.join(lob, on=["market", "ts_ms"], how="left", coalesce=True)
+    operating_interval_ms = max(int(expected_interval_ms(str(options.operating_tf).strip().lower() or "1m")), 1)
     labels = _load_private_execution_rows(
         dataset_root=options.private_execution_root,
         start=options.start,
         end=options.end,
+        target_interval_ms=operating_interval_ms,
     )
     if labels.height <= 0:
         raise ValueError("private_execution_v1 produced no label rows in requested window")
     merged = merged.join(labels, on=["market", "ts_ms"], how="inner")
     if merged.height <= 0:
-        raise ValueError("tradability expert found no overlapping expert rows with private execution labels")
+        raise ValueError(
+            "tradability expert found no overlapping expert rows with private execution labels "
+            f"for operating interval {operating_interval_ms}ms"
+        )
     feature_names, _monotone_signs, feature_contract = _build_fusion_numeric_feature_contract(merged)
     label_columns = {
         "decision_bucket_ts_ms",
+        "decision_bar_interval_ms",
         "y_tradeable",
         "y_fill_within_deadline",
         "y_shortfall_bps",
@@ -230,6 +265,7 @@ def _load_and_merge_tradability_inputs(options: TrainV5TradabilityOptions) -> tu
             "lob": lob_meta,
         },
         "private_execution_root": str(options.private_execution_root),
+        "operating_interval_ms": int(operating_interval_ms),
         "feature_contract": feature_contract,
         "rows": int(merged.height),
     }
@@ -640,7 +676,7 @@ def train_and_register_v5_tradability(options: TrainV5TradabilityOptions) -> Tra
     )
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
-        tf="5m",
+        tf=str(options.operating_tf).strip().lower() or "1m",
         feature_columns=feature_names,
         markets=merged.get_column("market").to_numpy(),
         ts_ms=merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False),

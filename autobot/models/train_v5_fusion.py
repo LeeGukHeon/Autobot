@@ -115,6 +115,7 @@ class TrainV5FusionOptions:
     start: str
     end: str
     seed: int
+    operating_tf: str = "1m"
     tradability_input_path: Path | None = None
     panel_runtime_input_path: Path | None = None
     sequence_runtime_input_path: Path | None = None
@@ -2786,7 +2787,7 @@ def train_and_register_v5_fusion(options: TrainV5FusionOptions) -> TrainV5Fusion
 
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
-        tf="5m",
+        tf=str(options.operating_tf).strip().lower() or "1m",
         feature_columns=tuple(runtime_input_bundle.feature_names),
         markets=runtime_markets,
         ts_ms=runtime_ts_ms,
@@ -2982,6 +2983,7 @@ def _options_from_v5_fusion_train_config(train_config: dict[str, Any]) -> TrainV
         runtime_start=(str(base.get("runtime_start", "")).strip() or None),
         runtime_end=(str(base.get("runtime_end", "")).strip() or None),
         seed=int(base["seed"]),
+        operating_tf=str(base.get("operating_tf", "1m")).strip().lower() or "1m",
         stacker_family=str(base.get("stacker_family", "linear")),
         input_variant_name=str(base.get("input_variant_name", "full_fusion") or "full_fusion"),
         include_sequence=base.get("include_sequence"),
@@ -3072,7 +3074,7 @@ def resume_v5_fusion_tail(*, run_dir: Path) -> TrainV5FusionResult:
     )
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
-        tf="5m",
+        tf=str(options.operating_tf).strip().lower() or "1m",
         feature_columns=tuple(runtime_input_bundle.feature_names),
         markets=runtime_merged.get_column("market").to_numpy(),
         ts_ms=runtime_merged.get_column("ts_ms").to_numpy().astype(np.int64, copy=False),

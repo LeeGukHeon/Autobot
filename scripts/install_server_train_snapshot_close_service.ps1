@@ -5,6 +5,7 @@ param(
     [string]$ServiceUnitName = "autobot-v5-train-snapshot-close.service",
     [string]$TimerUnitName = "autobot-v5-train-snapshot-close.timer",
     [string]$CloseScript = "",
+    [string]$Tf = "1m",
     [string]$OnCalendar = "*-*-* 00:05:00",
     [string]$LockFile = "/tmp/autobot-v5-train-snapshot-close.lock",
     [switch]$NoStart,
@@ -33,7 +34,8 @@ $closeArgs = @(
     "-ExecutionPolicy", "Bypass",
     "-File", $resolvedCloseScript,
     "-ProjectRoot", $resolvedProjectRoot,
-    "-PythonExe", $resolvedPythonExe
+    "-PythonExe", $resolvedPythonExe,
+    "-Tf", ([string]$Tf).Trim().ToLowerInvariant()
 )
 $closeCommand = $resolvedPwshExe + " " + (($closeArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 $execStart = Build-FlockWrappedExecStart `

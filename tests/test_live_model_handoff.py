@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -331,6 +332,39 @@ def test_resolve_runtime_allowed_markets_reads_fusion_runtime_contract(tmp_path:
 
     markets = runtime_bootstrap.resolve_runtime_allowed_markets(predictor=_Predictor(run_dir))
     assert markets == ["KRW-BTC", "KRW-ETH"]
+
+
+def test_build_live_feature_provider_passes_one_minute_tf_to_v5_provider() -> None:
+    captured: dict[str, object] = {}
+
+    class _V5Provider:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            captured.update(kwargs)
+
+    provider = runtime_bootstrap.build_live_feature_provider(
+        predictor=SimpleNamespace(feature_columns=("panel_feature",), model_family="train_v5_fusion"),
+        settings=SimpleNamespace(
+            tf="1m",
+            quote="KRW",
+            paper_live_micro_max_age_ms=300_000,
+            paper_live_parquet_root="data/parquet",
+            paper_live_candles_dataset="candles_api_v1",
+            paper_live_bootstrap_1m_bars=2_000,
+            daemon=SimpleNamespace(registry_root="models/registry"),
+            model_alpha=SimpleNamespace(feature_set="v4"),
+            paper_feature_provider="",
+        ),
+        micro_snapshot_provider=None,
+        resolve_model_alpha_runtime_row_columns_fn=lambda predictor: ("close",),
+        live_feature_provider_v3_cls=object,
+        live_feature_provider_v5_cls=_V5Provider,
+        live_feature_provider_v4_cls=object,
+        live_feature_provider_v4_native_cls=object,
+    )
+
+    assert isinstance(provider, _V5Provider)
+    assert captured["tf"] == "1m"
+    assert captured["registry_root"] == "models/registry"
 
 
 def test_live_startup_binds_runtime_model_and_ws_public_contract(tmp_path: Path, monkeypatch) -> None:
@@ -805,6 +839,70 @@ def test_runtime_installer_dry_run_accepts_model_family_override() -> None:
     assert "Environment=AUTOBOT_RUNTIME_MODEL_FAMILY=train_v5_panel_ensemble" in stdout
     assert "--model-family" in stdout
     assert "train_v5_panel_ensemble" in stdout
+
+
+def test_runtime_installer_paired_v5_defaults_to_one_minute_tf() -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer dry-run test")
+    script = REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-PaperPreset",
+            "paired_v5",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "--tf" in stdout
+    assert "1m" in stdout
+
+
+def test_runtime_installer_paired_v4_keeps_five_minute_tf_default() -> None:
+    pwsh = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("PowerShell executable is required for installer dry-run test")
+    script = REPO_ROOT / "scripts" / "install_server_runtime_services.ps1"
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-PaperPreset",
+            "paired_v4",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    stdout = completed.stdout
+    assert "--tf" in stdout
+    assert "5m" in stdout
 
 
 def test_runtime_installer_rejects_challenger_role_without_pinned_candidate_ref() -> None:

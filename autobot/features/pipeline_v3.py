@@ -31,6 +31,7 @@ from .micro_required_join_v1 import load_market_micro_for_base, resolve_micro_da
 
 
 DEFAULT_FEATURES_V3_YAML = "features_v3.yaml"
+_SUPPORTED_FEATURE_BASE_TFS_V3: tuple[str, ...] = ("1m", "5m")
 
 
 FEATURES_V3_MANIFEST_SCHEMA: dict[str, pl.DataType] = {
@@ -206,8 +207,8 @@ def load_features_v3_config(
         high_tfs = ("15m", "60m", "240m")
 
     tf_value = str(root.get("tf", "5m")).strip().lower() or "5m"
-    if tf_value != "5m":
-        raise ValueError("features_v3.tf currently supports only 5m")
+    if tf_value not in _SUPPORTED_FEATURE_BASE_TFS_V3:
+        raise ValueError("features_v3.tf currently supports only 1m or 5m")
 
     return FeaturesV3Config(
         build=FeaturesV3BuildConfig(
@@ -251,8 +252,8 @@ def build_features_dataset_v3(config: FeaturesV3Config, options: FeatureBuildV3O
         raise ValueError("label_set currently supports only v1")
 
     tf = str(options.tf or config.build.tf).strip().lower()
-    if tf != "5m":
-        raise ValueError("features_v3 currently supports only --tf 5m")
+    if tf not in _SUPPORTED_FEATURE_BASE_TFS_V3:
+        raise ValueError("features_v3 currently supports only --tf 1m or 5m")
     quote = str(options.quote or config.universe.quote).strip().upper()
     top_n = max(1, int(options.top_n if options.top_n is not None else config.universe.top_n))
     start_text = str(options.start or config.time_range.start).strip()

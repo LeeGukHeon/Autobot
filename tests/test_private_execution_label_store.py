@@ -19,8 +19,8 @@ def test_build_private_execution_label_store_writes_dataset_and_reports(tmp_path
                 market="KRW-BTC",
                 status="CLOSED",
                 entry_intent_id="intent-1",
-                entry_submitted_ts_ms=1_774_569_600_000,
-                entry_filled_ts_ms=1_774_569_620_000,
+                entry_submitted_ts_ms=1_774_569_689_000,
+                entry_filled_ts_ms=1_774_569_709_000,
                 exit_ts_ms=1_774_569_900_000,
                 entry_price=100.0,
                 exit_price=101.0,
@@ -33,6 +33,14 @@ def test_build_private_execution_label_store_writes_dataset_and_reports(tmp_path
                 entry_meta_json=json.dumps(
                     {
                         "runtime": {"model_family": "train_v5_fusion", "live_runtime_model_run_id": "run-live"},
+                        "strategy": {
+                            "meta": {
+                                "model_exit_plan": {
+                                    "bar_interval_ms": 60_000,
+                                    "hold_bars": 30,
+                                }
+                            }
+                        },
                         "execution_policy": {"deadline_ms": 60_000, "selected_action_code": "LIMIT_GTC_JOIN"},
                         "execution": {"requested_price": 100.0, "requested_volume": 1.0},
                     },
@@ -64,10 +72,10 @@ def test_build_private_execution_label_store_writes_dataset_and_reports(tmp_path
                 expected_edge_bps=30.0,
                 expected_net_edge_bps=20.0,
                 expected_es_bps=5.0,
-                submitted_ts_ms=1_774_569_600_000,
-                first_fill_ts_ms=1_774_569_620_000,
-                full_fill_ts_ms=1_774_569_620_000,
-                final_ts_ms=1_774_569_620_000,
+                submitted_ts_ms=1_774_569_689_000,
+                first_fill_ts_ms=1_774_569_709_000,
+                full_fill_ts_ms=1_774_569_709_000,
+                final_ts_ms=1_774_569_709_000,
                 final_state="FILLED",
                 filled_price=100.1,
                 shortfall_bps=1.0,
@@ -76,7 +84,7 @@ def test_build_private_execution_label_store_writes_dataset_and_reports(tmp_path
                 partial_fill=False,
                 full_fill=True,
                 outcome_json="{}",
-                updated_ts=1_774_569_620_000,
+                updated_ts=1_774_569_709_000,
             )
         )
         store.upsert_order(
@@ -90,8 +98,8 @@ def test_build_private_execution_label_store_writes_dataset_and_reports(tmp_path
                 volume_req=1.0,
                 volume_filled=1.0,
                 state="done",
-                created_ts=1_774_569_600_000,
-                updated_ts=1_774_569_620_000,
+                created_ts=1_774_569_689_000,
+                updated_ts=1_774_569_709_000,
                 intent_id="intent-1",
                 local_state="FILLED",
                 replace_seq=2,
@@ -125,5 +133,92 @@ def test_build_private_execution_label_store_writes_dataset_and_reports(tmp_path
     assert frame.item(0, "order_replace_seq") == 2
     assert frame.item(0, "rollout_mode") == "candidate"
     assert frame.item(0, "live_runtime_health_status") == "ready"
+    assert frame.item(0, "decision_bar_interval_ms") == 60_000
+    assert frame.item(0, "decision_bucket_ts_ms") == 1_774_569_660_000
     assert frame.item(0, "y_tradeable") == 1
     assert frame.item(0, "filled_within_deadline") is True
+
+
+def test_build_private_execution_label_store_preserves_mixed_one_minute_and_legacy_five_minute_intervals(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    db_path = project_root / "data" / "state" / "live" / "live_state.db"
+    with LiveStateStore(db_path) as store:
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-1m",
+                market="KRW-BTC",
+                status="CLOSED",
+                entry_intent_id="intent-1m",
+                entry_submitted_ts_ms=1_774_569_689_000,
+                entry_filled_ts_ms=1_774_569_709_000,
+                exit_ts_ms=1_774_569_900_000,
+                entry_price=100.0,
+                exit_price=101.0,
+                qty=1.0,
+                realized_pnl_quote=10.0,
+                model_prob=0.9,
+                expected_edge_bps=30.0,
+                expected_downside_bps=5.0,
+                expected_net_edge_bps=20.0,
+                entry_meta_json=json.dumps(
+                    {
+                        "runtime": {
+                            "model_family": "train_v5_fusion",
+                            "live_runtime_model_run_id": "run-1m",
+                            "tf": "1m",
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                updated_ts=1_774_569_900_000,
+            )
+        )
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-legacy",
+                market="KRW-ETH",
+                status="CLOSED",
+                entry_intent_id="intent-legacy",
+                entry_submitted_ts_ms=1_774_569_689_000,
+                entry_filled_ts_ms=1_774_569_709_000,
+                exit_ts_ms=1_774_569_900_000,
+                entry_price=200.0,
+                exit_price=201.0,
+                qty=1.0,
+                realized_pnl_quote=5.0,
+                model_prob=0.8,
+                expected_edge_bps=15.0,
+                expected_downside_bps=4.0,
+                expected_net_edge_bps=10.0,
+                entry_meta_json=json.dumps(
+                    {
+                        "runtime": {"model_family": "train_v4_crypto_cs", "live_runtime_model_run_id": "run-legacy"},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                updated_ts=1_774_569_900_000,
+            )
+        )
+
+    payload = build_private_execution_label_store(project_root=project_root)
+
+    manifest = pl.read_parquet(project_root / "data" / "parquet" / "private_execution_v1" / "_meta" / "manifest.parquet")
+    parts = [pl.read_parquet(Path(path)) for path in manifest.get_column("part_file").to_list()]
+    frame = pl.concat(parts, how="vertical_relaxed").sort("market")
+
+    intervals = {
+        str(row["market"]): int(row["decision_bar_interval_ms"])
+        for row in frame.select(["market", "decision_bar_interval_ms"]).to_dicts()
+    }
+    buckets = {
+        str(row["market"]): int(row["decision_bucket_ts_ms"])
+        for row in frame.select(["market", "decision_bucket_ts_ms"]).to_dicts()
+    }
+
+    assert payload["status"] == "PASS"
+    assert intervals["KRW-BTC"] == 60_000
+    assert intervals["KRW-ETH"] == 300_000
+    assert buckets["KRW-BTC"] == 1_774_569_660_000
+    assert buckets["KRW-ETH"] == 1_774_569_600_000

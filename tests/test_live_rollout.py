@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -696,6 +697,43 @@ def test_live_installer_candidate_accepts_small_account_position_override() -> N
     assert "Environment=AUTOBOT_LIVE_SMALL_ACCOUNT_MAX_POSITIONS=2" in stdout
 
 
+def test_live_installer_dry_run_emits_strategy_tf_override_when_requested() -> None:
+    script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-ProjectRoot",
+            str(REPO_ROOT),
+            "-PythonExe",
+            "python",
+            "-UnitName",
+            "autobot-live-alpha-canary.service",
+            "-RolloutMode",
+            "canary",
+            "-RolloutTargetUnit",
+            "autobot-live-alpha-canary.service",
+            "-StrategyTf",
+            "1m",
+            "-SyncMode",
+            "private_ws",
+            "-StrategyRuntime",
+            "-DryRun",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stdout = completed.stdout
+    assert "[live-install][dry-run] strategy_tf=1m" in stdout
+    assert "Environment=AUTOBOT_LIVE_STRATEGY_TF=1m" in stdout
+
+
 def test_live_installer_main_defaults_to_server_live_state_path_when_blank() -> None:
     script = REPO_ROOT / "scripts" / "install_server_live_runtime_service.ps1"
     completed = subprocess.run(
@@ -740,6 +778,7 @@ def test_live_defaults_accept_environment_overrides(monkeypatch: pytest.MonkeyPa
             "sync": {"use_private_ws": False, "use_executor_ws": False},
             "model": {"ref": "champion_v4", "family": "train_v4_crypto_cs", "registry_root": "models/registry"},
             "rollout": {"mode": "shadow", "target_unit": "autobot-live-alpha.service"},
+            "strategy": {"tf": "5m"},
         },
         "universe": {"quote_currency": "KRW"},
     }
@@ -751,6 +790,7 @@ def test_live_defaults_accept_environment_overrides(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("AUTOBOT_LIVE_ROLLOUT_MODE", "canary")
     monkeypatch.setenv("AUTOBOT_LIVE_TARGET_UNIT", "autobot-live-alpha-candidate.service")
     monkeypatch.setenv("AUTOBOT_LIVE_SYNC_MODE", "poll")
+    monkeypatch.setenv("AUTOBOT_LIVE_STRATEGY_TF", "1m")
 
     defaults = cli_module._live_defaults(base_config)
 
@@ -763,3 +803,59 @@ def test_live_defaults_accept_environment_overrides(monkeypatch: pytest.MonkeyPa
     assert defaults["rollout_target_unit"] == "autobot-live-alpha-candidate.service"
     assert defaults["sync_use_private_ws"] is False
     assert defaults["sync_use_executor_ws"] is False
+    assert defaults["strategy_tf"] == "1m"
+
+
+def test_build_live_model_alpha_runtime_settings_prefers_live_strategy_tf_override() -> None:
+    daemon_settings = SimpleNamespace(use_executor_ws=False)
+    live_defaults = {
+        "quote_currency": "KRW",
+        "strategy_tf": "1m",
+        "strategy_decision_interval_sec": 1.0,
+        "risk_enabled": False,
+        "risk_exit_aggress_bps": 8.0,
+        "risk_timeout_sec": 20,
+        "risk_replace_max": 2,
+        "risk_default_trail_pct": 1.0,
+    }
+    strategy_defaults = {
+        "quote": "KRW",
+        "top_n": 20,
+        "tf": "5m",
+        "universe_refresh_sec": 60.0,
+        "universe_hold_sec": 120.0,
+        "per_trade_krw": 10000.0,
+        "max_positions": 2,
+        "min_order_krw": 5000.0,
+        "max_consecutive_failures": 3,
+        "cooldown_sec_after_fail": 60,
+        "micro_gate": {},
+        "micro_order_policy": {},
+        "paper_live_parquet_root": "data/parquet",
+        "paper_live_candles_dataset": "candles_api_v1",
+        "paper_live_bootstrap_1m_bars": 2000,
+        "paper_live_micro_max_age_ms": 300000,
+        "model_alpha": {},
+    }
+
+    settings = cli_module._build_live_model_alpha_runtime_settings(
+        daemon_settings=daemon_settings,
+        live_defaults=live_defaults,
+        strategy_defaults=strategy_defaults,
+    )
+
+    assert settings.tf == "1m"
+
+
+def test_resolve_v5_reconcile_interval_ms_uses_one_minute_for_v5_fusion() -> None:
+    assert cli_module._resolve_v5_reconcile_interval_ms(
+        model_family="train_v5_fusion",
+        strategy_tf="1m",
+    ) == 60_000
+
+
+def test_resolve_v5_reconcile_interval_ms_leaves_legacy_family_at_five_minutes() -> None:
+    assert cli_module._resolve_v5_reconcile_interval_ms(
+        model_family="train_v4_crypto_cs",
+        strategy_tf="1m",
+    ) == 300_000

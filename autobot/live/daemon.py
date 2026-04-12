@@ -1822,9 +1822,16 @@ def _run_sync_cycle_with_breakers(
     client: Any,
     settings: LiveDaemonSettings,
     ts_ms: int,
+    runtime_interval_ms: int | None = None,
 ) -> dict[str, Any]:
     try:
-        cycle_result = _run_sync_cycle(store=store, client=client, settings=settings, ts_ms=ts_ms)
+        cycle_result = _run_sync_cycle(
+            store=store,
+            client=client,
+            settings=settings,
+            ts_ms=ts_ms,
+            runtime_interval_ms=runtime_interval_ms,
+        )
     except UpbitError as exc:
         reason_code = classify_upbit_exception(exc)
         sync_error = {
@@ -2059,6 +2066,7 @@ def _run_sync_cycle(
     client: Any,
     settings: LiveDaemonSettings,
     ts_ms: int,
+    runtime_interval_ms: int | None = None,
 ) -> dict[str, Any]:
     accounts = client.accounts()
     open_orders = client.open_orders(states=("wait", "watch"))
@@ -2101,7 +2109,7 @@ def _run_sync_cycle(
         registry_root=str(settings.registry_root),
         runtime_model_ref_source=str(settings.runtime_model_ref_source),
         runtime_model_family=str(settings.runtime_model_family),
-        runtime_interval_ms=300000,
+        runtime_interval_ms=max(int(runtime_interval_ms or 300_000), 1),
         quote_currency=settings.quote_currency,
         dry_run=False,
         ts_ms=ts_ms,

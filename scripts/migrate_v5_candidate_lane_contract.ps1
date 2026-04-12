@@ -202,6 +202,7 @@ if (-not $NoInstall) {
         "-PythonExe", $resolvedPythonExe,
         "-PaperUnitName", "autobot-paper-v5-paired.service",
         "-PaperPreset", "paired_v5",
+        "-PairedPaperTf", "1m",
         "-PaperRuntimeRole", "paired",
         "-PaperModelFamilyOverride", "train_v5_fusion",
         "-PaperChampionModelFamilyOverride", "train_v5_fusion",
@@ -225,6 +226,7 @@ if (-not $NoInstall) {
         "-StateDbPath", "data/state/live_canary/live_state.db",
         "-ModelRefSource", "latest_candidate",
         "-ModelFamily", "train_v5_fusion",
+        "-StrategyTf", "1m",
         "-StrategyRuntime"
     )
     if ($NoStart) { $liveArgs += "-NoStart" }

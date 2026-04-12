@@ -116,7 +116,7 @@
 - `strategy.micro_order_policy.safety.forbid_post_only_with_cross`: bool (default: `true`)
 - precedence note: when `strategy=model_alpha_v1` and `strategy.micro_order_policy.enabled=true`, policy acts as a conservative overlay on `strategy.model_alpha_v1.execution`; it may make orders more conservative or block/escalate them, but it does not make initial orders more aggressive than the strategy base profile.
 - `strategy.model_alpha_v1.model_ref`: string (default: `champion`)
-- `strategy.model_alpha_v1.model_family`: string (default: `train_v5_panel_ensemble`)
+- `strategy.model_alpha_v1.model_family`: string (default: `train_v5_fusion`)
   - `strategy.model_alpha_v1.feature_set`: string (default: `v4`)
   - `strategy.model_alpha_v1.selection.top_pct`: number (default: `0.50`)
 - `strategy.model_alpha_v1.selection.min_prob`: number nullable (default: `null`, uses registry threshold when null)
@@ -130,13 +130,13 @@
   - if the loaded model has no recommendation entry for the active threshold key, runtime falls back to config/preset `top_pct` and `min_candidates_per_ts`
   - this learned-selection path is for always-on runtime/paper usage, not the fixed acceptance compare profile
 - `strategy.model_alpha_v1.position.max_positions_total`: integer (default: `3`)
-- `strategy.model_alpha_v1.position.cooldown_bars`: integer (default: `6`)
+- `strategy.model_alpha_v1.position.cooldown_bars`: integer (default: `30`)
 - `strategy.model_alpha_v1.position.entry_min_notional_buffer_bps`: number (default: `25.0`)
 - `strategy.model_alpha_v1.position.sizing_mode`: `fixed | prob_ramp` (default: `prob_ramp`)
 - `strategy.model_alpha_v1.position.size_multiplier_min`: number (default: `0.5`)
 - `strategy.model_alpha_v1.position.size_multiplier_max`: number (default: `1.5`)
 - `strategy.model_alpha_v1.exit.mode`: `hold | risk` (default: `hold`)
-- `strategy.model_alpha_v1.exit.hold_bars`: integer (default: `6`)
+- `strategy.model_alpha_v1.exit.hold_bars`: integer (default: `30`)
 - `strategy.model_alpha_v1.exit.use_learned_exit_mode`: bool (default: `true`)
   - when `true`, runtime first reads model-run `runtime_recommendations.json.exit.recommended_exit_mode`
   - `hold` and `risk` are compared on the same execution-aware tournament and the winning mode is persisted
@@ -167,7 +167,7 @@
 - `strategy.model_alpha_v1.exit.expected_exit_slippage_bps`: number nullable (default: `null`, inferred from execution price mode when null)
 - `strategy.model_alpha_v1.exit.expected_exit_fee_bps`: number nullable (default: `null`, uses observed entry fill fee when null)
 - `strategy.model_alpha_v1.execution.price_mode`: `PASSIVE_MAKER | JOIN | CROSS_1T` (default: `JOIN`)
-- `strategy.model_alpha_v1.execution.timeout_bars`: integer (default: `2`)
+- `strategy.model_alpha_v1.execution.timeout_bars`: integer (default: `10`)
 - `strategy.model_alpha_v1.execution.replace_max`: integer (default: `2`)
 - `strategy.model_alpha_v1.execution.use_learned_recommendations`: bool (default: `true`)
   - when `true`, runtime first reads model-run `runtime_recommendations.json.execution`
@@ -221,14 +221,14 @@
 ## Backtest
 - `backtest.dataset_name`: string (default: `candles_v1`)
 - `backtest.parquet_root`: path (default: `data/parquet`)
-- `backtest.tf`: timeframe string (default: `5m`)
+- `backtest.tf`: timeframe string (default: `1m`)
 - `backtest.from_ts_ms`: int64 nullable
 - `backtest.to_ts_ms`: int64 nullable
 - `backtest.duration_days`: integer nullable
 - `backtest.seed`: integer (default: `0`)
 - `backtest.strategy.name`: `candidates_v1 | model_alpha_v1` (default: `model_alpha_v1`)
 - `backtest.strategy.model_ref`: string (default: `champion`)
-- `backtest.strategy.model_family`: string (default: `train_v5_panel_ensemble`)
+- `backtest.strategy.model_family`: string (default: `train_v5_fusion`)
   - `backtest.strategy.feature_set`: string (default: `v4`)
 - `backtest.strategy.model_registry_root`: path (default: `models/registry`)
 - `backtest.strategy.model_feature_dataset_root`: path nullable (default: `null`)
@@ -242,7 +242,7 @@
 - `backtest.data.dense_grid`: bool (default: `false`)
 
 ### Backtest Execution
-- `backtest.execution.order_timeout_bars`: integer (default: `5`)
+- `backtest.execution.order_timeout_bars`: integer (default: `25`)
 - `backtest.execution.reprice_max_attempts`: integer (default: `1`)
 - `backtest.execution.reprice_tick_steps`: integer (default: `1`)
 - `backtest.execution.rules_ttl_sec`: integer (default: `86400`)
@@ -372,7 +372,7 @@
 ### Feature Set v3
 - config file: `config/features_v3.yaml`
 - `features_v3.output_dataset`: string (default: `features_v3`)
-- `features_v3.tf`: timeframe string (`5m` only)
+- `features_v3.tf`: timeframe string (`1m | 5m`)
 - `features_v3.base_candles_dataset`: `auto | candles_api_v1 | candles_v1 | <path>`
 - `features_v3.micro_dataset`: dataset name or path (default: `micro_v1`)
 - `features_v3.high_tfs`: timeframe array subset of `[15m,60m,240m]`
@@ -396,7 +396,7 @@
 - config file: `config/features_v4.yaml`
 - current scope: research lane for `features build|validate|stats` and `model train`
 - `features_v4.output_dataset`: string (default: `features_v4`)
-- `features_v4.tf`: timeframe string (`5m` only)
+- `features_v4.tf`: timeframe string (`1m | 5m`)
 - `features_v4.base_candles_dataset`: `auto | candles_api_v1 | candles_v1 | <path>`
 - `features_v4.micro_dataset`: dataset name or path (default: `micro_v1`)
 - `features_v4.high_tfs`: timeframe array subset of `[15m,60m,240m]`
@@ -421,7 +421,7 @@
 - `train.registry_root`: path (default: `models/registry`)
 - `train.logs_root`: path (default: `logs`)
 - `train.model_family`: string (default: `train_v1`)
-- `train.tf`: timeframe (default: `5m`)
+- `train.tf`: timeframe (default: `1m`)
 - `train.quote`: quote filter (default: `KRW`)
 - `train.top_n`: integer (default: `20`)
 - `train.start`: `YYYY-MM-DD`
@@ -436,7 +436,7 @@
 - `train.train_ratio`: float (default: `0.70`)
 - `train.valid_ratio`: float (default: `0.15`)
 - `train.test_ratio`: float (default: `0.15`)
-- `train.embargo_bars`: integer (default: `12`)
+- `train.embargo_bars`: integer (default: `60`)
 - `train.baseline_alpha`: float (default: `0.0001`)
 - `train.baseline_epochs`: integer (default: `3`)
 - `train.fee_bps_est`: float (default: `10.0`)
@@ -598,7 +598,7 @@
     - `paper_min_orders_filled=2`
     - `paper_min_realized_pnl_quote=0.0`
 - `scripts/v3_candidate_acceptance.ps1`: thin wrapper for `train_v3_mtf_micro`
-- `scripts/v5_governed_candidate_acceptance.ps1`: primary wrapper for `train_v5_panel_ensemble`
+- `scripts/v5_governed_candidate_acceptance.ps1`: primary wrapper for `train_v5_fusion`
 - `scripts/v4_candidate_acceptance.ps1`: legacy thin wrapper for `train_v4_crypto_cs`
   - v3/v4 acceptance now shares one fixed compare profile for backtest/paper soak:
     - `top_pct=0.50`

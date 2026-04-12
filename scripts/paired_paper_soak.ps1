@@ -4,7 +4,7 @@ param(
     [int]$DurationSec = 360,
     [string]$Quote = "KRW",
     [int]$TopN = 20,
-    [string]$Tf = "5m",
+    [string]$Tf = "1m",
     [string]$ChampionModelRef = "",
     [string]$ChallengerModelRef = "",
     [string]$ModelFamily = "train_v5_fusion",

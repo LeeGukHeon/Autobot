@@ -19,7 +19,7 @@ live:
     use_executor_ws: false
   model:
     ref: "champion"
-    family: "train_v5_panel_ensemble"
+    family: "train_v5_fusion"
     registry_root: "models/registry"
   data_plane:
     ws_public:
@@ -57,6 +57,7 @@ live:
     max_open_orders_per_market: 1
   strategy:
     enabled: false
+    tf: "1m"
     decision_interval_sec: 1.0
 
 universe:

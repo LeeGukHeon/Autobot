@@ -1,6 +1,8 @@
 param(
     [string]$ProjectRoot = "",
     [string]$PythonExe = "",
+    [string]$Tf = "1m",
+    [int]$HoldBars = 30,
     [string]$BatchDate = "",
     [string]$OutDir = "logs/model_v5_runtime_parity_fast",
     [int]$TrainLookbackDays = 30,
@@ -22,6 +24,8 @@ $trainDataQualityFloorDate = Get-V4TrainDataQualityFloorDate
 & (Join-Path $PSScriptRoot "candidate_acceptance.ps1") `
     -ProjectRoot $resolvedProjectRoot `
     -PythonExe $resolvedPythonExe `
+    -Tf $Tf `
+    -HoldBars $HoldBars `
     -BatchDate $BatchDate `
     -ModelFamily "train_v5_fusion" `
     -Trainer "v5_fusion" `

@@ -42,6 +42,13 @@ DEFAULT_PAIRED_PRESET = "live_v5"
 _STREAM_SENTINEL = object()
 
 
+def _default_tf_for_preset(preset: str) -> str:
+    preset_value = str(preset).strip().lower() or DEFAULT_PAIRED_PRESET
+    if preset_value in {"live_v5", "candidate_v5", "offline_v5", "paired_v5"}:
+        return "1m"
+    return "5m"
+
+
 @dataclass(frozen=True)
 class RecordedPublicEventTape:
     markets: tuple[str, ...]
@@ -872,7 +879,7 @@ def _build_paper_run_settings(
         duration_sec=max(int(duration_sec), 0) if allow_unbounded_duration else max(int(duration_sec), 1),
         quote=str(quote).strip().upper() or "KRW",
         top_n=max(int(top_n), 1),
-        tf=str(tf).strip().lower() or "5m",
+        tf=str(tf).strip().lower() or _default_tf_for_preset(preset),
         strategy="model_alpha_v1",
         model_ref=str(model_ref).strip(),
         model_family=str(model_family).strip() or "train_v4_crypto_cs",
@@ -1139,7 +1146,7 @@ def _build_parser() -> argparse.ArgumentParser:
     live_parser.add_argument("--duration-sec", type=int, required=True)
     live_parser.add_argument("--quote", default="KRW")
     live_parser.add_argument("--top-n", type=int, default=20)
-    live_parser.add_argument("--tf", default="5m")
+    live_parser.add_argument("--tf", default="")
     live_parser.add_argument("--champion-model-ref", required=True)
     live_parser.add_argument("--challenger-model-ref", required=True)
     live_parser.add_argument("--model-family", default="train_v4_crypto_cs")
@@ -1170,7 +1177,7 @@ def _build_parser() -> argparse.ArgumentParser:
     service_parser.add_argument("--config-dir", default="config")
     service_parser.add_argument("--quote", default="KRW")
     service_parser.add_argument("--top-n", type=int, default=20)
-    service_parser.add_argument("--tf", default="5m")
+    service_parser.add_argument("--tf", default="")
     service_parser.add_argument("--model-family", default="train_v4_crypto_cs")
     service_parser.add_argument("--champion-model-family", default="")
     service_parser.add_argument("--challenger-model-family", default="")

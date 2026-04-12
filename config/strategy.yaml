@@ -73,8 +73,9 @@
       forbid_post_only_with_cross: true
   model_alpha_v1:
     model_ref: champion
-    model_family: train_v5_panel_ensemble
+    model_family: train_v5_fusion
     feature_set: v4
+    tf: "1m"
     selection:
       top_pct: 0.50
       min_prob: null
@@ -83,14 +84,14 @@
       use_learned_recommendations: true
     position:
       max_positions_total: 3
-      cooldown_bars: 6
+      cooldown_bars: 30
       entry_min_notional_buffer_bps: 25.0
       sizing_mode: prob_ramp
       size_multiplier_min: 0.5
       size_multiplier_max: 1.5
     exit:
       mode: hold
-      hold_bars: 6
+      hold_bars: 30
       use_learned_exit_mode: true
       use_learned_hold_bars: true
       use_learned_risk_recommendations: true
@@ -106,7 +107,7 @@
       expected_exit_fee_bps: null
     execution:
       price_mode: JOIN
-      timeout_bars: 2
+      timeout_bars: 10
       replace_max: 2
       use_learned_recommendations: true
     operational:

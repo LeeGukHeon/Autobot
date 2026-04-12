@@ -7,7 +7,7 @@ param(
     [string]$BatchDate = "",
     [string]$Quote = "KRW",
     [int]$TrainTopN = 50,
-    [string]$Tf = "5m",
+    [string]$Tf = "1m",
     [int]$V3TrainLookbackDays = 30,
     [int]$V4TrainLookbackDays = 30,
     [int]$LanePollIntervalSec = 30,

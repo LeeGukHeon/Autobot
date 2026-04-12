@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 from autobot.models.train_v5_tradability import (
     TrainV5TradabilityOptions,
@@ -64,6 +65,7 @@ def test_train_v5_tradability_writes_core_contract_artifacts(tmp_path: Path) -> 
             "market": ["KRW-BTC", "KRW-BTC", "KRW-BTC"],
             "ts_ms": [1_774_569_600_000, 1_774_570_200_000, 1_774_570_800_000],
             "decision_bucket_ts_ms": [1_774_569_600_000, 1_774_570_200_000, 1_774_570_800_000],
+            "decision_bar_interval_ms": [60_000, 60_000, 60_000],
             "y_tradeable": [1, 1, 0],
             "y_fill_within_deadline": [1, 1, 1],
             "y_shortfall_bps": [1.0, 1.2, 4.0],
@@ -199,6 +201,7 @@ def test_load_private_execution_rows_tolerates_nullable_schema_drift_between_par
             "market": ["KRW-BTC"],
             "ts_ms": [1_774_569_600_000],
             "decision_bucket_ts_ms": [1_774_569_600_000],
+            "decision_bar_interval_ms": [300_000],
             "first_fill_ts_ms": [None],
             "y_tradeable": [1],
             "y_fill_within_deadline": [1],
@@ -211,6 +214,7 @@ def test_load_private_execution_rows_tolerates_nullable_schema_drift_between_par
             "market": ["KRW-BTC"],
             "ts_ms": [1_774_656_000_000],
             "decision_bucket_ts_ms": [1_774_656_000_000],
+            "decision_bar_interval_ms": [300_000],
             "first_fill_ts_ms": [1_774_656_010_000],
             "y_tradeable": [0],
             "y_fill_within_deadline": [0],
@@ -223,6 +227,81 @@ def test_load_private_execution_rows_tolerates_nullable_schema_drift_between_par
 
     assert frame.height == 2
     assert frame.get_column("ts_ms").to_list() == [1_774_569_600_000, 1_774_656_000_000]
+    assert frame.get_column("decision_bar_interval_ms").to_list() == [300_000, 300_000]
+
+
+def test_train_v5_tradability_requires_private_execution_labels_for_operating_interval(tmp_path: Path) -> None:
+    registry_root = tmp_path / "registry"
+    logs_root = tmp_path / "logs"
+    private_root = tmp_path / "data" / "parquet" / "private_execution_v1"
+    panel_path = tmp_path / "panel" / "expert_prediction_table.parquet"
+    sequence_path = tmp_path / "sequence" / "expert_prediction_table.parquet"
+    lob_path = tmp_path / "lob" / "expert_prediction_table.parquet"
+    base_rows = [
+        {
+            "market": "KRW-BTC",
+            "ts_ms": 1_774_569_600_000,
+            "split": "train",
+            "y_cls": 1,
+            "y_reg": 0.1,
+            "final_rank_score": 0.7,
+            "final_expected_return": 0.12,
+            "final_expected_es": 0.02,
+            "final_tradability": 0.6,
+            "final_uncertainty": 0.05,
+            "final_alpha_lcb": 0.05,
+        }
+    ]
+    _write_table(
+        panel_path,
+        base_rows,
+        train_config={"model_family": "train_v5_panel_ensemble", "trainer": "v5_panel_ensemble", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    _write_table(
+        sequence_path,
+        [{"market": "KRW-BTC", "ts_ms": 1_774_569_600_000, "directional_probability_primary": 0.6, "sequence_uncertainty_primary": 0.04}],
+        train_config={"model_family": "train_v5_sequence", "trainer": "v5_sequence", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    _write_table(
+        lob_path,
+        [{"market": "KRW-BTC", "ts_ms": 1_774_569_600_000, "micro_alpha_1s": 0.01, "micro_alpha_5s": 0.02, "micro_alpha_30s": 0.03, "micro_uncertainty": 0.02}],
+        train_config={"model_family": "train_v5_lob", "trainer": "v5_lob", "data_platform_ready_snapshot_id": "snapshot-1"},
+    )
+    private_meta = private_root / "_meta"
+    private_meta.mkdir(parents=True, exist_ok=True)
+    (private_meta / "build_report.json").write_text(json.dumps({"status": "PASS"}, ensure_ascii=False), encoding="utf-8")
+    (private_meta / "validate_report.json").write_text(json.dumps({"status": "PASS", "pass": True}, ensure_ascii=False), encoding="utf-8")
+    private_part = private_root / "market=KRW-BTC" / "date=2026-03-27"
+    private_part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "market": ["KRW-BTC"],
+            "ts_ms": [1_774_569_600_000],
+            "decision_bucket_ts_ms": [1_774_569_600_000],
+            "decision_bar_interval_ms": [300_000],
+            "y_tradeable": [1],
+            "y_fill_within_deadline": [1],
+            "y_shortfall_bps": [1.0],
+            "y_adverse_tolerance": [1],
+        }
+    ).write_parquet(private_part / "part-000.parquet")
+
+    with pytest.raises(ValueError, match="operating interval 60000ms"):
+        train_and_register_v5_tradability(
+            TrainV5TradabilityOptions(
+                panel_input_path=panel_path,
+                sequence_input_path=sequence_path,
+                lob_input_path=lob_path,
+                private_execution_root=private_root,
+                registry_root=registry_root,
+                logs_root=logs_root,
+                model_family="train_v5_tradability",
+                quote="KRW",
+                start="2026-03-27",
+                end="2026-03-27",
+                seed=42,
+            )
+        )
 
 
 def test_train_v5_tradability_derives_fallback_temporal_splits_when_input_split_is_missing(tmp_path: Path) -> None:
@@ -289,6 +368,7 @@ def test_train_v5_tradability_derives_fallback_temporal_splits_when_input_split_
             "market": ["KRW-BTC"] * len(ts_values),
             "ts_ms": ts_values,
             "decision_bucket_ts_ms": ts_values,
+            "decision_bar_interval_ms": [60_000] * len(ts_values),
             "y_tradeable": [1, 1, 0, 1, 0, 1],
             "y_fill_within_deadline": [1, 1, 1, 0, 1, 0],
             "y_shortfall_bps": [1.0, 1.2, 2.5, 1.5, 3.0, 1.1],
@@ -395,6 +475,7 @@ def test_train_v5_tradability_imputes_missing_expert_values(tmp_path: Path) -> N
             "market": ["KRW-BTC"] * len(ts_values),
             "ts_ms": ts_values,
             "decision_bucket_ts_ms": ts_values,
+            "decision_bar_interval_ms": [60_000] * len(ts_values),
             "y_tradeable": [1, 0, 1, 0, 1, 0],
             "y_fill_within_deadline": [1, 1, 0, 1, 0, 1],
             "y_shortfall_bps": [1.0, 1.4, 2.0, 1.8, 2.5, 1.1],

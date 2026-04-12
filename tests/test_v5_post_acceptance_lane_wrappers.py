@@ -16,6 +16,9 @@ def test_daily_champion_challenger_v5_wrapper_uses_v5_defaults() -> None:
     source = (REPO_ROOT / "scripts" / "daily_champion_challenger_v5_for_server.ps1").read_text(encoding="utf-8")
     assert 'logs/model_v5_candidate' in source
     assert 'autobot-paper-v5.service' in source
+    assert '[string]$Tf = "1m"' in source
+    assert '[int]$HoldBars = 30' in source
+    assert '[string]$PairedPaperTf = "1m"' in source
     assert '[string]$ChallengerUnitName = ""' in source
     assert 'autobot-paper-v5-paired.service' in source
     assert 'autobot-live-alpha-canary.service' in source
@@ -24,6 +27,8 @@ def test_daily_champion_challenger_v5_wrapper_uses_v5_defaults() -> None:
     assert 'run_candles_api_refresh.ps1' in source
     assert 'run_raw_ticks_daily.ps1' in source
     assert 'close_v5_train_ready_snapshot.ps1' in source
+    assert '"-Tf", ([string]$Tf).Trim().ToLowerInvariant()' in source
+    assert '"-HoldBars", ([string]([Math]::Max([int]$HoldBars, 1)))' in source
     assert '-SkipDeadline' in source
     assert '-SkipDailyPipeline:$true' in source
     assert '$serializedPreflightExpectedEnabledUnits = [string]::Join(' in source

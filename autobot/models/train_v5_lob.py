@@ -92,6 +92,7 @@ class TrainV5LobOptions:
     start: str
     end: str
     seed: int
+    operating_tf: str = "1m"
     backbone_family: str = "deeplob_v1"
     batch_size: int = 16
     epochs: int = 5
@@ -697,6 +698,7 @@ def _options_from_v5_lob_train_config(train_config: dict[str, Any]) -> TrainV5Lo
         start=str(base["start"]),
         end=str(base["end"]),
         seed=int(base["seed"]),
+        operating_tf=str(base.get("operating_tf", "1m")).strip().lower() or "1m",
         backbone_family=_normalize_lob_backbone_family(str(base.get("backbone_family", "deeplob_v1"))),
         batch_size=int(base.get("batch_size", 16)),
         epochs=int(base.get("epochs", 5)),
@@ -1845,7 +1847,7 @@ def train_and_register_v5_lob(options: TrainV5LobOptions) -> TrainV5LobResult:
     )
     runtime_dataset_written_root = write_runtime_feature_dataset(
         output_root=runtime_dataset_root,
-        tf="5m",
+        tf=str(options.operating_tf).strip().lower() or "1m",
         feature_columns=samples.feature_names,
         markets=samples.markets,
         ts_ms=samples.ts_ms,

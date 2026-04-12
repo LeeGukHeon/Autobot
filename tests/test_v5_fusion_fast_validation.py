@@ -22,6 +22,8 @@ def test_v5_fusion_fast_validation_targets_fast_acceptance_contract() -> None:
     assert '-ModelFamily "train_v5_fusion"' in source
     assert '-Trainer "v5_fusion"' in source
     assert '-DependencyTrainers @("v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability")' in source
+    assert '-Tf $Tf' in source
+    assert '-HoldBars $HoldBars' in source
     assert '-BacktestRuntimeParityEnabled:$false' in source
     assert '-SkipDailyPipeline' in source
     assert '-SkipPaperSoak' in source
@@ -41,9 +43,11 @@ def test_v5_fusion_fast_validation_delegates_to_candidate_acceptance(tmp_path: P
     )
     fake_candidate_acceptance = scripts_dir / "candidate_acceptance.ps1"
     fake_candidate_acceptance.write_text(
-        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$OutDir = '', [bool]$BacktestRuntimeParityEnabled = $true, [string[]]$DependencyTrainers = @(), [switch]$SkipDailyPipeline, [switch]$SkipPaperSoak, [switch]$SkipPromote, [switch]$SkipReportRefresh)\n"
+        "param([string]$ModelFamily = '', [string]$Trainer = '', [string]$Tf = '', [int]$HoldBars = -1, [string]$OutDir = '', [bool]$BacktestRuntimeParityEnabled = $true, [string[]]$DependencyTrainers = @(), [switch]$SkipDailyPipeline, [switch]$SkipPaperSoak, [switch]$SkipPromote, [switch]$SkipReportRefresh)\n"
         "Write-Host ('[fast-v5] family=' + $ModelFamily)\n"
         "Write-Host ('[fast-v5] trainer=' + $Trainer)\n"
+        "Write-Host ('[fast-v5] tf=' + $Tf)\n"
+        "Write-Host ('[fast-v5] hold_bars=' + [string]$HoldBars)\n"
         "Write-Host ('[fast-v5] outdir=' + $OutDir)\n"
         "Write-Host ('[fast-v5] parity=' + [string]$BacktestRuntimeParityEnabled)\n"
         "Write-Host ('[fast-v5] deps=' + (($DependencyTrainers | ForEach-Object { [string]$_ }) -join ','))\n"
@@ -84,6 +88,8 @@ def test_v5_fusion_fast_validation_delegates_to_candidate_acceptance(tmp_path: P
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
     assert "[fast-v5] family=train_v5_fusion" in completed.stdout
     assert "[fast-v5] trainer=v5_fusion" in completed.stdout
+    assert "[fast-v5] tf=1m" in completed.stdout
+    assert "[fast-v5] hold_bars=30" in completed.stdout
     assert "[fast-v5] outdir=logs/model_v5_acceptance_fast" in completed.stdout
     assert "[fast-v5] parity=False" in completed.stdout
     assert "[fast-v5] deps=v5_panel_ensemble,v5_sequence,v5_lob,v5_tradability" in completed.stdout

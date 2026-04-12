@@ -3,7 +3,7 @@ train:
   logs_root: logs
   model_family: train_v1
 
-  tf: 5m
+  tf: 1m
   quote: KRW
   top_n: 20
   start: "2024-01-01"
@@ -21,7 +21,7 @@ train:
   train_ratio: 0.70
   valid_ratio: 0.15
   test_ratio: 0.15
-  embargo_bars: 12
+  embargo_bars: 60
 
   baseline_alpha: 0.0001
   baseline_epochs: 3

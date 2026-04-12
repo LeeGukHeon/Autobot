@@ -1,4 +1,4 @@
-"""Resampling helpers for micro v1 (1m -> 5m)."""
+"""Resampling helpers for micro v1 (1m -> coarser base tf)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import polars as pl
+
+from autobot.data import expected_interval_ms
 
 
 @dataclass
@@ -38,9 +40,15 @@ class _ResampleState:
     book_max_ts_ms: int | None = None
 
 
-def resample_micro_1m_to_5m(frame_1m: pl.DataFrame) -> pl.DataFrame:
+def resample_micro_1m_to_base(frame_1m: pl.DataFrame, *, base_tf: str) -> pl.DataFrame:
     if frame_1m.height <= 0:
         return frame_1m.clone()
+    base_tf_value = str(base_tf).strip().lower() or "1m"
+    interval_ms = int(expected_interval_ms(base_tf_value))
+    if interval_ms <= 0 or (interval_ms % 60_000) != 0:
+        raise ValueError(f"micro 1m resample requires minute-aligned base tf: {base_tf_value}")
+    if interval_ms == 60_000:
+        return frame_1m.with_columns(pl.lit(base_tf_value).alias("tf")).sort(["market", "ts_ms"])
 
     required = [
         "market",
@@ -76,8 +84,8 @@ def resample_micro_1m_to_5m(frame_1m: pl.DataFrame) -> pl.DataFrame:
     for row in frame_1m.sort(["market", "ts_ms"]).iter_rows(named=True):
         market = str(row["market"])
         ts_ms = int(row["ts_ms"])
-        ts_5m = (ts_ms // 300_000) * 300_000
-        key = (market, ts_5m)
+        bucket_ts_ms = (ts_ms // interval_ms) * interval_ms
+        key = (market, bucket_ts_ms)
         state = states.setdefault(key, _ResampleState())
 
         trade_count = int(row.get("trade_count") or 0)
@@ -180,7 +188,7 @@ def resample_micro_1m_to_5m(frame_1m: pl.DataFrame) -> pl.DataFrame:
 
         row = {
             "market": market,
-            "tf": "5m",
+            "tf": base_tf_value,
             "ts_ms": int(ts_ms),
             "trade_source": trade_source,
             "trade_events": int(state.trade_events),
@@ -232,6 +240,10 @@ def resample_micro_1m_to_5m(frame_1m: pl.DataFrame) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame([], schema=frame_1m.schema, orient="row")
     return pl.DataFrame(rows, schema=frame_1m.schema, orient="row").sort(["market", "ts_ms"])
+
+
+def resample_micro_1m_to_5m(frame_1m: pl.DataFrame) -> pl.DataFrame:
+    return resample_micro_1m_to_base(frame_1m, base_tf="5m")
 
 
 def _coverage_ms(min_ts: int | None, max_ts: int | None) -> int:

@@ -10,6 +10,7 @@ from typing import Any
 
 import polars as pl
 
+from autobot.data import expected_interval_ms
 from autobot.live.state_store import LiveStateStore
 
 
@@ -27,6 +28,7 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "market",
     "ts_ms",
     "decision_bucket_ts_ms",
+    "decision_bar_interval_ms",
     "runtime_model_family",
     "runtime_model_run_id",
     "action_code",
@@ -59,6 +61,7 @@ _PRIVATE_EXECUTION_SCHEMA: dict[str, pl.DataType] = {
     "market": pl.Utf8,
     "ts_ms": pl.Int64,
     "decision_bucket_ts_ms": pl.Int64,
+    "decision_bar_interval_ms": pl.Int64,
     "runtime_model_family": pl.Utf8,
     "runtime_model_run_id": pl.Utf8,
     "action_code": pl.Utf8,
@@ -317,6 +320,12 @@ def _build_private_execution_row(
     strategy_meta = dict(((entry_meta.get("strategy") or {}).get("meta")) or {})
     execution_meta = dict(entry_meta.get("execution") or {})
     execution_policy = dict(entry_meta.get("execution_policy") or {})
+    decision_bar_interval_ms = _resolve_decision_bar_interval_ms(
+        entry_meta=entry_meta,
+        strategy_meta=strategy_meta,
+        runtime_meta=runtime_meta,
+        live_runtime_contract=live_runtime_contract,
+    )
     order_uuid = _coalesce_text(first_attempt.get("order_uuid"), journal.get("entry_order_uuid"), journal.get("exit_order_uuid"))
     order_identifier = _coalesce_text(first_attempt.get("order_identifier"))
     order_rows = list(
@@ -365,7 +374,8 @@ def _build_private_execution_row(
         "intent_id": intent_id or None,
         "market": market,
         "ts_ms": int(ts_ms),
-        "decision_bucket_ts_ms": int((int(ts_ms) // 300_000) * 300_000),
+        "decision_bucket_ts_ms": int((int(ts_ms) // int(decision_bar_interval_ms)) * int(decision_bar_interval_ms)),
+        "decision_bar_interval_ms": int(decision_bar_interval_ms),
         "runtime_model_family": str(runtime_meta.get("model_family") or "").strip() or None,
         "runtime_model_run_id": str(runtime_meta.get("live_runtime_model_run_id") or "").strip() or None,
         "runtime_contract_version": _coalesce_int(live_runtime_contract.get("version")),
@@ -465,6 +475,7 @@ def _build_private_execution_label_contract(*, dataset_root: Path) -> dict[str, 
         "inference_features": [
             "market",
             "decision_bucket_ts_ms",
+            "decision_bar_interval_ms",
             "runtime_model_family",
             "runtime_model_run_id",
             "runtime_decision_contract_version",
@@ -492,7 +503,7 @@ def _validate_private_execution_rows(*, rows: list[dict[str, Any]], dataset_root
     missing_columns = [name for name in REQUIRED_COLUMNS if not rows or any(name not in row for row in rows)]
     null_required = 0
     for row in rows:
-        for name in ("row_key", "market", "ts_ms", "decision_bucket_ts_ms", "final_state", "label_source"):
+        for name in ("row_key", "market", "ts_ms", "decision_bucket_ts_ms", "decision_bar_interval_ms", "final_state", "label_source"):
             if row.get(name) in (None, ""):
                 null_required += 1
     reasons: list[str] = []
@@ -547,6 +558,42 @@ def _coalesce_text(*values: Any) -> str | None:
         if text:
             return text
     return None
+
+
+def _resolve_interval_ms_from_tf(value: Any) -> int | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    try:
+        interval_ms = int(expected_interval_ms(text))
+    except (TypeError, ValueError):
+        return None
+    return interval_ms if interval_ms > 0 else None
+
+
+def _resolve_decision_bar_interval_ms(
+    *,
+    entry_meta: dict[str, Any],
+    strategy_meta: dict[str, Any],
+    runtime_meta: dict[str, Any],
+    live_runtime_contract: dict[str, Any],
+) -> int:
+    strategy_payload = dict(entry_meta.get("strategy") or {})
+    model_exit_plan = dict(strategy_meta.get("model_exit_plan") or {})
+    candidates: tuple[int | None, ...] = (
+        _coalesce_int(model_exit_plan.get("bar_interval_ms"), model_exit_plan.get("interval_ms")),
+        _resolve_interval_ms_from_tf(model_exit_plan.get("tf")),
+        _resolve_interval_ms_from_tf(strategy_meta.get("tf")),
+        _resolve_interval_ms_from_tf(strategy_payload.get("tf")),
+        _resolve_interval_ms_from_tf(runtime_meta.get("tf")),
+        _resolve_interval_ms_from_tf(live_runtime_contract.get("strategy_tf")),
+        _resolve_interval_ms_from_tf(live_runtime_contract.get("runtime_tf")),
+        _resolve_interval_ms_from_tf(live_runtime_contract.get("tf")),
+    )
+    for value in candidates:
+        if value is not None and int(value) > 0:
+            return int(value)
+    return 300_000
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -32,7 +32,9 @@ param(
     [int]$PairedPaperMinMatchedOpportunities = 1,
     [string]$PairedPaperQuote = "KRW",
     [int]$PairedPaperTopN = 20,
-    [string]$PairedPaperTf = "5m",
+    [string]$PairedPaperTf = "1m",
+    [string]$Tf = "1m",
+    [int]$HoldBars = 30,
     [string]$PairedPaperPreset = "live_v5",
     [string]$PairedPaperModelFamily = "",
     [string]$PairedPaperFeatureSet = "v4",
@@ -187,6 +189,31 @@ $resolvedPwshExe = if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
     }
 }
 $resolvedBatchDate = Resolve-BatchDateValue -DateText $BatchDate
+$resolvedAcceptanceArgs = @()
+foreach ($item in @($AcceptanceArgs)) {
+    $text = [string]$item
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        continue
+    }
+    $resolvedAcceptanceArgs += $text
+}
+$acceptanceHasTfOverride = $false
+$acceptanceHasHoldBarsOverride = $false
+foreach ($item in @($resolvedAcceptanceArgs)) {
+    $normalized = ([string]$item).Trim().ToLowerInvariant()
+    if (($normalized -eq "-tf") -or ($normalized -eq "--tf")) {
+        $acceptanceHasTfOverride = $true
+    }
+    if (($normalized -eq "-holdbars") -or ($normalized -eq "--holdbars") -or ($normalized -eq "--hold-bars")) {
+        $acceptanceHasHoldBarsOverride = $true
+    }
+}
+if (-not $acceptanceHasTfOverride) {
+    $resolvedAcceptanceArgs += @("-Tf", ([string]$Tf).Trim().ToLowerInvariant())
+}
+if (-not $acceptanceHasHoldBarsOverride) {
+    $resolvedAcceptanceArgs += @("-HoldBars", ([string]([Math]::Max([int]$HoldBars, 1))))
+}
 $resolvedPreflightExpectedEnabledUnits = @(
     [string]$ChampionUnitName,
     [string]$PairedPaperUnitName
@@ -264,6 +291,7 @@ if ($Mode -ne "promote_only") {
             "-ProjectRoot", $resolvedProjectRoot,
             "-PythonExe", $resolvedPythonExe,
             "-BatchDate", $resolvedBatchDate,
+            "-Tf", ([string]$Tf).Trim().ToLowerInvariant(),
             "-SkipDeadline"
         )
         if ($DryRun) {
@@ -314,7 +342,7 @@ if ($Mode -ne "promote_only") {
     -PreflightExpectedEnabledUnits $serializedPreflightExpectedEnabledUnits `
     -PreflightExpectedDisabledUnits $serializedPreflightExpectedDisabledUnits `
     -BlockOnActiveUnits $BlockOnActiveUnits `
-    -AcceptanceArgs $AcceptanceArgs `
+    -AcceptanceArgs $resolvedAcceptanceArgs `
     -ChallengerMinHours $ChallengerMinHours `
     -ChallengerMinOrdersFilled $ChallengerMinOrdersFilled `
     -ChallengerMinRealizedPnlQuote $ChallengerMinRealizedPnlQuote `

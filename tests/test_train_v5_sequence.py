@@ -1019,6 +1019,7 @@ def test_train_v5_sequence_outputs_feed_tradability_and_fusion_chain(tmp_path: P
                 "market": row["market"],
                 "ts_ms": row["ts_ms"],
                 "decision_bucket_ts_ms": row["ts_ms"],
+                "decision_bar_interval_ms": 60_000,
                 "y_tradeable": 1 if idx % 2 == 0 else 0,
                 "y_fill_within_deadline": 1 if idx % 3 != 0 else 0,
                 "y_shortfall_bps": 0.5 + (idx * 0.2),

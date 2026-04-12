@@ -201,6 +201,49 @@ def test_live_feature_provider_v4_native_matches_live_v4_output(tmp_path: Path) 
     assert native_stats["base_provider"] == "LIVE_V4_NATIVE_BASE"
 
 
+def test_live_feature_provider_v4_native_supports_one_minute_runtime_tf(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    request_ts_ms = 120 * 60_000
+    _write_one_m_candles(
+        dataset_root=parquet_root / "candles_api_v1",
+        market="KRW-BTC",
+        start_ts_ms=60_000,
+        count=240,
+    )
+    provider = LiveFeatureProviderV4Native(
+        feature_columns=(
+            "logret_1",
+            "volume_z",
+            "one_m_count",
+            "m_trade_events",
+        ),
+        tf="1m",
+        quote="KRW",
+        parquet_root=parquet_root,
+        candles_dataset_name="candles_api_v1",
+        bootstrap_1m_bars=240,
+    )
+    provider.ingest_ticker(
+        TickerEvent(
+            market="KRW-BTC",
+            ts_ms=request_ts_ms + 1_000,
+            trade_price=121.0,
+            acc_trade_price_24h=1_000_100_000.0,
+        )
+    )
+
+    frame = provider.build_frame(ts_ms=request_ts_ms, markets=["KRW-BTC"])
+
+    assert frame.height == 1
+    row = frame.row(0, named=True)
+    assert int(row["ts_ms"]) == request_ts_ms
+    assert str(row["market"]) == "KRW-BTC"
+    stats = provider.last_build_stats()
+    assert stats["provider"] == "LIVE_V4_NATIVE"
+    assert stats["base_provider"] == "LIVE_V4_NATIVE_BASE"
+    assert stats["built_rows"] == 1
+
+
 def test_live_feature_provider_v4_hard_gates_missing_requested_columns(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
     _write_one_m_candles(dataset_root=parquet_root / "candles_api_v1", market="KRW-BTC")

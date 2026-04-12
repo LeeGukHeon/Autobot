@@ -8,7 +8,7 @@ from typing import Iterable
 
 import polars as pl
 
-from autobot.data.micro.resample_v1 import resample_micro_1m_to_5m
+from autobot.data.micro.resample_v1 import resample_micro_1m_to_base
 
 from .micro_join import (
     MicroJoinStats,
@@ -62,10 +62,6 @@ def load_market_micro_for_base(
         _require_columns(direct.columns, MIN_REQUIRED_MICRO_COLUMNS)
         return direct, base_tf_value
 
-    if base_tf_value != "5m":
-        _require_columns(direct.columns, MIN_REQUIRED_MICRO_COLUMNS)
-        return direct, base_tf_value
-
     one_m = load_market_micro_frame(
         micro_root=micro_root,
         tf="1m",
@@ -77,7 +73,7 @@ def load_market_micro_for_base(
         _require_columns(one_m.columns, MIN_REQUIRED_MICRO_COLUMNS)
         return one_m, "1m_resampled"
 
-    resampled = resample_micro_1m_to_5m(one_m)
+    resampled = resample_micro_1m_to_base(one_m, base_tf=base_tf_value)
     if resampled.height > 0:
         resampled = resampled.filter((pl.col("ts_ms") >= int(from_ts_ms)) & (pl.col("ts_ms") <= int(to_ts_ms)))
     _require_columns(resampled.columns, MIN_REQUIRED_MICRO_COLUMNS)

@@ -4,7 +4,7 @@ from math import isclose
 
 import polars as pl
 
-from autobot.data.micro.resample_v1 import resample_micro_1m_to_5m
+from autobot.data.micro.resample_v1 import resample_micro_1m_to_5m, resample_micro_1m_to_base
 
 
 def test_resample_micro_1m_to_5m() -> None:
@@ -107,3 +107,102 @@ def test_resample_micro_1m_to_5m_keeps_schema_when_first_rows_are_null() -> None
     assert frame_5m.schema["trade_min_ts_ms"] == pl.Int64
     row = frame_5m.row(0, named=True)
     assert row["trade_min_ts_ms"] == 60_010
+
+
+def test_resample_micro_1m_to_base_supports_one_minute_passthrough() -> None:
+    frame_1m = pl.DataFrame(
+        {
+            "market": ["KRW-BTC"],
+            "tf": ["1m"],
+            "ts_ms": [60_000],
+            "trade_source": ["ws"],
+            "trade_events": [1],
+            "book_events": [1],
+            "trade_min_ts_ms": [60_010],
+            "trade_max_ts_ms": [60_020],
+            "book_min_ts_ms": [60_005],
+            "book_max_ts_ms": [60_025],
+            "trade_coverage_ms": [10],
+            "book_coverage_ms": [20],
+            "micro_trade_available": [True],
+            "micro_book_available": [True],
+            "micro_available": [True],
+            "trade_count": [1],
+            "buy_count": [1],
+            "sell_count": [0],
+            "trade_volume_total": [1.0],
+            "buy_volume": [1.0],
+            "sell_volume": [0.0],
+            "trade_imbalance": [1.0],
+            "vwap": [100.0],
+            "avg_trade_size": [1.0],
+            "max_trade_size": [1.0],
+            "last_trade_price": [100.0],
+            "mid_mean": [101.0],
+            "spread_bps_mean": [11.0],
+            "depth_bid_top5_mean": [6.0],
+            "depth_ask_top5_mean": [5.0],
+            "imbalance_top5_mean": [0.09],
+            "microprice_bias_bps_mean": [0.1],
+            "book_update_count": [1],
+        }
+    )
+
+    frame_out = resample_micro_1m_to_base(frame_1m, base_tf="1m")
+
+    assert frame_out.height == 1
+    row = frame_out.row(0, named=True)
+    assert row["tf"] == "1m"
+    assert row["ts_ms"] == 60_000
+
+
+def test_resample_micro_1m_to_base_supports_fifteen_minute_rollup() -> None:
+    rows = []
+    for idx in range(15):
+        ts_ms = idx * 60_000
+        rows.append(
+            {
+                "market": "KRW-BTC",
+                "tf": "1m",
+                "ts_ms": ts_ms,
+                "trade_source": "ws",
+                "trade_events": 1,
+                "book_events": 1,
+                "trade_min_ts_ms": ts_ms + 10,
+                "trade_max_ts_ms": ts_ms + 20,
+                "book_min_ts_ms": ts_ms + 5,
+                "book_max_ts_ms": ts_ms + 25,
+                "trade_coverage_ms": 10,
+                "book_coverage_ms": 20,
+                "micro_trade_available": True,
+                "micro_book_available": True,
+                "micro_available": True,
+                "trade_count": 1,
+                "buy_count": 1,
+                "sell_count": 0,
+                "trade_volume_total": 2.0,
+                "buy_volume": 2.0,
+                "sell_volume": 0.0,
+                "trade_imbalance": 1.0,
+                "vwap": 100.0 + idx,
+                "avg_trade_size": 2.0,
+                "max_trade_size": 2.0,
+                "last_trade_price": 100.0 + idx,
+                "mid_mean": 100.0 + idx,
+                "spread_bps_mean": 10.0,
+                "depth_bid_top5_mean": 5.0,
+                "depth_ask_top5_mean": 4.0,
+                "imbalance_top5_mean": 0.1,
+                "microprice_bias_bps_mean": 0.2,
+                "book_update_count": 1,
+            }
+        )
+    frame_1m = pl.DataFrame(rows)
+
+    frame_15m = resample_micro_1m_to_base(frame_1m, base_tf="15m")
+
+    assert frame_15m.height == 1
+    row = frame_15m.row(0, named=True)
+    assert row["tf"] == "15m"
+    assert row["ts_ms"] == 0
+    assert row["trade_count"] == 15

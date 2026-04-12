@@ -33,9 +33,10 @@ def order_flow_panel_v1_contract() -> dict[str, Any]:
         "deployment_scope": {
             "venue_id": "upbit",
             "aggregation_scope": "single_venue_local",
-            "base_tf": "5m",
+            "base_tf": "active_runtime_base_tf",
             "note": (
                 "This contract uses already aggregated micro_v1 rows from a single venue. "
+                "The panel follows the active feature/runtime base timeframe (for example 1m or 5m). "
                 "Schema keeps venue_id and aggregation_scope explicit so later multi-venue expansion "
                 "does not change field semantics."
             ),

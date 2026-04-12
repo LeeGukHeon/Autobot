@@ -386,6 +386,60 @@ def test_reconcile_attach_strategy_risk_builds_model_plan(tmp_path: Path) -> Non
     assert risk_plans[0]["timeout_ts_ms"] == 5_000 + (6 * 300_000)
 
 
+def test_reconcile_attach_strategy_risk_builds_one_minute_model_plan_when_interval_is_explicit(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    registry_root = tmp_path / "models" / "registry"
+    run_dir = registry_root / "train_v5_fusion" / "run-live"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (registry_root / "train_v5_fusion" / "champion.json").write_text(
+        json.dumps({"run_id": "run-live"}, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    (run_dir / "runtime_recommendations.json").write_text(
+        json.dumps(
+            {
+                "exit": {
+                    "version": 1,
+                    "recommended_exit_mode": "hold",
+                    "recommended_exit_mode_source": "execution_backtest_grid_search_compare",
+                    "recommended_exit_mode_reason_code": "HOLD_EXECUTION_COMPARE_EDGE",
+                    "recommended_hold_bars": 6,
+                }
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    with LiveStateStore(db_path) as store:
+        reconcile_exchange_snapshot(
+            store=store,
+            bot_id="autobot-001",
+            identifier_prefix="AUTOBOT",
+            accounts_payload=[
+                {
+                    "currency": "ETH",
+                    "balance": "0.01000000",
+                    "locked": "0",
+                    "avg_buy_price": "3000000",
+                }
+            ],
+            open_orders_payload=[],
+            unknown_open_orders_policy="ignore",
+            unknown_positions_policy="attach_strategy_risk",
+            registry_root=str(registry_root),
+            runtime_model_ref_source="champion",
+            runtime_model_family="train_v5_fusion",
+            runtime_interval_ms=60_000,
+            dry_run=False,
+            ts_ms=5_000,
+        )
+        risk_plans = store.list_risk_plans()
+
+    assert len(risk_plans) == 1
+    assert risk_plans[0]["timeout_ts_ms"] == 5_000 + (6 * 60_000)
+
+
 def test_reconcile_attach_strategy_risk_reuses_pending_entry_journal_for_filled_bid(tmp_path: Path) -> None:
     db_path = tmp_path / "live_state.db"
     registry_root = tmp_path / "models" / "registry"
