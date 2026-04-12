@@ -2049,7 +2049,7 @@ def test_build_dashboard_snapshot_includes_data_platform_v5_and_promotion_state_
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["sequence_pretrain_method"] == "none"
     assert snapshot["training"]["v5_readiness"]["families"]["train_v5_sequence"]["ood_status"] == "informative_ready"
     assert snapshot["challenger"]["promotion_state_machine"]["state"] == "continue"
-    assert "start_data_platform_refresh" in [item["id"] for item in snapshot["operations"]["actions"]]
+    assert "start_data_platform_refresh" not in [item["id"] for item in snapshot["operations"]["actions"]]
 
 
 def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2096,8 +2096,10 @@ def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: P
     close_report = snapshot["training"]["train_snapshot_close"]
     assert chain["owner"] == "spawn_service"
     assert chain["independent_timers_disabled"] is True
+    assert "autobot-v5-train-snapshot-close.service" in chain["legacy_standalone_units"]
     assert close_report["overall_pass"] is True
     assert close_report["snapshot_id"] == "snapshot-001"
+    assert close_report["standalone_legacy"] is True
 
 
 def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2151,4 +2153,4 @@ def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: P
 def test_dashboard_asset_mentions_data_platform_refresh_surface() -> None:
     js = str(_load_dashboard_asset("dashboard.js"))
     assert "data_platform_refresh_service" in js
-    assert "start_data_platform_refresh" in js
+    assert "레거시 standalone" in js

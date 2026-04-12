@@ -2965,6 +2965,8 @@ def _summarize_data_platform(project_root: Path) -> dict[str, Any]:
             "artifact_path": str(refresh_path),
             "step_count": len(refresh_steps),
             "steps": refresh_steps,
+            "standalone_legacy": True,
+            "primary_owner": "train_snapshot_close_chain",
         },
         "registry": {
             "exists": bool(registry_payload),
@@ -3098,6 +3100,8 @@ def _summarize_foundation_ingestion(
             "deadline_met": train_snapshot_close_summary.get("deadline_met"),
             "service": dict(services.get("train_snapshot_close_service") or {}),
             "timer": dict(services.get("train_snapshot_close_timer") or {}),
+            "standalone_legacy": True,
+            "primary_owner": "spawn_chain_direct_script",
         },
         "nightly_train_chain": {
             "owner": "spawn_service",
@@ -3106,6 +3110,12 @@ def _summarize_foundation_ingestion(
             "raw_ticks_timer_active": raw_ticks_timer_active,
             "train_snapshot_close_timer_active": train_close_timer_active,
             "independent_timers_disabled": (not raw_ticks_timer_active) and (not train_close_timer_active),
+            "legacy_standalone_units": [
+                "autobot-data-platform-refresh.service",
+                "autobot-data-platform-refresh.timer",
+                "autobot-v5-train-snapshot-close.service",
+                "autobot-v5-train-snapshot-close.timer",
+            ],
             "spawn_timer": spawn_timer,
             "summary": (
                 "00:20 스폰 서비스가 캔들 갱신 → 체결 데이터 수집 → 학습 스냅샷 확정 → 검증을 순차 실행합니다."
@@ -3771,15 +3781,6 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
             "confirm": "공용 WS 수집기를 지금 재시작할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "restart", "autobot-ws-public.service"],
-        },
-        "start_data_platform_refresh": {
-            "id": "start_data_platform_refresh",
-            "label": "운영용 데이터 갱신",
-            "description": "운영용 데이터 갱신을 수동 실행",
-            "category": "pipeline",
-            "confirm": "운영용 데이터 갱신을 지금 수동 실행할까요?",
-            "kind": "command",
-            "command": ["sudo", "-n", "systemctl", "--no-block", "start", "autobot-data-platform-refresh.service"],
         },
         "start_spawn_only": {
             "id": "start_spawn_only",

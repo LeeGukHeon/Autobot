@@ -162,7 +162,6 @@
     clear_live_main_breaker: { label: "메인 라이브 브레이커 해제" },
     reset_live_main_suppressors: { label: "메인 억제 상태 초기화" },
     restart_ws_public: { label: "WS 수집기 재시작" },
-    start_data_platform_refresh: { label: "운영용 데이터 갱신 실행" },
     start_spawn_only: { label: "야간 학습 체인 실행" },
     start_promote_only: { label: "승급 판단만 실행" },
     start_rank_shadow: { label: "랭크 섀도우 실행" },
@@ -1064,17 +1063,24 @@
         }),
         compactRow({
           title: "학습 스냅샷 확정",
-          summary: trainClose.overall_pass
-            ? `배치 날짜 ${maybe(trainClose.batch_date)} 기준으로 스냅샷 ${shortRun(trainClose.snapshot_id)}까지 확정했습니다.`
-            : trainClose.exists
-              ? joinTranslated(trainClose.failure_reasons || [])
-              : "아직 스냅샷 확정 보고서가 없습니다.",
+          summary: trainClose.standalone_legacy
+            ? (trainClose.overall_pass
+              ? `배치 날짜 ${maybe(trainClose.batch_date)} 기준으로 스냅샷 ${shortRun(trainClose.snapshot_id)}까지 확정했습니다. standalone 서비스/타이머는 레거시 보조 경로이며 실제 기준은 00:20 체인입니다.`
+              : trainClose.exists
+                ? `${joinTranslated(trainClose.failure_reasons || [])} · standalone 서비스/타이머는 레거시 보조 경로이며 실제 기준은 00:20 체인입니다.`
+                : "아직 스냅샷 확정 보고서가 없습니다. standalone 서비스/타이머는 레거시 보조 경로이며 실제 기준은 00:20 체인입니다.")
+            : (trainClose.overall_pass
+              ? `배치 날짜 ${maybe(trainClose.batch_date)} 기준으로 스냅샷 ${shortRun(trainClose.snapshot_id)}까지 확정했습니다.`
+              : trainClose.exists
+                ? joinTranslated(trainClose.failure_reasons || [])
+                : "아직 스냅샷 확정 보고서가 없습니다."),
           items: [
             compactStat("상태", trainClose.overall_pass ? "정상" : trainClose.exists ? "실패" : "없음"),
             compactStat("배치 날짜", maybe(trainClose.batch_date)),
             compactStat("스냅샷", shortRun(trainClose.snapshot_id)),
             compactStat("deadline", boolLabel(trainClose.deadline_met)),
             compactStat("최근 확정", fmtDateTime(trainClose.latest_generated_at_utc)),
+            compactStat("레거시 standalone", boolLabel(Boolean(trainClose.standalone_legacy))),
           ],
         }),
         compactRow({
@@ -1978,12 +1984,16 @@
         }),
         compactRow({
           title: "데이터 갱신 주기",
-          summary: refresh.exists
-            ? `최근 갱신이 ${fmtDateTime(refresh.generated_at_utc)}에 ${maybe(refresh.step_count, "0")}단계로 완료됐습니다.`
-            : "데이터 플랫폼 갱신 산출물이 아직 없습니다.",
+          summary: refresh.standalone_legacy
+            ? (refresh.exists
+              ? `최근 갱신 산출물은 ${fmtDateTime(refresh.generated_at_utc)} 기준이며, standalone 서비스는 레거시 보조 경로입니다. 실제 학습 필수 갱신은 야간 스냅샷 확정 체인이 담당합니다.`
+              : "standalone 데이터 플랫폼 갱신 산출물은 없지만, 실제 학습 필수 갱신은 야간 스냅샷 확정 체인이 담당합니다.")
+            : (refresh.exists
+              ? `최근 갱신이 ${fmtDateTime(refresh.generated_at_utc)}에 ${maybe(refresh.step_count, "0")}단계로 완료됐습니다.`
+              : "데이터 플랫폼 갱신 산출물이 아직 없습니다."),
           items: [
-            compactStat("서비스", translate(dataRefreshService.active_state)),
-            compactStat("타이머", translate(dataRefreshTimer.active_state)),
+            compactStat(refresh.standalone_legacy ? "레거시 서비스" : "서비스", translate(dataRefreshService.active_state)),
+            compactStat(refresh.standalone_legacy ? "레거시 타이머" : "타이머", translate(dataRefreshTimer.active_state)),
             compactStat("최근 갱신", fmtDateTime(refresh.generated_at_utc)),
             compactStat("단계 수", maybe(refresh.step_count)),
             compactStat("산출물", shortPath(refresh.artifact_path)),
