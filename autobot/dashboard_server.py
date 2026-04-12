@@ -2622,6 +2622,72 @@ def _acceptance_latest_path(project_root: Path) -> Path:
     return project_root / "logs" / "model_v5_acceptance" / "latest.json"
 
 
+def _acceptance_override_path(project_root: Path) -> Path:
+    return project_root / "logs" / "model_v5_acceptance" / "latest_override.json"
+
+
+def _maybe_apply_acceptance_override(
+    *,
+    project_root: Path,
+    payload: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    override_payload = _load_json(_acceptance_override_path(project_root))
+    if not override_payload:
+        return summary
+    if str(override_payload.get("policy") or "").strip() != "dashboard_acceptance_override_v1":
+        return summary
+
+    target_run_id = str(override_payload.get("target_candidate_run_id") or "").strip()
+    candidate_run_id = str(
+        payload.get("candidate_run_id")
+        or _dig(payload, "steps", "train", "candidate_run_id")
+        or _dig(payload, "candidate", "run_id")
+        or ""
+    ).strip()
+    if not target_run_id or not candidate_run_id or target_run_id != candidate_run_id:
+        return summary
+
+    actual_overall_pass = summary.get("overall_pass")
+    if actual_overall_pass is True:
+        return summary
+
+    effective_notes = list(summary.get("notes") or [])
+    effective_notes.extend(list(override_payload.get("notes") or []))
+    override_reason_code = str(override_payload.get("reason_code") or "").strip()
+    if override_reason_code and override_reason_code not in effective_notes:
+        effective_notes.append(override_reason_code)
+
+    effective_backtest_pass = override_payload.get("effective_backtest_pass")
+    if effective_backtest_pass is None:
+        effective_backtest_pass = summary.get("backtest_pass")
+    effective_paper_pass = override_payload.get("effective_paper_pass")
+    if "effective_paper_pass" not in override_payload:
+        effective_paper_pass = summary.get("paper_pass")
+
+    overridden = dict(summary)
+    overridden.update(
+        {
+            "overall_pass": bool(override_payload.get("effective_overall_pass", True)),
+            "backtest_pass": effective_backtest_pass,
+            "paper_pass": effective_paper_pass,
+            "decision_basis": str(override_payload.get("effective_decision_basis") or "MANUAL_BASELINE_RESET"),
+            "reasons": list(override_payload.get("effective_reasons") or []),
+            "notes": effective_notes,
+            "acceptance_override_active": True,
+            "acceptance_override_mode": str(override_payload.get("mode") or "manual_baseline_reset"),
+            "acceptance_override_one_off": bool(override_payload.get("one_off", True)),
+            "acceptance_override_reason_code": override_reason_code or None,
+            "acceptance_override_artifact_path": str(_acceptance_override_path(project_root)),
+            "actual_overall_pass": actual_overall_pass,
+            "actual_backtest_pass": summary.get("backtest_pass"),
+            "actual_paper_pass": summary.get("paper_pass"),
+            "actual_reasons": list(summary.get("reasons") or []),
+        }
+    )
+    return overridden
+
+
 def _resolve_dashboard_training_family(project_root: Path) -> str:
     payload = _load_json(_acceptance_latest_path(project_root))
     model_family = str(payload.get("model_family") or "").strip()
@@ -3351,7 +3417,7 @@ def _build_dashboard_ops_snapshot(project_root: Path) -> dict[str, Any]:
     }
 
 
-def _summarize_acceptance(latest_path: Path) -> dict[str, Any]:
+def _summarize_acceptance(latest_path: Path, *, project_root: Path | None = None) -> dict[str, Any]:
     payload = _load_json(latest_path)
     candidate_run_id = (
         payload.get("candidate_run_id")
@@ -3375,7 +3441,7 @@ def _summarize_acceptance(latest_path: Path) -> dict[str, Any]:
     )
     reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
     notes = payload.get("notes") if isinstance(payload.get("notes"), list) else []
-    return {
+    summary = {
         "candidate_run_id": candidate_run_id,
         "candidate_run_dir": payload.get("candidate_run_dir") or _dig(payload, "steps", "train", "candidate_run_dir"),
         "champion_before_run_id": champion_before,
@@ -3393,6 +3459,9 @@ def _summarize_acceptance(latest_path: Path) -> dict[str, Any]:
         "model_family": payload.get("model_family"),
         "artifact_path": str(latest_path),
     }
+    if project_root is not None:
+        return _maybe_apply_acceptance_override(project_root=project_root, payload=payload, summary=summary)
+    return summary
 
 
 def _summarize_challenger(latest_path: Path, current_state_path: Path) -> dict[str, Any]:
@@ -3867,7 +3936,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         meta_dir=project_root / "data" / "raw_ws" / "upbit" / "_meta",
         raw_root=project_root / "data" / "raw_ws" / "upbit" / "public",
     )
-    acceptance = _summarize_acceptance(acceptance_latest)
+    acceptance = _summarize_acceptance(acceptance_latest, project_root=project_root)
     data_platform = _summarize_data_platform(project_root)
     services = {
         "paper_champion": _unit_snapshot_first("autobot-paper-v5.service", "autobot-paper-v4.service"),

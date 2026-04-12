@@ -90,6 +90,49 @@ def test_cached_project_size_uses_persisted_cache_after_process_restart(tmp_path
     assert dashboard_server_module._cached_project_size(str(project_root), 1) == 456
 
 
+def test_build_dashboard_snapshot_applies_one_off_acceptance_override(tmp_path: Path) -> None:
+    project_root = tmp_path
+    candidate_run_id = "candidate-run-override-001"
+    _write_json(
+        project_root / "logs" / "model_v5_acceptance" / "latest.json",
+        {
+            "model_family": "train_v5_fusion",
+            "batch_date": "2026-04-10",
+            "candidate_run_id": candidate_run_id,
+            "overall_pass": False,
+            "backtest_pass": True,
+            "paper_pass": None,
+            "failure_code": "RUNTIME_PARITY_BACKTEST_FAILED",
+            "reasons": ["RUNTIME_PARITY_BACKTEST_FAILED"],
+        },
+    )
+    _write_json(
+        project_root / "logs" / "model_v5_acceptance" / "latest_override.json",
+        {
+            "policy": "dashboard_acceptance_override_v1",
+            "mode": "manual_baseline_reset",
+            "one_off": True,
+            "target_candidate_run_id": candidate_run_id,
+            "effective_overall_pass": True,
+            "effective_backtest_pass": True,
+            "effective_decision_basis": "MANUAL_BASELINE_RESET",
+            "effective_reasons": [],
+            "notes": ["MANUAL_BASELINE_RESET_ACTIVE"],
+            "reason_code": "CHAMPION_RUNTIME_PARITY_CONTRACT_LEGACY_MISMATCH",
+        },
+    )
+
+    snapshot = build_dashboard_snapshot(project_root)
+    acceptance = snapshot["training"]["acceptance"]
+
+    assert acceptance["overall_pass"] is True
+    assert acceptance["backtest_pass"] is True
+    assert acceptance["actual_overall_pass"] is False
+    assert acceptance["acceptance_override_active"] is True
+    assert acceptance["acceptance_override_mode"] == "manual_baseline_reset"
+    assert acceptance["acceptance_override_reason_code"] == "CHAMPION_RUNTIME_PARITY_CONTRACT_LEGACY_MISMATCH"
+
+
 def _init_live_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
