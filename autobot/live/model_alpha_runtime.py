@@ -1034,8 +1034,12 @@ def _load_predictor_for_runtime(*, store: LiveStateStore, settings: LiveModelAlp
     )
 
 
-def _load_quote_markets(*, public_client: Any, quote: str) -> list[str]:
-    return _runtime_bootstrap.load_quote_markets(public_client=public_client, quote=quote)
+def _load_quote_markets(*, public_client: Any, quote: str, allowed_markets: Sequence[str] | None = None) -> list[str]:
+    return _runtime_bootstrap.load_quote_markets(
+        public_client=public_client,
+        quote=quote,
+        allowed_markets=allowed_markets,
+    )
 
 
 def _load_market_instruments(*, public_client: Any, markets: Sequence[str]) -> dict[str, dict[str, Any]]:
