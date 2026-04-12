@@ -1069,7 +1069,10 @@ function Resolve-StalePreviousChallengerStateForSpawn {
     if ([string]::IsNullOrWhiteSpace($pairedChallengerRunId)) {
         $pairedReport = Get-PropValue -ObjectValue $pairedArtifact -Name "paired_report" -DefaultValue @{}
         $pairedChallenger = Get-PropValue -ObjectValue $pairedReport -Name "challenger" -DefaultValue @{}
-        $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedChallenger -Name "run_id" -DefaultValue "")
+        $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedChallenger -Name "paper_runtime_model_run_id" -DefaultValue "")
+        if ([string]::IsNullOrWhiteSpace($pairedChallengerRunId)) {
+            $pairedChallengerRunId = [string](Get-PropValue -ObjectValue $pairedChallenger -Name "run_id" -DefaultValue "")
+        }
     }
     $pairedMatchesState = (-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($pairedChallengerRunId -eq $candidateRunId)
 
@@ -1942,43 +1945,84 @@ if ($runPromotionPhase) {
                 }
             } else {
                 $preservePreviousState = $true
-                if (-not $DryRun) {
-                    if ($challengerWasActive) {
-                        Restart-Unit -UnitName $ChallengerUnitName
+                $sameRunTransition = (-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($candidateRunId -eq $championRunIdAtStart)
+                if ($sameRunTransition) {
+                    $preservePreviousState = $false
+                    if (-not $DryRun) {
+                        $candidateTargetStopStep = Stop-ConfiguredUnits -Units $resolvedCandidateTargetUnits
+                        $clearCandidatePointerStep = Clear-LatestCandidatePointers -RegistryRoot $registryRoot -Family $resolvedModelFamily
+                        $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
+                            attempted = $true
+                            challenger_resumed = $false
+                            paired_paper_resumed = $false
+                            reason = "SAME_RUN_TRANSITION_RESOLVED"
+                        }
+                        $report.steps.stop_candidate_targets_after_promote = $candidateTargetStopStep
+                        $report.steps.clear_latest_candidate = $clearCandidatePointerStep
+                    } else {
+                        $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
+                            attempted = $false
+                            challenger_resumed = $false
+                            paired_paper_resumed = $false
+                            reason = "DRY_RUN"
+                        }
+                        $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                            attempted = $false
+                            reason = "DRY_RUN"
+                            candidate_run_id = $candidateRunId
+                        }
+                        $report.steps.clear_latest_candidate = [ordered]@{
+                            attempted = $false
+                            reason = "DRY_RUN"
+                            candidate_run_id = $candidateRunId
+                        }
                     }
-                    if ($pairedPaperWasActive) {
-                        Restart-Unit -UnitName $PairedPaperUnitName
-                    }
-                    $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
-                        attempted = $true
-                        challenger_resumed = $challengerWasActive
-                        paired_paper_resumed = $pairedPaperWasActive
-                        reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_CONTINUE")
+                    $report.steps.promote_previous_challenger = [ordered]@{
+                        attempted = $false
+                        promoted = $false
+                        candidate_run_id = $candidateRunId
+                        reason = "SAME_RUN_TRANSITION_RESOLVED"
+                        state_machine = $resolvedPromotionState
                     }
                 } else {
-                    $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
-                        attempted = $false
-                        challenger_resumed = $false
-                        paired_paper_resumed = $false
-                        reason = "DRY_RUN"
+                    if (-not $DryRun) {
+                        if ($challengerWasActive) {
+                            Restart-Unit -UnitName $ChallengerUnitName
+                        }
+                        if ($pairedPaperWasActive) {
+                            Restart-Unit -UnitName $PairedPaperUnitName
+                        }
+                        $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
+                            attempted = $true
+                            challenger_resumed = $challengerWasActive
+                            paired_paper_resumed = $pairedPaperWasActive
+                            reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_CONTINUE")
+                        }
+                    } else {
+                        $report.steps.resume_candidate_evidence_after_continue = [ordered]@{
+                            attempted = $false
+                            challenger_resumed = $false
+                            paired_paper_resumed = $false
+                            reason = "DRY_RUN"
+                        }
                     }
-                }
-                $report.steps.stop_candidate_targets_after_promote = [ordered]@{
-                    attempted = $false
-                    reason = "STATE_MACHINE_CONTINUE"
-                    candidate_run_id = $candidateRunId
-                }
-                $report.steps.clear_latest_candidate = [ordered]@{
-                    attempted = $false
-                    reason = "STATE_MACHINE_CONTINUE"
-                    candidate_run_id = $candidateRunId
-                }
-                $report.steps.promote_previous_challenger = [ordered]@{
-                    attempted = $false
-                    promoted = $false
-                    candidate_run_id = $candidateRunId
-                    reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_CONTINUE")
-                    state_machine = $resolvedPromotionState
+                    $report.steps.stop_candidate_targets_after_promote = [ordered]@{
+                        attempted = $false
+                        reason = "STATE_MACHINE_CONTINUE"
+                        candidate_run_id = $candidateRunId
+                    }
+                    $report.steps.clear_latest_candidate = [ordered]@{
+                        attempted = $false
+                        reason = "STATE_MACHINE_CONTINUE"
+                        candidate_run_id = $candidateRunId
+                    }
+                    $report.steps.promote_previous_challenger = [ordered]@{
+                        attempted = $false
+                        promoted = $false
+                        candidate_run_id = $candidateRunId
+                        reason = [string](Get-PropValue -ObjectValue $promotionStateMachine -Name "reason" -DefaultValue "STATE_MACHINE_CONTINUE")
+                        state_machine = $resolvedPromotionState
+                    }
                 }
             }
         } elseif ((-not [string]::IsNullOrWhiteSpace($candidateRunId)) -and ($startedTsMs -gt 0) -and ((-not $previousPromotionEligible) -or ($previousLaneMode -eq "bootstrap_latest_inclusive"))) {

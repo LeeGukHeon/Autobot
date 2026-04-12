@@ -1862,6 +1862,163 @@ def test_promote_only_holds_when_paired_paper_gate_fails(tmp_path: Path) -> None
     assert state_path.exists()
 
 
+def test_promote_only_clears_same_run_transition_state_and_candidate_pointer(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "champion-run-001")
+    family_pointer = project_root / "models" / "registry" / "train_v4_crypto_cs" / "latest_candidate.json"
+    global_pointer = project_root / "models" / "registry" / "latest_candidate.json"
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+    fake_paired = _make_fake_paired_paper_script(
+        tmp_path,
+        gate_pass=False,
+        reason="PAIRED_PAPER_NOT_READY",
+        matched_opportunities=0,
+    )
+    _write_canary_confidence_sequence_artifact(
+        project_root,
+        run_id="champion-run-001",
+        status="continue",
+        reason_codes=["CANARY_INSUFFICIENT_EVIDENCE"],
+    )
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-15",
+                "candidate_run_id": "champion-run-001",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    systemctl_log = tmp_path / "systemctl.log"
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-PairedPaperScript",
+            str(fake_paired),
+            "-Mode",
+            "promote_only",
+            "-CandidateTargetUnits",
+            "autobot-live-alpha-candidate.service",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_ACTIVE_UNITS": "autobot-live-alpha-candidate.service",
+            "FAKE_SYSTEMCTL_LOG": str(systemctl_log),
+        },
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8")
+
+    assert latest["steps"]["promotion_state_machine"]["state"] == "continue"
+    assert latest["steps"]["promote_previous_challenger"]["reason"] == "SAME_RUN_TRANSITION_RESOLVED"
+    assert latest["steps"]["clear_latest_candidate"]["attempted"] is True
+    assert latest["steps"]["stop_candidate_targets_after_promote"]["attempted"] is True
+    assert not family_pointer.exists()
+    assert not global_pointer.exists()
+    assert not state_path.exists()
+    assert "stop autobot-live-alpha-candidate.service" in systemctl_calls
+
+
+def test_spawn_only_stale_check_uses_paired_runtime_model_run_id_when_present(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    _seed_preflight_minimum(project_root)
+    _seed_latest_candidate_pointer(project_root, "candidate-run-matching-paired")
+    sudo_dir = tmp_path
+    _make_fake_sudo(sudo_dir)
+    _make_fake_systemctl(sudo_dir)
+    fake_python = _make_fake_python(tmp_path)
+
+    state_path = project_root / "logs" / "model_v4_challenger" / "current_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "batch_date": "2026-03-15",
+                "candidate_run_id": "candidate-run-matching-paired",
+                "champion_run_id_at_start": "champion-run-001",
+                "started_ts_ms": 1,
+                "lane_mode": "promotion_strict",
+                "promotion_eligible": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_json(
+        project_root / "logs" / "paired_paper" / "latest.json",
+        {
+            "paired_report": {
+                "challenger": {
+                    "paper_runtime_model_run_id": "candidate-run-matching-paired",
+                }
+            }
+        },
+    )
+    _write_canary_confidence_sequence_artifact(
+        project_root,
+        run_id="candidate-run-matching-paired",
+        status="continue",
+        reason_codes=["CANARY_INSUFFICIENT_EVIDENCE"],
+    )
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DAILY_CC_SCRIPT),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "spawn_only",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": str(sudo_dir) + os.pathsep + os.environ.get("PATH", "")},
+        check=False,
+    )
+
+    assert completed.returncode == 2, completed.stdout + "\n" + completed.stderr
+    latest = json.loads((project_root / "logs" / "model_v4_challenger" / "latest.json").read_text(encoding="utf-8-sig"))
+    assert "clear_stale_previous_state" not in latest["steps"]
+    assert latest["steps"]["spawn_guard"]["reason"] == "PREVIOUS_CHALLENGER_STATE_PRESENT"
+    assert state_path.exists()
+
+
 def test_spawn_then_promote_only_preserves_end_to_end_candidate_state_machine(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
