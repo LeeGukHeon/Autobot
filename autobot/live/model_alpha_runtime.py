@@ -285,7 +285,12 @@ async def run_live_model_alpha_runtime(
             base_budget_quote=float(settings.per_trade_krw),
         ),
     )
-    markets = _load_quote_markets(public_client=public_client, quote=str(settings.quote))
+    runtime_allowed_markets = _runtime_bootstrap.resolve_runtime_allowed_markets(predictor=predictor)
+    markets = _load_quote_markets(
+        public_client=public_client,
+        quote=str(settings.quote),
+        allowed_markets=runtime_allowed_markets,
+    )
     if not markets:
         raise RuntimeError(f"no quote markets available for quote={settings.quote}")
     instrument_cache = _load_market_instruments(public_client=public_client, markets=markets)

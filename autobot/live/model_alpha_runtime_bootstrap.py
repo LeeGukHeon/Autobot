@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 
-def load_quote_markets(*, public_client: Any, quote: str) -> list[str]:
+def load_quote_markets(*, public_client: Any, quote: str, allowed_markets: Sequence[str] | None = None) -> list[str]:
     payload = public_client.markets(is_details=True)
     if not isinstance(payload, list):
         return []
     prefix = f"{str(quote).strip().upper()}-"
+    allowed = {
+        str(item).strip().upper()
+        for item in (allowed_markets or [])
+        if str(item).strip()
+    }
     markets: list[str] = []
     seen: set[str] = set()
     for item in payload:
@@ -20,9 +26,26 @@ def load_quote_markets(*, public_client: Any, quote: str) -> list[str]:
         market = str(item.get("market", "")).strip().upper()
         if not market.startswith(prefix) or market in seen:
             continue
+        if allowed and market not in allowed:
+            continue
         seen.add(market)
         markets.append(market)
     return markets
+
+
+def resolve_runtime_allowed_markets(*, predictor: Any) -> list[str]:
+    run_dir = Path(getattr(predictor, "run_dir", "") or "")
+    if not str(run_dir):
+        return []
+    contract_path = run_dir / "fusion_runtime_input_contract.json"
+    if not contract_path.exists():
+        return []
+    try:
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    values = payload.get("common_runtime_markets") or []
+    return [str(item).strip().upper() for item in values if str(item).strip()]
 
 
 def load_market_instruments(*, public_client: Any, markets: Sequence[str]) -> dict[str, dict[str, Any]]:

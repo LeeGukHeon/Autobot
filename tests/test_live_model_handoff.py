@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 import autobot.live.daemon as daemon_module
+import autobot.live.model_alpha_runtime_bootstrap as runtime_bootstrap
 from autobot.live.daemon import LiveDaemonSettings, run_live_sync_daemon
 from autobot.live.model_handoff import load_feature_platform_runtime_contract
 from autobot.live.rollout import build_rollout_contract, build_rollout_test_order_record
@@ -292,6 +293,44 @@ def test_load_feature_platform_runtime_contract_accepts_validate_without_status_
     assert contract["artifacts_present"] is True
     assert contract["feature_platform_ready"] is True
     assert contract["feature_platform_reason_codes"] == []
+
+
+def test_load_quote_markets_filters_to_allowed_runtime_universe() -> None:
+    class _PublicClient:
+        @staticmethod
+        def markets(*, is_details: bool):  # noqa: ANN001, ANN201
+            assert is_details is True
+            return [
+                {"market": "KRW-BTC"},
+                {"market": "KRW-ETH"},
+                {"market": "KRW-XRP"},
+            ]
+
+    markets = runtime_bootstrap.load_quote_markets(
+        public_client=_PublicClient(),
+        quote="KRW",
+        allowed_markets=["KRW-BTC", "KRW-XRP"],
+    )
+
+    assert markets == ["KRW-BTC", "KRW-XRP"]
+
+
+def test_resolve_runtime_allowed_markets_reads_fusion_runtime_contract(tmp_path: Path) -> None:
+    run_dir = tmp_path / "models" / "registry" / "train_v5_fusion" / "run-001"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        run_dir / "fusion_runtime_input_contract.json",
+        {
+            "common_runtime_markets": ["KRW-BTC", "KRW-ETH"],
+        },
+    )
+
+    class _Predictor:
+        def __init__(self, run_dir: Path) -> None:
+            self.run_dir = run_dir
+
+    markets = runtime_bootstrap.resolve_runtime_allowed_markets(predictor=_Predictor(run_dir))
+    assert markets == ["KRW-BTC", "KRW-ETH"]
 
 
 def test_live_startup_binds_runtime_model_and_ws_public_contract(tmp_path: Path, monkeypatch) -> None:
