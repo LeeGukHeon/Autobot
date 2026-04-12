@@ -4563,6 +4563,299 @@ function Invoke-OrReuse-AcceptanceBacktest {
     }
 }
 
+function Get-AcceptanceBacktestCommandArgs {
+    param(
+        [string]$ModelRef,
+        [string]$ModelFamilyName,
+        [string]$StartDate,
+        [string]$EndDate,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset = "runtime_parity"
+    )
+    return (
+        Get-BacktestCommandArgs `
+            -ModelRef $ModelRef `
+            -ModelFamilyName $ModelFamilyName `
+            -StartDate $StartDate `
+            -EndDate $EndDate `
+            -Preset $Preset
+    )
+}
+
+function Start-OrReuse-AcceptanceBacktestTask {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$RegistryRoot,
+        [string]$StepName,
+        [string]$ModelRef,
+        [string]$ModelFamilyName,
+        [string]$ModelRunDir,
+        [string]$StartDate,
+        [string]$EndDate,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset
+    )
+    $contract = New-AcceptanceBacktestContract `
+        -StepName $StepName `
+        -ModelRef $ModelRef `
+        -ModelFamilyName $ModelFamilyName `
+        -ModelRunDir $ModelRunDir `
+        -StartDate $StartDate `
+        -EndDate $EndDate `
+        -Preset $Preset
+    $cacheHit = Resolve-AcceptanceBacktestCacheHit -RegistryRoot $RegistryRoot -ModelFamilyName $ModelFamilyName -Contract $contract
+    $paths = Get-PropValue -ObjectValue $cacheHit -Name "paths" -DefaultValue @{}
+    if ([bool](Get-PropValue -ObjectValue $cacheHit -Name "hit" -DefaultValue $false)) {
+        $metadata = Get-PropValue -ObjectValue $cacheHit -Name "metadata" -DefaultValue @{}
+        $result = [PSCustomObject]@{
+            Exec = [PSCustomObject]@{
+                ExitCode = 0
+                Output = "[cache-hit]"
+                Command = ""
+                DryRun = $false
+            }
+            RunDir = [string](Get-PropValue -ObjectValue $metadata -Name "source_backtest_run_dir" -DefaultValue "")
+            SummaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+            Summary = (Get-PropValue -ObjectValue $cacheHit -Name "summary" -DefaultValue @{})
+            Preset = $Preset
+            Reused = $true
+            SourceMode = "cached_result"
+            SourceBacktestRunDir = [string](Get-PropValue -ObjectValue $metadata -Name "source_backtest_run_dir" -DefaultValue "")
+            CacheKey = [string](Get-PropValue -ObjectValue $paths -Name "cache_key" -DefaultValue "")
+            CacheContractPath = [string](Get-PropValue -ObjectValue $paths -Name "contract_path" -DefaultValue "")
+            CacheSummaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+            CacheStatValidationPath = [string](Get-PropValue -ObjectValue $paths -Name "stat_validation_path" -DefaultValue "")
+            CacheMetadataPath = [string](Get-PropValue -ObjectValue $paths -Name "metadata_path" -DefaultValue "")
+            Contract = $contract
+        }
+        return [PSCustomObject]@{
+            Completed = $true
+            Result = $result
+            StepName = $StepName
+        }
+    }
+
+    if ($DryRun) {
+        return [PSCustomObject]@{
+            Completed = $true
+            Result = (Invoke-OrReuse-AcceptanceBacktest `
+                -PythonPath $PythonPath `
+                -Root $Root `
+                -RegistryRoot $RegistryRoot `
+                -StepName $StepName `
+                -ModelRef $ModelRef `
+                -ModelFamilyName $ModelFamilyName `
+                -ModelRunDir $ModelRunDir `
+                -StartDate $StartDate `
+                -EndDate $EndDate `
+                -Preset $Preset)
+            StepName = $StepName
+        }
+    }
+
+    if ($script:IsWindowsPlatform) {
+        return [PSCustomObject]@{
+            Completed = $true
+            Result = (Invoke-OrReuse-AcceptanceBacktest `
+                -PythonPath $PythonPath `
+                -Root $Root `
+                -RegistryRoot $RegistryRoot `
+                -StepName $StepName `
+                -ModelRef $ModelRef `
+                -ModelFamilyName $ModelFamilyName `
+                -ModelRunDir $ModelRunDir `
+                -StartDate $StartDate `
+                -EndDate $EndDate `
+                -Preset $Preset)
+            StepName = $StepName
+        }
+    }
+
+    $argList = Get-AcceptanceBacktestCommandArgs `
+        -ModelRef $ModelRef `
+        -ModelFamilyName $ModelFamilyName `
+        -StartDate $StartDate `
+        -EndDate $EndDate `
+        -Preset $Preset
+    $commandText = Format-CommandText -Exe $PythonPath -ArgList $argList
+    $snapshotEnv = [string]$script:dataPlatformReadySnapshotId
+    $job = Start-Job -ScriptBlock {
+        param(
+            [string]$PythonExe,
+            [string[]]$Args,
+            [string]$WorkingRoot,
+            [string]$SnapshotId
+        )
+
+        $snapshotEnvName = "AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID"
+        $hadSnapshotEnv = Test-Path ("Env:" + $snapshotEnvName)
+        $previousSnapshotEnv = if ($hadSnapshotEnv) { [string](Get-Item ("Env:" + $snapshotEnvName)).Value } else { "" }
+        $stdoutPath = ""
+        $stderrPath = ""
+        try {
+            if (-not [string]::IsNullOrWhiteSpace($WorkingRoot)) {
+                Set-Location $WorkingRoot
+            }
+            if ([string]::IsNullOrWhiteSpace($SnapshotId)) {
+                Remove-Item ("Env:" + $snapshotEnvName) -ErrorAction SilentlyContinue
+            } else {
+                $env:AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID = $SnapshotId
+            }
+            $stdoutPath = [System.IO.Path]::GetTempFileName()
+            $stderrPath = [System.IO.Path]::GetTempFileName()
+            & $PythonExe @Args 1> $stdoutPath 2> $stderrPath
+            $exitCode = [int]$LASTEXITCODE
+            $stdoutText = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue } else { "" }
+            $stderrText = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue } else { "" }
+            $text = @($stdoutText, $stderrText | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join "`n"
+
+            $runDir = ""
+            $jsonMatch = [Regex]::Match($text, '(?ms)"run_dir"\s*:\s*"((?:\\.|[^"])*)"')
+            if ($jsonMatch.Success) {
+                $encodedPath = [string]$jsonMatch.Groups[1].Value
+                try {
+                    $runDir = [string](('"' + $encodedPath + '"') | ConvertFrom-Json)
+                } catch {
+                }
+            }
+            if ([string]::IsNullOrWhiteSpace($runDir)) {
+                $lineMatch = [Regex]::Match($text, '(?m)^(?:\[[^\]]+\])+\s+run_dir=(.+)$')
+                if ($lineMatch.Success) {
+                    $runDir = ([string]$lineMatch.Groups[1].Value).Trim()
+                }
+            }
+            if ([string]::IsNullOrWhiteSpace($runDir)) {
+                $plainMatch = [Regex]::Match($text, '(?m)^run_dir=(.+)$')
+                if ($plainMatch.Success) {
+                    $runDir = ([string]$plainMatch.Groups[1].Value).Trim()
+                }
+            }
+
+            return [PSCustomObject]@{
+                exit_code = $exitCode
+                output = $text
+                run_dir = $runDir
+            }
+        } catch {
+            return [PSCustomObject]@{
+                exit_code = -1
+                output = [string]($_ | Out-String)
+                run_dir = ""
+            }
+        } finally {
+            if ($hadSnapshotEnv) {
+                $env:AUTOBOT_DATA_PLATFORM_READY_SNAPSHOT_ID = $previousSnapshotEnv
+            } else {
+                Remove-Item ("Env:" + $snapshotEnvName) -ErrorAction SilentlyContinue
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stdoutPath)) {
+                Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stderrPath)) {
+                Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
+            }
+        }
+    } -ArgumentList @($PythonPath, $argList, $Root, $snapshotEnv)
+
+    return [PSCustomObject]@{
+        Completed = $false
+        Job = $job
+        StepName = $StepName
+        PythonPath = $PythonPath
+        CommandText = $commandText
+        Preset = $Preset
+        Contract = $contract
+        CacheKey = [string](Get-PropValue -ObjectValue $paths -Name "cache_key" -DefaultValue "")
+        CacheContractPath = [string](Get-PropValue -ObjectValue $paths -Name "contract_path" -DefaultValue "")
+        CacheSummaryPath = [string](Get-PropValue -ObjectValue $paths -Name "summary_path" -DefaultValue "")
+        CacheStatValidationPath = [string](Get-PropValue -ObjectValue $paths -Name "stat_validation_path" -DefaultValue "")
+        CacheMetadataPath = [string](Get-PropValue -ObjectValue $paths -Name "metadata_path" -DefaultValue "")
+    }
+}
+
+function Complete-AcceptanceBacktestTask {
+    param([Parameter(Mandatory = $true)]$Task)
+
+    if ([bool](Get-PropValue -ObjectValue $Task -Name "Completed" -DefaultValue $false)) {
+        return (Get-PropValue -ObjectValue $Task -Name "Result" -DefaultValue $null)
+    }
+
+    $job = Get-PropValue -ObjectValue $Task -Name "Job" -DefaultValue $null
+    if ($null -eq $job) {
+        throw "Acceptance backtest task is missing job state"
+    }
+
+    Wait-Job -Job $job | Out-Null
+    $jobResult = Receive-Job -Job $job -ErrorAction SilentlyContinue
+    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+
+    $exitCode = [int](Get-PropValue -ObjectValue $jobResult -Name "exit_code" -DefaultValue -1)
+    $outputText = [string](Get-PropValue -ObjectValue $jobResult -Name "output" -DefaultValue "")
+    $commandText = [string](Get-PropValue -ObjectValue $Task -Name "CommandText" -DefaultValue "")
+    if ($exitCode -ne 0) {
+        throw "Command failed (exit=$exitCode): $commandText`n$outputText"
+    }
+
+    $runDir = [string](Get-PropValue -ObjectValue $jobResult -Name "run_dir" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($runDir)) {
+        throw "backtest run completed but run_dir was not reported by CLI stdout"
+    }
+    if (-not (Test-Path $runDir)) {
+        throw "backtest run_dir does not exist: $runDir"
+    }
+
+    $summaryPath = Join-Path $runDir "summary.json"
+    if (-not (Test-Path $summaryPath)) {
+        throw "backtest summary.json does not exist: $summaryPath"
+    }
+    $summary = Load-JsonOrEmpty -PathValue $summaryPath
+
+    return [PSCustomObject]@{
+        Exec = [PSCustomObject]@{
+            ExitCode = $exitCode
+            Output = $outputText
+            Command = $commandText
+            DryRun = $false
+        }
+        RunDir = $runDir
+        SummaryPath = $summaryPath
+        Summary = $summary
+        Preset = [string](Get-PropValue -ObjectValue $Task -Name "Preset" -DefaultValue "")
+        Reused = $false
+        SourceMode = "fresh_run"
+        SourceBacktestRunDir = $runDir
+        CacheKey = [string](Get-PropValue -ObjectValue $Task -Name "CacheKey" -DefaultValue "")
+        CacheContractPath = [string](Get-PropValue -ObjectValue $Task -Name "CacheContractPath" -DefaultValue "")
+        CacheSummaryPath = [string](Get-PropValue -ObjectValue $Task -Name "CacheSummaryPath" -DefaultValue "")
+        CacheStatValidationPath = [string](Get-PropValue -ObjectValue $Task -Name "CacheStatValidationPath" -DefaultValue "")
+        CacheMetadataPath = [string](Get-PropValue -ObjectValue $Task -Name "CacheMetadataPath" -DefaultValue "")
+        Contract = (Get-PropValue -ObjectValue $Task -Name "Contract" -DefaultValue @{})
+    }
+}
+
+function Cleanup-AcceptanceBacktestTask {
+    param([AllowNull()]$Task)
+
+    if ($null -eq $Task) {
+        return
+    }
+    if ([bool](Get-PropValue -ObjectValue $Task -Name "Completed" -DefaultValue $false)) {
+        return
+    }
+    $job = Get-PropValue -ObjectValue $Task -Name "Job" -DefaultValue $null
+    if ($null -eq $job) {
+        return
+    }
+    try {
+        if ($job.State -notin @("Completed", "Failed", "Stopped")) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        }
+    } finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-OrReuse-AcceptanceStatValidation {
     param(
         $BacktestValue,
@@ -5276,10 +5569,8 @@ function Update-RunArtifactStatus {
     )
 }
 
-function Invoke-BacktestAndLoadSummary {
+function Get-BacktestCommandArgs {
     param(
-        [string]$PythonPath,
-        [string]$Root,
         [string]$ModelRef,
         [string]$ModelFamilyName,
         [string]$StartDate,
@@ -5334,6 +5625,26 @@ function Invoke-BacktestAndLoadSummary {
             "--micro-order-policy-on-missing", "static_fallback"
         )
     }
+    return @($args)
+}
+
+function Invoke-BacktestAndLoadSummary {
+    param(
+        [string]$PythonPath,
+        [string]$Root,
+        [string]$ModelRef,
+        [string]$ModelFamilyName,
+        [string]$StartDate,
+        [string]$EndDate,
+        [ValidateSet("acceptance", "runtime_parity")]
+        [string]$Preset = "runtime_parity"
+    )
+    $args = Get-BacktestCommandArgs `
+        -ModelRef $ModelRef `
+        -ModelFamilyName $ModelFamilyName `
+        -StartDate $StartDate `
+        -EndDate $EndDate `
+        -Preset $Preset
     $exec = Invoke-CommandCapture -Exe $PythonPath -ArgList $args
     $runDir = if ($DryRun) { "" } else { Resolve-RunDirFromText -TextValue ([string]$exec.Output) }
     if ((-not $DryRun) -and [string]::IsNullOrWhiteSpace($runDir)) {
@@ -9028,7 +9339,10 @@ try {
             pass = $null
         }
     } else {
-        $runtimeParityCandidateBacktest = Invoke-OrReuse-AcceptanceBacktest `
+        $runtimeParityCandidateTask = $null
+        $runtimeParityChampionTask = $null
+        try {
+        $runtimeParityCandidateTask = Start-OrReuse-AcceptanceBacktestTask `
             -PythonPath $resolvedPythonExe `
             -Root $resolvedProjectRoot `
             -RegistryRoot $resolvedRegistryRoot `
@@ -9039,6 +9353,22 @@ try {
             -StartDate $certificationStartDate `
             -EndDate $effectiveBatchDate `
             -Preset "runtime_parity"
+        if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
+            $runtimeParityChampionTask = Start-OrReuse-AcceptanceBacktestTask `
+                -PythonPath $resolvedPythonExe `
+                -Root $resolvedProjectRoot `
+                -RegistryRoot $resolvedRegistryRoot `
+                -StepName "backtest_runtime_parity_champion" `
+                -ModelRef $championBacktestModelRef `
+                -ModelFamilyName $resolvedChampionModelFamily `
+                -ModelRunDir $championModelRunDir `
+                -StartDate $certificationStartDate `
+                -EndDate $effectiveBatchDate `
+                -Preset "runtime_parity"
+        }
+
+        $runtimeParityCandidateBacktest = Complete-AcceptanceBacktestTask -Task $runtimeParityCandidateTask
+        $runtimeParityCandidateTask = $null
         $runtimeParityCandidateSummary = Get-PropValue -ObjectValue $runtimeParityCandidateBacktest -Name "Summary" -DefaultValue @{}
         $runtimeParityCandidateStatValidation = Invoke-OrReuse-AcceptanceStatValidation `
             -BacktestValue $runtimeParityCandidateBacktest `
@@ -9079,18 +9409,9 @@ try {
         $runtimeParityChampionDeflatedSharpeRatio = $null
         $runtimeParityChampionProbabilisticSharpeRatio = $null
         $runtimeParityChampionStatValidation = @{}
-        if ((-not $SkipChampionCompare) -and (-not [string]::IsNullOrWhiteSpace($championRunId))) {
-            $runtimeParityChampionBacktest = Invoke-OrReuse-AcceptanceBacktest `
-                -PythonPath $resolvedPythonExe `
-                -Root $resolvedProjectRoot `
-                -RegistryRoot $resolvedRegistryRoot `
-                -StepName "backtest_runtime_parity_champion" `
-                -ModelRef $championBacktestModelRef `
-                -ModelFamilyName $resolvedChampionModelFamily `
-                -ModelRunDir $championModelRunDir `
-                -StartDate $certificationStartDate `
-                -EndDate $effectiveBatchDate `
-                -Preset "runtime_parity"
+        if ($null -ne $runtimeParityChampionTask) {
+            $runtimeParityChampionBacktest = Complete-AcceptanceBacktestTask -Task $runtimeParityChampionTask
+            $runtimeParityChampionTask = $null
             $runtimeParityChampionSummary = Get-PropValue -ObjectValue $runtimeParityChampionBacktest -Name "Summary" -DefaultValue @{}
             $runtimeParityChampionStatValidation = Invoke-OrReuse-AcceptanceStatValidation `
                 -BacktestValue $runtimeParityChampionBacktest `
@@ -9224,6 +9545,10 @@ try {
                 gate = $report.gates.runtime_parity
             }
             Write-JsonFile -PathValue $certificationArtifactPath -Payload $certificationArtifact
+        }
+        } finally {
+            Cleanup-AcceptanceBacktestTask -Task $runtimeParityCandidateTask
+            Cleanup-AcceptanceBacktestTask -Task $runtimeParityChampionTask
         }
     }
 
