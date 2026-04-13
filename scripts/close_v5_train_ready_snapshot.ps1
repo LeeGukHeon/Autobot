@@ -130,6 +130,7 @@ function Get-ReusableTrainSnapshotCloseSummary {
         [string]$PointerFile,
         [string]$ProjectRootValue,
         [string]$BatchDateValue,
+        [string]$ExpectedTf,
         [string]$TrainingCriticalStartDateValue,
         [string]$TrainingCriticalEndDateValue,
         [Parameter(Mandatory = $false)]$ExpectedTrainWindow,
@@ -150,6 +151,17 @@ function Get-ReusableTrainSnapshotCloseSummary {
     }
     $existingBatchDate = [string](Get-PropValue -ObjectValue $existingSummary -Name "batch_date" -DefaultValue "")
     if (-not [string]::Equals($existingBatchDate.Trim(), $BatchDateValue.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    $existingTf = [string](Get-PropValue -ObjectValue $existingSummary -Name "tf" -DefaultValue "")
+    if ([string]::IsNullOrWhiteSpace($existingTf)) {
+        $existingTf = [string](
+            Get-PropValue -ObjectValue (
+                Get-PropValue -ObjectValue $existingSummary -Name "feature_contract_refresh" -DefaultValue @{}
+            ) -Name "tf" -DefaultValue ""
+        )
+    }
+    if (-not [string]::Equals($existingTf.Trim(), $ExpectedTf.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) {
         return $null
     }
     if (-not (To-Bool (Get-PropValue -ObjectValue $existingSummary -Name "overall_pass" -DefaultValue $false) $false)) {
@@ -510,6 +522,7 @@ $reusableSummary = Get-ReusableTrainSnapshotCloseSummary `
     -PointerFile $pointerPath `
     -ProjectRootValue $resolvedProjectRoot `
     -BatchDateValue $batchDateValue `
+    -ExpectedTf (([string]$Tf).Trim().ToLowerInvariant()) `
     -TrainingCriticalStartDateValue $trainingCriticalStartDate `
     -TrainingCriticalEndDateValue $trainingCriticalEndDate `
     -ExpectedTrainWindow (Get-PropValue -ObjectValue $windowContract -Name "train_window" -DefaultValue @{}) `
@@ -657,6 +670,7 @@ $summary = [ordered]@{
     policy = "v5_train_snapshot_close_v1"
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     batch_date = $batchDateValue
+    tf = ([string]$Tf).Trim().ToLowerInvariant()
     project_root = $resolvedProjectRoot
     python_exe = $resolvedPythonExe
     source_freshness = [ordered]@{
@@ -696,6 +710,7 @@ $summary = [ordered]@{
         refresh_argument_mode = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "refresh_argument_mode" -DefaultValue "")
         top_n = [int](Get-PropValue -ObjectValue $featureRefreshSummary -Name "top_n" -DefaultValue ([Math]::Max([int]$FeatureTopN, 1)))
         universe_mode = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "universe_mode" -DefaultValue "")
+        tf = [string](Get-PropValue -ObjectValue $featureRefreshSummary -Name "tf" -DefaultValue (([string]$Tf).Trim().ToLowerInvariant()))
         features_v4_effective_start = [string](Get-PropValue -ObjectValue $featureBuildReport -Name "effective_start" -DefaultValue "")
         features_v4_effective_end = [string](Get-PropValue -ObjectValue $featureBuildReport -Name "effective_end" -DefaultValue "")
     }

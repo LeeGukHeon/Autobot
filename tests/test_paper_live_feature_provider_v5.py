@@ -58,6 +58,34 @@ def test_live_feature_provider_v5_loads_child_predictor_from_input_expert_metada
     }
 
 
+def test_live_feature_provider_v5_defaults_to_one_minute_tf(monkeypatch) -> None:
+    monkeypatch.setattr(
+        LiveFeatureProviderV5,
+        "_resolve_runtime_source_lineage",
+        lambda self: {},
+    )
+    monkeypatch.setattr(
+        LiveFeatureProviderV5,
+        "_configure_child_predictors",
+        lambda self: None,
+    )
+
+    class _BaseProvider:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = dict(kwargs)
+
+    monkeypatch.setattr("autobot.paper.live_features_v5.LiveFeatureProviderV4Native", _BaseProvider)
+
+    provider = LiveFeatureProviderV5(
+        predictor=type("Predictor", (), {"model_family": "train_v5_fusion", "feature_columns": ()})(),
+        registry_root=Path("models/registry"),
+        feature_columns=(),
+    )
+
+    assert provider._tf == "1m"  # type: ignore[attr-defined]
+    assert provider._base_provider.kwargs["tf"] == "1m"  # type: ignore[attr-defined]
+
+
 def test_live_feature_provider_v5_builds_fusion_support_and_tradability_features() -> None:
     class _PanelPredictor:
         feature_columns = ("panel_base_a", "panel_base_b")

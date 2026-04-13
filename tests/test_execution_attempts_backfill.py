@@ -264,3 +264,127 @@ def test_execution_attempts_backfill_reconstructs_micro_state_from_micro_parquet
     assert journal_micro_state["book_coverage_ms"] == 44_000
     assert journal_micro_state["snapshot_age_ms"] == 1_000
     assert journal_micro_state["micro_quality_score"] is not None
+
+
+def test_execution_attempts_backfill_auto_resolves_micro_tf_from_runtime_contract(tmp_path: Path) -> None:
+    db_path = tmp_path / "live_state.db"
+    micro_root = tmp_path / "data" / "parquet" / "micro_v1"
+    ts_ms = 2_000_000_000_000
+    market = "KRW-BTC"
+    date_value = "2033-05-18"
+    part_dir = micro_root / "tf=1m" / f"market={market}" / f"date={date_value}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "market": [market],
+            "tf": ["1m"],
+            "ts_ms": [ts_ms],
+            "trade_source": ["ws"],
+            "trade_events": [5],
+            "book_events": [9],
+            "trade_min_ts_ms": [ts_ms - 35_000],
+            "trade_max_ts_ms": [ts_ms - 2_000],
+            "book_min_ts_ms": [ts_ms - 45_000],
+            "book_max_ts_ms": [ts_ms - 1_000],
+            "trade_coverage_ms": [33_000],
+            "book_coverage_ms": [44_000],
+            "micro_trade_available": [True],
+            "micro_book_available": [True],
+            "micro_available": [True],
+            "trade_count": [5],
+            "buy_count": [3],
+            "sell_count": [2],
+            "trade_volume_total": [100.0],
+            "buy_volume": [60.0],
+            "sell_volume": [40.0],
+            "trade_imbalance": [0.2],
+            "vwap": [100.0],
+            "avg_trade_size": [20.0],
+            "max_trade_size": [30.0],
+            "last_trade_price": [101.0],
+            "mid_mean": [100.5],
+            "spread_bps_mean": [7.5],
+            "depth_bid_top5_mean": [12_345.0],
+            "depth_ask_top5_mean": [23_456.0],
+            "imbalance_top5_mean": [0.1],
+            "microprice_bias_bps_mean": [0.5],
+            "book_update_count": [9],
+        }
+    ).write_parquet(part_dir / "part-000.parquet")
+
+    with LiveStateStore(db_path) as store:
+        store.set_runtime_contract(payload={"strategy_tf": "1m", "runtime_model_family": "train_v5_fusion"})
+        entry_meta = {
+            "micro_state": {
+                "spread_bps": None,
+                "depth_top5_notional_krw": None,
+                "trade_coverage_ms": None,
+                "book_coverage_ms": None,
+                "snapshot_age_ms": None,
+                "micro_quality_score": None,
+            },
+            "execution": {
+                "initial_ref_price": 101.0,
+                "effective_ref_price": 101.0,
+                "requested_price": 100.0,
+                "exec_profile": {"price_mode": "PASSIVE_MAKER"},
+            },
+            "strategy": {
+                "meta": {
+                    "model_prob": 0.91,
+                    "trade_action": {
+                        "expected_edge": 0.0030,
+                        "expected_es": 0.0010,
+                    },
+                }
+            },
+        }
+        store.upsert_trade_journal(
+            TradeJournalRecord(
+                journal_id="journal-filled",
+                market=market,
+                status="CLOSED",
+                entry_intent_id="intent-filled",
+                entry_order_uuid="order-filled",
+                entry_submitted_ts_ms=ts_ms,
+                entry_filled_ts_ms=ts_ms + 1_000,
+                entry_price=100.0,
+                qty=2.0,
+                expected_edge_bps=30.0,
+                expected_net_edge_bps=24.0,
+                entry_meta_json=json.dumps(entry_meta, ensure_ascii=False, sort_keys=True),
+                updated_ts=ts_ms + 2_000,
+            )
+        )
+        store.upsert_order(
+            OrderRecord(
+                uuid="order-filled",
+                identifier="identifier-filled",
+                market=market,
+                side="bid",
+                ord_type="limit",
+                time_in_force=None,
+                price=100.0,
+                volume_req=2.0,
+                volume_filled=2.0,
+                state="done",
+                created_ts=ts_ms + 100,
+                updated_ts=ts_ms + 1_000,
+                intent_id="intent-filled",
+                local_state="DONE",
+                raw_exchange_state="done",
+                last_event_name="ORDER_STATE",
+                event_source="private_ws",
+            )
+        )
+
+    report = backfill_execution_attempts_for_db(
+        db_path=db_path,
+        lookback_days=3650,
+        limit=100,
+        micro_root=micro_root,
+    )
+
+    assert report["micro_tf"] == "1m"
+    assert report["micro_replay_enabled"] is True
+    assert report["micro_attempts_enriched"] == 1

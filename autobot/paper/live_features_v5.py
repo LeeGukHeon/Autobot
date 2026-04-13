@@ -54,7 +54,7 @@ class LiveFeatureProviderV5:
         registry_root: str | Path,
         feature_columns: Sequence[str],
         extra_columns: Sequence[str] = (),
-        tf: str = "5m",
+        tf: str = "1m",
         quote: str = "KRW",
         micro_snapshot_provider: MicroSnapshotProvider | None = None,
         micro_max_age_ms: int = 300_000,
@@ -72,7 +72,7 @@ class LiveFeatureProviderV5:
         self._registry_root = Path(registry_root)
         self._feature_columns = tuple(str(col).strip() for col in feature_columns if str(col).strip())
         self._extra_columns = tuple(str(col).strip() for col in extra_columns if str(col).strip())
-        self._tf = str(tf).strip().lower() or "5m"
+        self._tf = str(tf).strip().lower() or "1m"
         self._quote = str(quote).strip().upper() or "KRW"
         self._parquet_root = Path(parquet_root)
         self._micro_snapshot_provider = micro_snapshot_provider

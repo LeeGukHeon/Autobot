@@ -20,7 +20,7 @@ def backfill_execution_attempts(
     lookback_days: int = 14,
     limit: int = 5000,
     micro_root: Path | None = None,
-    micro_tf: str = "5m",
+    micro_tf: str = "auto",
 ) -> dict[str, Any]:
     now_ts_ms = int(time.time() * 1000)
     since_ts_ms = now_ts_ms - (max(int(lookback_days), 1) * 86_400_000)
@@ -42,6 +42,8 @@ def backfill_execution_attempts(
         if intent_id:
             orders_by_intent.setdefault(intent_id, []).append(dict(order))
 
+    resolved_micro_tf = _resolve_effective_micro_tf(store=store, micro_tf=micro_tf)
+
     report = {
         "policy": "execution_attempts_backfill_v1",
         "db_path": str(store.db_path),
@@ -55,7 +57,7 @@ def backfill_execution_attempts(
         "skipped_reasons": {},
         "micro_replay_enabled": False,
         "micro_root": None,
-        "micro_tf": str(micro_tf).strip().lower() or "5m",
+        "micro_tf": resolved_micro_tf,
         "micro_journals_updated": 0,
         "micro_attempts_enriched": 0,
         "micro_missing_snapshot": 0,
@@ -64,7 +66,7 @@ def backfill_execution_attempts(
     micro_provider = _resolve_micro_snapshot_provider(
         db_path=store.db_path,
         micro_root=micro_root,
-        micro_tf=micro_tf,
+        micro_tf=resolved_micro_tf,
     )
     if micro_provider is not None:
         report["micro_replay_enabled"] = True
@@ -106,7 +108,7 @@ def backfill_execution_attempts_for_db(
     lookback_days: int = 14,
     limit: int = 5000,
     micro_root: Path | None = None,
-    micro_tf: str = "5m",
+    micro_tf: str = "auto",
 ) -> dict[str, Any]:
     with LiveStateStore(db_path) as store:
         return backfill_execution_attempts(
@@ -116,6 +118,18 @@ def backfill_execution_attempts_for_db(
             micro_root=micro_root,
             micro_tf=micro_tf,
         )
+
+
+def _resolve_effective_micro_tf(*, store: LiveStateStore, micro_tf: str) -> str:
+    normalized = str(micro_tf or "").strip().lower()
+    if normalized and normalized != "auto":
+        return normalized
+    runtime_contract = store.runtime_contract() or {}
+    for key in ("strategy_tf", "runtime_tf", "tf"):
+        value = str(runtime_contract.get(key) or "").strip().lower()
+        if value:
+            return value
+    return "5m"
 
 
 def _resolve_micro_root(*, db_path: Path, micro_root: Path | None) -> Path | None:
@@ -536,7 +550,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lookback-days", type=int, default=14)
     parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--micro-root")
-    parser.add_argument("--micro-tf", default="5m")
+    parser.add_argument("--micro-tf", default="auto")
     return parser
 
 
@@ -548,7 +562,7 @@ def main() -> int:
         lookback_days=max(int(args.lookback_days), 1),
         limit=max(int(args.limit), 1),
         micro_root=(Path(str(args.micro_root)) if args.micro_root else None),
-        micro_tf=str(args.micro_tf or "5m"),
+        micro_tf=str(args.micro_tf or "auto"),
     )
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0

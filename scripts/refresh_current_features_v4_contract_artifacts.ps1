@@ -185,10 +185,10 @@ if ([string]::IsNullOrWhiteSpace($resolvedTf)) {
     $resolvedTf = [string](Get-PropValue -ObjectValue $buildReport -Name "tf" -DefaultValue "")
 }
 if ([string]::IsNullOrWhiteSpace($resolvedTf)) {
-    $resolvedTf = [string](Get-PropValue -ObjectValue $featureSpec -Name "tf" -DefaultValue "5m")
+    $resolvedTf = [string](Get-PropValue -ObjectValue $featureSpec -Name "tf" -DefaultValue "1m")
 }
 if ([string]::IsNullOrWhiteSpace($resolvedTf)) {
-    $resolvedTf = "5m"
+    $resolvedTf = "1m"
 }
 
 $resolvedStartDate = ([string]$StartDate).Trim()
