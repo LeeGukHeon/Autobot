@@ -69,6 +69,7 @@ from .data.collect import (
     validate_ws_candle_dataset,
     validate_ws_public_raw_dataset,
 )
+from .data.collect.fixed_collection_contract import resolve_fixed_collection_markets
 from .data.micro import (
     MicroAggregateOptions,
     aggregate_micro_v1,
@@ -423,6 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_raw_trade_parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     collect_raw_trade_parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    collect_raw_trade_parser.add_argument("--quote", default="KRW")
     collect_raw_trade_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
     collect_raw_trade_parser.add_argument("--raw-ws-root", default="data/raw_ws/upbit/public")
     collect_raw_trade_parser.add_argument("--raw-ticks-root", default="data/raw_ticks/upbit/trades")
@@ -1848,7 +1850,7 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
     if args.collect_command == "plan-ticks":
         return _handle_collect_plan_ticks(args, config_dir, base_config)
     if args.collect_command == "raw-trade-v1":
-        return _handle_collect_raw_trade_v1(args)
+        return _handle_collect_raw_trade_v1(args, config_dir)
     if args.collect_command == "plan-ws-public":
         return _handle_collect_plan_ws_public(args, config_dir, base_config)
     if args.collect_command == "ticks":
@@ -2221,7 +2223,14 @@ def _handle_collect_plan_ws_public(args: argparse.Namespace, config_dir: Path, c
     return 0
 
 
-def _handle_collect_raw_trade_v1(args: argparse.Namespace) -> int:
+def _handle_collect_raw_trade_v1(args: argparse.Namespace, config_dir: Path) -> int:
+    quote_value = str(args.quote).strip().upper() or "KRW"
+    explicit_markets = _parse_csv_list(args.markets, normalize=str.upper)
+    fixed_markets = resolve_fixed_collection_markets(
+        config_dir=config_dir,
+        quote=quote_value,
+        explicit_markets=explicit_markets,
+    )
     summary = build_raw_trade_v1_dataset(
         RawTradeBuildOptions(
             raw_ws_root=Path(args.raw_ws_root),
@@ -2230,7 +2239,7 @@ def _handle_collect_raw_trade_v1(args: argparse.Namespace) -> int:
             meta_dir=Path(args.meta_dir),
             start=str(args.start).strip(),
             end=str(args.end).strip(),
-            markets=_parse_csv_list(args.markets, normalize=str.upper),
+            markets=(tuple(fixed_markets) if fixed_markets else explicit_markets),
             prefer_source_order=tuple(
                 str(item).strip().lower()
                 for item in str(args.prefer_source_order or "ws,rest").split(",")

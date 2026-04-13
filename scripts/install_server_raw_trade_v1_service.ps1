@@ -41,10 +41,8 @@ $refreshArgs = @(
     "-WindowDays", ([string]([Math]::Max([int]$WindowDays, 1)))
 )
 $refreshCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
-$execStart = Build-FlockWrappedExecStart `
-    -Command $refreshCommand `
-    -LockFile $LockFile `
-    -BusyMessage "[raw-trade-v1] lock busy, skipping"
+$lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $LockFile) + " bash -lc " + (Quote-ShellArg $refreshCommand) + "; else exec bash -lc " + (Quote-ShellArg $refreshCommand) + "; fi"
+$execStart = "/bin/bash -lc " + (Quote-ShellArg $lockCommand)
 
 $serviceContent = @"
 [Unit]
