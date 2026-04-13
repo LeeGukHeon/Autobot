@@ -4,7 +4,7 @@ param(
     [string]$SummaryPath = "data/raw_ticks/upbit/_meta/ticks_backfill_latest.json",
     [string]$PlanPath = "data/raw_ticks/upbit/_meta/ticks_plan_backfill_auto.json",
     [string]$Quote = "KRW",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [string]$DaysAgoCsv = "1,2",
     [string]$RawRoot = "data/raw_ticks/upbit/trades",
     [string]$MetaDir = "data/raw_ticks/upbit/_meta",

@@ -2,7 +2,7 @@ param(
     [string]$PythonExe = "C:\Python314\python.exe",
     [string]$ProjectRoot = "D:\MyApps\Autobot",
     [string]$Quote = "KRW",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [int]$RefreshSec = 900,
     [int]$RetentionDays = 30,
     [double]$DownsampleHz = 1.0,

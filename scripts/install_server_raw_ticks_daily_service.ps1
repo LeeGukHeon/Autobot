@@ -6,7 +6,7 @@ param(
     [string]$TimerUnitName = "autobot-raw-ticks-daily.timer",
     [string]$RefreshScript = "",
     [string]$Quote = "KRW",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [int]$DaysAgo = 1,
     [int]$Workers = 1,
     [int]$MaxPagesPerTarget = 50,

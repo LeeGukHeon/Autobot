@@ -5,7 +5,7 @@ param(
     [string]$SummaryPath = "data/raw_ticks/upbit/_meta/ticks_daily_latest.json",
     [string]$PlanPath = "data/raw_ticks/upbit/_meta/ticks_plan_daily_auto.json",
     [string]$Quote = "KRW",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [int]$DaysAgo = 1,
     [string]$DaysAgoCsv = "",
     [string]$RawRoot = "data/raw_ticks/upbit/trades",

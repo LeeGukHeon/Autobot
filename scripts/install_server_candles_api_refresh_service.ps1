@@ -7,7 +7,7 @@ param(
     [string]$RefreshScript = "",
     [string]$Quote = "KRW",
     [string]$MarketMode = "top_n_by_recent_value_est",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [int]$LookbackMonths = 3,
     [string]$Tf = "1m,5m,15m,60m,240m",
     [int]$MaxBackfillDays1m = 3,

@@ -5,7 +5,7 @@ param(
     [string]$SummaryPath = "data/collect/_meta/candles_api_refresh_latest.json",
     [string]$Quote = "KRW",
     [string]$MarketMode = "top_n_by_recent_value_est",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [string]$BaseDataset = "candles_api_v1",
     [string]$OutDataset = "candles_api_v1",
     [string]$PlanPath = "data/collect/_meta/candle_topup_plan_auto.json",

@@ -6,7 +6,7 @@ param(
     [string]$TimerUnitName = "autobot-raw-ticks-backfill.timer",
     [string]$RefreshScript = "",
     [string]$Quote = "KRW",
-    [int]$TopN = 50,
+    [int]$TopN = 30,
     [string]$DaysAgoCsv = "1,2",
     [int]$Workers = 1,
     [int]$MaxPagesPerTarget = 50,
