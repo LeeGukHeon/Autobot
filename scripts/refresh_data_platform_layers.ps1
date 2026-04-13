@@ -321,21 +321,23 @@ $runtimeRichSteps = @(
     ))
 )
 
-$tensorDateValues = if ((-not [string]::IsNullOrWhiteSpace($TensorStartDate)) -and (-not [string]::IsNullOrWhiteSpace($TensorEndDate))) {
+$tensorDateValues = @(
+if ((-not [string]::IsNullOrWhiteSpace($TensorStartDate)) -and (-not [string]::IsNullOrWhiteSpace($TensorEndDate))) {
     Get-DateRangeUtcDateValues -StartDate $TensorStartDate -EndDate $TensorEndDate
 } else {
     Get-RecentUtcDateValues -Count $TensorRecentDates
-}
+})
 $tensorWindowSource = if ((-not [string]::IsNullOrWhiteSpace($TensorStartDate)) -and (-not [string]::IsNullOrWhiteSpace($TensorEndDate))) {
     "explicit_date_range"
 } else {
     "recent_dates_window"
 }
-$microDateValues = if ((-not [string]::IsNullOrWhiteSpace($MicroStartDate)) -and (-not [string]::IsNullOrWhiteSpace($MicroEndDate))) {
+$microDateValues = @(
+if ((-not [string]::IsNullOrWhiteSpace($MicroStartDate)) -and (-not [string]::IsNullOrWhiteSpace($MicroEndDate))) {
     Get-DateRangeUtcDateValues -StartDate $MicroStartDate -EndDate $MicroEndDate
 } else {
     Get-RecentUtcDateValues -Count $MicroRecentDates
-}
+})
 $microWindowSource = if ((-not [string]::IsNullOrWhiteSpace($MicroStartDate)) -and (-not [string]::IsNullOrWhiteSpace($MicroEndDate))) {
     "explicit_date_range"
 } else {

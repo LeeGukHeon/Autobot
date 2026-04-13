@@ -412,6 +412,52 @@ def test_t23_2_data_platform_refresh_wrapper_executes_python_steps_with_full_arg
     assert lines[0]["argv"][:4] == ["-m", "autobot.cli", "collect", "plan-candles"]
 
 
+def test_t23_2_data_platform_refresh_wrapper_handles_single_day_explicit_range(tmp_path: Path) -> None:
+    fake_python = _make_fake_python_exe(tmp_path)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    summary_path = project_root / "data" / "collect" / "_meta" / "refresh_summary_single_day.json"
+
+    completed = subprocess.run(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "scripts" / "refresh_data_platform_layers.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-PythonExe",
+            str(fake_python),
+            "-Mode",
+            "training_critical",
+            "-TensorStartDate",
+            "2026-03-04",
+            "-TensorEndDate",
+            "2026-03-04",
+            "-MicroStartDate",
+            "2026-03-04",
+            "-MicroEndDate",
+            "2026-03-04",
+            "-SummaryPath",
+            str(summary_path),
+            "-PublishLockFile",
+            "",
+            "-SkipPublishReadySnapshot",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    payload = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+    assert payload["tensor_dates"] == ["2026-03-04"]
+    assert payload["micro_dates"] == ["2026-03-04"]
+
+
 def test_t23_2_data_platform_refresh_wrapper_tolerates_partial_ws_candle_collect_when_validate_passes(tmp_path: Path) -> None:
     fake_python = _make_fake_python_exe_with_ws_candle_partial_failure(tmp_path)
     project_root = tmp_path / "project"
