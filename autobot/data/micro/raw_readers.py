@@ -11,6 +11,11 @@ from typing import Any, Iterator
 
 import zstandard as zstd
 
+from ..sources.trades import (
+    normalize_rest_trade_row as normalize_canonical_rest_trade_row,
+    normalize_ws_trade_row as normalize_canonical_ws_trade_row,
+)
+
 
 @dataclass
 class ParseCounters:
@@ -113,54 +118,32 @@ def discover_ws_files(
 
 
 def normalize_rest_trade_row(row: dict[str, Any]) -> dict[str, Any] | None:
-    market = _as_str(row.get("market"), upper=True)
-    ts_ms = _to_int(row.get("timestamp_ms"))
-    price = _to_float(row.get("trade_price"))
-    volume = _to_float(row.get("trade_volume"))
-    ask_bid = _as_str(row.get("ask_bid"), upper=True)
-    if market is None or ts_ms is None or price is None or volume is None:
-        return None
-    if price <= 0.0 or volume <= 0.0:
-        return None
-    side = _trade_side_from_ask_bid(ask_bid)
-    if side is None:
+    canonical = normalize_canonical_rest_trade_row(row)
+    if canonical is None:
         return None
 
     return {
-        "market": market,
-        "event_ts_ms": int(ts_ms),
-        "price": float(price),
-        "volume": float(volume),
-        "side": side,
-        "source": "rest",
+        "market": str(canonical["market"]),
+        "event_ts_ms": int(canonical["event_ts_ms"]),
+        "price": float(canonical["price"]),
+        "volume": float(canonical["volume"]),
+        "side": str(canonical["side"]),
+        "source": str(canonical["source"]),
     }
 
 
 def normalize_ws_trade_row(row: dict[str, Any]) -> dict[str, Any] | None:
-    channel = _as_str(row.get("channel"), upper=False)
-    if channel != "trade":
-        return None
-
-    market = _as_str(row.get("market"), upper=True)
-    ts_ms = _to_int(row.get("trade_ts_ms"))
-    price = _to_float(row.get("price"))
-    volume = _to_float(row.get("volume"))
-    ask_bid = _as_str(row.get("ask_bid"), upper=True)
-    if market is None or ts_ms is None or price is None or volume is None:
-        return None
-    if price <= 0.0 or volume <= 0.0:
-        return None
-    side = _trade_side_from_ask_bid(ask_bid)
-    if side is None:
+    canonical = normalize_canonical_ws_trade_row(row)
+    if canonical is None:
         return None
 
     return {
-        "market": market,
-        "event_ts_ms": int(ts_ms),
-        "price": float(price),
-        "volume": float(volume),
-        "side": side,
-        "source": "ws",
+        "market": str(canonical["market"]),
+        "event_ts_ms": int(canonical["event_ts_ms"]),
+        "price": float(canonical["price"]),
+        "volume": float(canonical["volume"]),
+        "side": str(canonical["side"]),
+        "source": str(canonical["source"]),
     }
 
 

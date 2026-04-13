@@ -41,6 +41,11 @@ data/
 autobot/data/*
 !autobot/data/micro/
 !autobot/data/micro/**
+!autobot/data/sources/
+autobot/data/sources/*
+!autobot/data/sources/__init__.py
+!autobot/data/sources/trades/
+!autobot/data/sources/trades/**
 autobot/data/micro/__pycache__/
 autobot/data/micro/**/*.pyc
 models/
