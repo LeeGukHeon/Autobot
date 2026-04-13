@@ -101,7 +101,13 @@ $resolvedSummaryPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue
 $resolvedPlanPath = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $PlanPath
 $resolvedRawRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $RawRoot
 $resolvedMetaDir = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MetaDir
-$resolvedBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) { (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd") } else { $BatchDate.Trim() }
+$resolvedBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) {
+    if ([string]::IsNullOrWhiteSpace($DaysAgoCsv)) {
+        (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+    } else {
+        ""
+    }
+} else { $BatchDate.Trim() }
 $daysAgoSpec = Resolve-DaysAgoSpec -SingleDay $DaysAgo -DaysAgoCsvText $DaysAgoCsv -BatchDateText $resolvedBatchDate
 $daysAgoValues = @(
     $daysAgoSpec.Split(",") |

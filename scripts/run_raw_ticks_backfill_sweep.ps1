@@ -5,7 +5,7 @@ param(
     [string]$PlanPath = "data/raw_ticks/upbit/_meta/ticks_plan_backfill_auto.json",
     [string]$Quote = "KRW",
     [int]$TopN = 50,
-    [string]$DaysAgoCsv = "2,3,4,5,6,7",
+    [string]$DaysAgoCsv = "1,2",
     [string]$RawRoot = "data/raw_ticks/upbit/trades",
     [string]$MetaDir = "data/raw_ticks/upbit/_meta",
     [int]$Workers = 1,
@@ -36,6 +36,6 @@ if ($DryRun) {
     $invokeParams["DryRun"] = $true
 }
 & $baseScript @invokeParams
-if ($LASTEXITCODE -ne 0) {
+if (($null -ne (Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue)) -and ($LASTEXITCODE -ne 0)) {
     exit $LASTEXITCODE
 }

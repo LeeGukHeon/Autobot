@@ -543,6 +543,13 @@ def test_t23_2_raw_trade_v1_refresh_wrapper_dry_run_emits_rolling_window_build()
     assert "--prefer-source-order" in stdout
 
 
+def test_t23_2_raw_ticks_backfill_wrapper_dry_run_uses_recent_two_days_window() -> None:
+    stdout = _run_script_dry_run("run_raw_ticks_backfill_sweep.ps1")
+
+    assert "--days-ago' '1,2" in stdout or '--days-ago" "1,2' in stdout or "--days-ago 1,2" in stdout
+    assert "OnCalendar=*-*-* 22:00:00" in _run_script_dry_run("install_server_raw_ticks_backfill_service.ps1")
+
+
 def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contract() -> None:
     stdout = _run_script_dry_run("close_v5_train_ready_snapshot.ps1")
 
