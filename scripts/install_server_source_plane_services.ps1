@@ -12,7 +12,6 @@ Set-StrictMode -Version Latest
 $wsPublicScript = Join-Path $PSScriptRoot "install_server_ws_public_service.ps1"
 $privateWsScript = Join-Path $PSScriptRoot "install_server_private_ws_archive_service.ps1"
 $foundationScript = Join-Path $PSScriptRoot "install_server_foundation_ingestion_services.ps1"
-$dataPlatformScript = Join-Path $PSScriptRoot "install_server_data_platform_refresh_service.ps1"
 
 $commonParams = @{}
 if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -42,8 +41,4 @@ if ($LASTEXITCODE -ne 0) {
 & $foundationScript @commonParams
 if ($LASTEXITCODE -ne 0) {
     throw "install_server_foundation_ingestion_services.ps1 failed"
-}
-& $dataPlatformScript @commonParams
-if ($LASTEXITCODE -ne 0) {
-    throw "install_server_data_platform_refresh_service.ps1 failed"
 }

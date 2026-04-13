@@ -499,6 +499,29 @@ def test_t23_2_train_snapshot_close_installer_dry_run_keeps_v5_timer_contract() 
     assert "OnCalendar=*-*-* 00:05:00" in stdout
 
 
+def test_t23_2_foundation_ingestion_installer_dry_run_keeps_only_first_tier_collectors() -> None:
+    stdout = _run_script_dry_run("install_server_foundation_ingestion_services.ps1")
+
+    assert "[candles-api-install][dry-run] service=autobot-candles-api-refresh.service" in stdout
+    assert "[raw-ticks-install][dry-run] service=autobot-raw-ticks-daily.service" in stdout
+    assert "[raw-ticks-backfill-install][dry-run] service=autobot-raw-ticks-backfill.service" in stdout
+    assert "autobot-v5-train-snapshot-close.timer" not in stdout
+    assert "close_v5_train_ready_snapshot.ps1" not in stdout
+
+
+def test_t23_2_source_plane_installer_dry_run_keeps_only_source_plane_units() -> None:
+    stdout = _run_script_dry_run("install_server_source_plane_services.ps1")
+
+    assert "[ws-public-install][dry-run] unit=autobot-ws-public.service" in stdout
+    assert "[private-ws-install][dry-run] unit=autobot-private-ws-archive.service" in stdout
+    assert "[candles-api-install][dry-run] service=autobot-candles-api-refresh.service" in stdout
+    assert "[raw-ticks-install][dry-run] service=autobot-raw-ticks-daily.service" in stdout
+    assert "[raw-ticks-backfill-install][dry-run] service=autobot-raw-ticks-backfill.service" in stdout
+    assert "autobot-data-platform-refresh.timer" not in stdout
+    assert "refresh_data_platform_layers.ps1" not in stdout
+    assert "autobot-v5-train-snapshot-close.timer" not in stdout
+
+
 def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contract() -> None:
     stdout = _run_script_dry_run("close_v5_train_ready_snapshot.ps1")
 
