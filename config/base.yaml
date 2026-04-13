@@ -64,6 +64,42 @@ universe:
   quote_currency: KRW
   top_n_by_acc_trade_price_24h: 20
 
+source_plane:
+  fixed_collection:
+    enabled: true
+    quote: KRW
+    markets:
+      - KRW-XRP
+      - KRW-BTC
+      - KRW-ETH
+      - KRW-SOL
+      - KRW-DOGE
+      - KRW-KITE
+      - KRW-G
+      - KRW-ENSO
+      - KRW-IP
+      - KRW-ADA
+      - KRW-ANKR
+      - KRW-GAS
+      - KRW-ANIME
+      - KRW-BERA
+      - KRW-AXS
+      - KRW-XLM
+      - KRW-CPOOL
+      - KRW-JTO
+      - KRW-F
+      - KRW-BSV
+      - KRW-0G
+      - KRW-LINK
+      - KRW-LA
+      - KRW-BCH
+      - KRW-AZTEC
+      - KRW-BREV
+      - KRW-ETC
+      - KRW-HBAR
+      - KRW-ELSA
+      - KRW-AQT
+
 storage:
   raw_dir: data/raw
   parquet_dir: data/parquet

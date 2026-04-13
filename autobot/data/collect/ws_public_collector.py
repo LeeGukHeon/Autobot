@@ -17,6 +17,7 @@ import websockets
 
 from ...upbit import UpbitHttpClient, UpbitPublicClient, load_upbit_settings
 from ...upbit.ws.ws_rate_limiter import WebSocketRateLimiter
+from .fixed_collection_contract import resolve_fixed_collection_markets
 from .ws_public_checkpoint import load_ws_checkpoint, save_ws_checkpoint, update_ws_checkpoint
 from .ws_public_manifest import append_ws_manifest_rows, load_ws_manifest
 from .ws_public_writer import WsRawRotatingWriter
@@ -489,7 +490,12 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
     settings = load_upbit_settings(options.config_dir)
     ws_settings = settings.websocket
 
-    initial_codes = fetch_top_quote_markets(
+    fixed_markets = resolve_fixed_collection_markets(
+        config_dir=Path(options.config_dir),
+        quote=quote,
+        explicit_markets=None,
+    )
+    initial_codes = tuple(fixed_markets) if fixed_markets else fetch_top_quote_markets(
         config_dir=options.config_dir,
         quote=quote,
         top_n=top_n,
@@ -604,6 +610,10 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
         )
 
     def _resolve_codes() -> tuple[str, ...]:
+        if fixed_markets:
+            refresh_state["codes"] = tuple(fixed_markets)
+            refresh_state["last_refresh_at_ms"] = int(time.time() * 1000)
+            return tuple(fixed_markets)
         latest = fetch_top_quote_markets(
             config_dir=options.config_dir,
             quote=quote,

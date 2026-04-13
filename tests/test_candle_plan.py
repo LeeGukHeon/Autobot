@@ -56,6 +56,8 @@ def test_plan_applies_1m_backfill_limit(tmp_path: Path) -> None:
 
 def test_plan_supports_second_dataset_with_market_source_dataset(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
     source_manifest = parquet_root / "candles_api_v1" / "_meta" / "manifest.parquet"
 
     end_ts_ms = parse_utc_ts_ms("2026-03-27", end_of_day=True)
@@ -91,6 +93,7 @@ def test_plan_supports_second_dataset_with_market_source_dataset(tmp_path: Path)
         top_n=1,
         max_backfill_days_1s=2,
         end_ts_ms=end_ts_ms,
+        config_dir=config_dir,
     )
     plan = generate_candle_topup_plan(options)
 

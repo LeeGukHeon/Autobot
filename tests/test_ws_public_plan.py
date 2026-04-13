@@ -8,6 +8,8 @@ from autobot.data.manifest import append_manifest_rows
 
 def test_generate_ws_public_plan_fixed_list(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
     dataset_root = parquet_root / "candles_v1"
     manifest_file = dataset_root / "_meta" / "manifest.parquet"
 
@@ -41,6 +43,7 @@ def test_generate_ws_public_plan_fixed_list(tmp_path: Path) -> None:
         orderbook_topk=5,
         orderbook_level=0,
         orderbook_min_write_interval_ms=200,
+        config_dir=config_dir,
     )
     plan = generate_ws_public_collection_plan(options)
 
@@ -54,6 +57,8 @@ def test_generate_ws_public_plan_fixed_list(tmp_path: Path) -> None:
 
 def test_generate_ws_public_plan_filters_inactive_markets(tmp_path: Path) -> None:
     parquet_root = tmp_path / "parquet"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
     dataset_root = parquet_root / "candles_v1"
     manifest_file = dataset_root / "_meta" / "manifest.parquet"
 
@@ -85,6 +90,7 @@ def test_generate_ws_public_plan_filters_inactive_markets(tmp_path: Path) -> Non
         channels=("trade", "orderbook"),
         format="DEFAULT",
         orderbook_topk=30,
+        config_dir=config_dir,
         active_markets_override=("KRW-BTC",),
     )
     plan = generate_ws_public_collection_plan(options)

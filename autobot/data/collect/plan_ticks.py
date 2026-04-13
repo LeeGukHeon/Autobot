@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .active_markets import filter_markets_by_active_set, resolve_active_quote_markets
+from .fixed_collection_contract import resolve_fixed_collection_markets
 from ..inventory import build_candle_inventory, default_inventory_window, estimate_recent_value_by_market
 
 
@@ -109,6 +110,19 @@ def _select_markets(
 ) -> tuple[list[str], dict[str, Any]]:
     market_mode = str(options.market_mode).strip().lower()
     quote_prefix = f"{quote}-"
+    fixed_collection_markets = resolve_fixed_collection_markets(
+        config_dir=Path(options.config_dir),
+        quote=quote,
+        explicit_markets=options.fixed_markets,
+    )
+    if fixed_collection_markets:
+        return _finalize_market_selection(
+            candidates=list(fixed_collection_markets),
+            options=options,
+            quote=quote,
+            top_n=None,
+            meta={"mode": "fixed_collection_contract"},
+        )
 
     window_start_ts_ms, window_end_ts_ms = default_inventory_window(
         lookback_months=24,
