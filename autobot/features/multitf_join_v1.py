@@ -28,6 +28,14 @@ class OneMJoinStats:
     rows_no_real: int = 0
 
 
+def effective_one_m_required_bars(*, base_tf: str, required_bars: int) -> int:
+    base_tf_value = str(base_tf).strip().lower() or "5m"
+    requested = max(int(required_bars), 1)
+    if base_tf_value == "1m":
+        return 1
+    return requested
+
+
 def densify_1m_candles(
     one_m_candles: pl.DataFrame,
     *,

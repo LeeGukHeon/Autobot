@@ -24,6 +24,7 @@ from .multitf_join_v1 import (
     aggregate_1m_for_base,
     compute_high_tf_features,
     densify_1m_candles,
+    effective_one_m_required_bars,
     high_tf_prefix,
     join_1m_aggregate,
     join_high_tf_asof,
@@ -79,6 +80,7 @@ def build_feature_set_v4_live_base_from_candles(
     one_m_synth_weight_power: float = 2.0,
     float_dtype: str = "float32",
 ) -> FeatureSetV4LiveBaseBuildResult:
+    effective_required_bars = effective_one_m_required_bars(base_tf=tf, required_bars=one_m_required_bars)
     if base_candles_frame.height <= 0:
         return FeatureSetV4LiveBaseBuildResult(
             frame=pl.DataFrame(),
@@ -99,7 +101,7 @@ def build_feature_set_v4_live_base_from_candles(
             one_m_synth_ratio_p50=None,
             one_m_synth_ratio_p90=None,
             high_tf_stats=tuple(),
-            one_m_stats=OneMJoinStats(0, 0, 0, max(int(one_m_required_bars), 1), float(one_m_max_missing_ratio)),
+            one_m_stats=OneMJoinStats(0, 0, 0, effective_required_bars, float(one_m_max_missing_ratio)),
         )
 
     working = compute_base_features_v4_live_base(base_candles_frame, tf=tf, float_dtype=float_dtype).sort("ts_ms")
@@ -110,7 +112,7 @@ def build_feature_set_v4_live_base_from_candles(
     working_before, _ = join_1m_aggregate(
         base_frame=working,
         one_m_agg=one_m_agg_before,
-        required_bars=one_m_required_bars,
+        required_bars=effective_required_bars,
         max_missing_ratio=one_m_max_missing_ratio,
         drop_if_real_count_zero=False,
     )
@@ -124,7 +126,7 @@ def build_feature_set_v4_live_base_from_candles(
     working, one_m_stats = join_1m_aggregate(
         base_frame=working,
         one_m_agg=one_m_agg,
-        required_bars=one_m_required_bars,
+        required_bars=effective_required_bars,
         max_missing_ratio=one_m_max_missing_ratio,
         drop_if_real_count_zero=one_m_drop_if_real_count_zero,
     )

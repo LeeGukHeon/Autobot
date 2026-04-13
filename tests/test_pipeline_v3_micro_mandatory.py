@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from autobot.features.feature_spec import FeatureSetV1Config, FeatureWindows, LabelV1Config, TimeRangeConfig, UniverseConfig
+from autobot.features.feature_set_v3 import build_feature_set_v3_from_candles
 from autobot.features.pipeline_v3 import (
     FeatureBuildV3Options,
     FeaturesV3BuildConfig,
@@ -185,6 +186,88 @@ def test_pipeline_v3_supports_one_minute_feature_build_dry_run(tmp_path: Path) -
     assert report["tf"] == "1m"
     assert report["status"] == "PASS"
     assert report["dry_run"] is True
+
+
+def test_pipeline_v3_adapts_one_m_required_bars_for_one_minute_base_tf(tmp_path: Path) -> None:
+    ts_values = [60_000 * (idx + 1) for idx in range(40)]
+    close_values = [100.0 + (idx * 0.1) for idx in range(40)]
+    base = pl.DataFrame(
+        {
+            "ts_ms": ts_values,
+            "open": [value - 0.02 for value in close_values],
+            "high": [value + 0.05 for value in close_values],
+            "low": [value - 0.05 for value in close_values],
+            "close": close_values,
+            "volume_base": [10.0 + (idx % 5) for idx in range(40)],
+        }
+    )
+    one_m = base.with_columns(pl.lit(False).alias("is_synth_1m"))
+    high_frames = {
+        "15m": pl.DataFrame({"ts_ms": [0, 900_000, 1_800_000, 2_700_000], "close": [99.0, 100.0, 101.0, 102.0]}),
+        "60m": pl.DataFrame({"ts_ms": [0, 3_600_000], "close": [99.5, 100.5]}),
+        "240m": pl.DataFrame({"ts_ms": [0], "close": [98.5]}),
+    }
+    micro = pl.DataFrame(
+        {
+            "market": ["KRW-BTC" for _ in ts_values],
+            "tf": ["1m" for _ in ts_values],
+            "ts_ms": ts_values,
+            "trade_source": ["ws" for _ in ts_values],
+            "trade_events": [1 for _ in ts_values],
+            "book_events": [1 for _ in ts_values],
+            "trade_min_ts_ms": [value for value in ts_values],
+            "trade_max_ts_ms": [value for value in ts_values],
+            "book_min_ts_ms": [value for value in ts_values],
+            "book_max_ts_ms": [value for value in ts_values],
+            "trade_coverage_ms": [60_000 for _ in ts_values],
+            "book_coverage_ms": [60_000 for _ in ts_values],
+            "micro_trade_available": [True for _ in ts_values],
+            "micro_book_available": [True for _ in ts_values],
+            "micro_available": [True for _ in ts_values],
+            "trade_count": [1 for _ in ts_values],
+            "buy_count": [1 for _ in ts_values],
+            "sell_count": [0 for _ in ts_values],
+            "trade_volume_total": [1.0 for _ in ts_values],
+            "buy_volume": [1.0 for _ in ts_values],
+            "sell_volume": [0.0 for _ in ts_values],
+            "trade_imbalance": [1.0 for _ in ts_values],
+            "vwap": close_values,
+            "avg_trade_size": [1.0 for _ in ts_values],
+            "max_trade_size": [1.0 for _ in ts_values],
+            "last_trade_price": close_values,
+            "mid_mean": close_values,
+            "spread_bps_mean": [1.0 for _ in ts_values],
+            "depth_bid_top5_mean": [1000.0 for _ in ts_values],
+            "depth_ask_top5_mean": [1000.0 for _ in ts_values],
+            "imbalance_top5_mean": [0.0 for _ in ts_values],
+            "microprice_bias_bps_mean": [0.0 for _ in ts_values],
+            "book_update_count": [1 for _ in ts_values],
+        }
+    )
+
+    result = build_feature_set_v3_from_candles(
+        base_candles_frame=base,
+        one_m_candles_frame=one_m,
+        high_tf_candles=high_frames,
+        micro_frame=micro,
+        micro_tf_used="1m",
+        tf="1m",
+        from_ts_ms=ts_values[0],
+        to_ts_ms=ts_values[-1],
+        label_config=LabelV1Config(horizon_bars=2, thr_bps=0.0, neutral_policy="keep_as_class", fee_bps_est=0.0, safety_bps=0.0),
+        high_tfs=("15m", "60m", "240m"),
+        high_tf_staleness_multiplier=2.0,
+        one_m_required_bars=5,
+        one_m_max_missing_ratio=0.2,
+        one_m_drop_if_real_count_zero=True,
+        sample_weight_half_life_days=60.0,
+        one_m_synth_weight_floor=0.2,
+        one_m_synth_weight_power=2.0,
+        float_dtype="float32",
+    )
+
+    assert result.rows_after_multitf > 0
+    assert result.one_m_stats.required_bars == 1
 
 
 def _write_candles(dataset_root: Path, *, count_1m: int = 3_200) -> None:

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import polars as pl
 
-from autobot.features.multitf_join_v1 import aggregate_1m_for_base, densify_1m_candles, join_1m_aggregate, join_high_tf_asof
+from autobot.features.multitf_join_v1 import (
+    aggregate_1m_for_base,
+    densify_1m_candles,
+    effective_one_m_required_bars,
+    join_1m_aggregate,
+    join_high_tf_asof,
+)
 
 
 def test_high_tf_asof_join_does_not_use_future_rows() -> None:
@@ -124,3 +130,8 @@ def test_1m_join_can_drop_windows_with_no_real_1m() -> None:
     assert joined.get_column("one_m_no_real").to_list() == [True]
     assert joined.get_column("one_m_fail").to_list() == [True]
     assert stats.rows_no_real == 1
+
+
+def test_effective_one_m_required_bars_collapses_to_one_for_one_minute_base_tf() -> None:
+    assert effective_one_m_required_bars(base_tf="1m", required_bars=5) == 1
+    assert effective_one_m_required_bars(base_tf="5m", required_bars=5) == 5

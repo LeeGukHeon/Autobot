@@ -14,6 +14,7 @@ from autobot.features.multitf_join_v1 import (
     aggregate_1m_for_base,
     compute_high_tf_features,
     densify_1m_candles,
+    effective_one_m_required_bars,
     join_1m_aggregate,
     join_high_tf_asof,
 )
@@ -130,10 +131,11 @@ class _LiveMultiTfRuntimeBase(_OnlineMinuteRuntimeCore):
             end_ts_ms=dense_end,
         )
         one_m_agg = aggregate_1m_for_base(one_m_dense, base_tf=self._tf, float_dtype="float32")
+        effective_required_bars = effective_one_m_required_bars(base_tf=self._tf, required_bars=5)
         working, _ = join_1m_aggregate(
             base_frame=base_featured,
             one_m_agg=one_m_agg,
-            required_bars=5,
+            required_bars=effective_required_bars,
             max_missing_ratio=0.2,
             drop_if_real_count_zero=True,
         )

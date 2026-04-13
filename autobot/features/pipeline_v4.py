@@ -15,6 +15,7 @@ import polars as pl
 from autobot.data import expected_interval_ms
 
 from .feature_set_v4_live_base import build_feature_set_v4_live_base_from_candles
+from .multitf_join_v1 import effective_one_m_required_bars
 from .feature_set_v4 import (
     attach_interaction_features_v4,
     attach_periodicity_features_v4,
@@ -142,8 +143,9 @@ def _discover_runtime_markets_from_base_root(*, base_root: Path, tf: str, quote:
 
 
 def _runtime_warmup_ms_v4(*, base_tf: str, high_tfs: tuple[str, ...], one_m_required_bars: int) -> int:
+    effective_required_bars = effective_one_m_required_bars(base_tf=base_tf, required_bars=one_m_required_bars)
     base = expected_interval_ms(base_tf) * 64
-    one_m = expected_interval_ms("1m") * max(int(one_m_required_bars) + 2, 8)
+    one_m = expected_interval_ms("1m") * max(int(effective_required_bars) + 2, 8)
     high = max((expected_interval_ms(tf) * 12 for tf in high_tfs), default=0)
     return max(base, one_m, high)
 
@@ -1322,6 +1324,7 @@ def _build_feature_spec_payload_v4(
     order_flow_diagnostics: dict[str, Any] | None,
     cross_sectional_context_membership_file: Path,
 ) -> dict[str, Any]:
+    effective_required_bars = effective_one_m_required_bars(base_tf=tf, required_bars=config.build.one_m_required_bars)
     return {
         "dataset_name": config.dataset_name,
         "tf": tf,
@@ -1330,6 +1333,7 @@ def _build_feature_spec_payload_v4(
         "feature_columns": feature_cols,
         "base_feature_contract_version": "v4_live_base",
         "high_tfs": list(config.build.high_tfs),
+        "one_m_required_bars": effective_required_bars,
         "sample_weight": {
             "column": "sample_weight",
             "half_life_days": float(config.build.sample_weight_half_life_days),
@@ -1479,7 +1483,10 @@ def _config_snapshot_v4(config: FeaturesV4Config) -> dict[str, Any]:
         "micro_dataset": config.build.micro_dataset,
         "high_tfs": list(config.build.high_tfs),
         "high_tf_staleness_multiplier": config.build.high_tf_staleness_multiplier,
-        "one_m_required_bars": config.build.one_m_required_bars,
+        "one_m_required_bars": effective_one_m_required_bars(
+            base_tf=config.build.tf,
+            required_bars=config.build.one_m_required_bars,
+        ),
         "one_m_max_missing_ratio": config.build.one_m_max_missing_ratio,
         "one_m_drop_if_real_count_zero": config.build.one_m_drop_if_real_count_zero,
         "one_m_synth_weight_floor": config.build.one_m_synth_weight_floor,

@@ -16,6 +16,7 @@ from autobot.common.data_quality_budget import resolve_universe_quality_score
 from autobot.data import expected_interval_ms
 
 from .feature_set_v3 import build_feature_set_v3_from_candles, feature_columns_v3
+from .multitf_join_v1 import effective_one_m_required_bars
 from .feature_spec import (
     FeatureSetV1Config,
     LabelV1Config,
@@ -1477,6 +1478,7 @@ def _build_feature_spec_payload(
     start_ts_ms: int,
     end_ts_ms: int,
 ) -> dict[str, Any]:
+    effective_required_bars = effective_one_m_required_bars(base_tf=tf, required_bars=config.build.one_m_required_bars)
     return {
         "dataset_name": config.dataset_name,
         "tf": tf,
@@ -1484,6 +1486,7 @@ def _build_feature_spec_payload(
         "feature_set_version": "v3",
         "feature_columns": feature_cols,
         "high_tfs": list(config.build.high_tfs),
+        "one_m_required_bars": effective_required_bars,
         "sample_weight": {
             "column": "sample_weight",
             "half_life_days": float(config.build.sample_weight_half_life_days),
@@ -1546,7 +1549,10 @@ def _config_snapshot(config: FeaturesV3Config) -> dict[str, Any]:
             "micro_dataset": config.build.micro_dataset,
             "high_tfs": list(config.build.high_tfs),
             "high_tf_staleness_multiplier": config.build.high_tf_staleness_multiplier,
-            "one_m_required_bars": config.build.one_m_required_bars,
+            "one_m_required_bars": effective_one_m_required_bars(
+                base_tf=config.build.tf,
+                required_bars=config.build.one_m_required_bars,
+            ),
             "one_m_max_missing_ratio": config.build.one_m_max_missing_ratio,
             "one_m_drop_if_real_count_zero": config.build.one_m_drop_if_real_count_zero,
             "one_m_synth_weight_floor": config.build.one_m_synth_weight_floor,
@@ -1697,8 +1703,9 @@ def _parse_report_timestamp_ms(report: dict[str, Any]) -> int | None:
 
 
 def _warmup_ms(*, config: FeaturesV3Config, base_tf: str) -> int:
+    effective_required_bars = effective_one_m_required_bars(base_tf=base_tf, required_bars=config.build.one_m_required_bars)
     base = expected_interval_ms(base_tf) * 64
-    one_m = expected_interval_ms("1m") * max(config.build.one_m_required_bars + 2, 8)
+    one_m = expected_interval_ms("1m") * max(effective_required_bars + 2, 8)
     high = max(expected_interval_ms(tf) * 12 for tf in config.build.high_tfs)
     return max(base, one_m, high)
 
