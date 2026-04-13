@@ -107,6 +107,10 @@ class SequenceTensorBuildOptions:
         return self.meta_root / "validate_report.json"
 
     @property
+    def date_completeness_path(self) -> Path:
+        return self.meta_root / "date_completeness.json"
+
+    @property
     def sequence_contract_path(self) -> Path:
         return self.meta_root / "sequence_tensor_contract.json"
 
@@ -201,6 +205,111 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         existing_ready_rows[(market, anchor_ts_ms)] = dict(row)
         if date_value:
             existing_ready_by_market_date.setdefault((market, date_value), []).append(dict(row))
+    date_completeness_payload = _load_date_completeness_payload(options.date_completeness_path)
+    current_date_validity_signature = None
+    if options.date:
+        current_date_validity_signature = _resolve_tensor_date_validity_signature(
+            options=options,
+            markets=selected_markets,
+            date_value=str(options.date).strip(),
+        )
+        if _can_skip_date_build(
+            options=options,
+            selected_markets=selected_markets,
+            existing_ready_by_market_date=existing_ready_by_market_date,
+            current_date_validity_signature=current_date_validity_signature,
+            date_completeness_entry=_load_date_completeness_entry(
+                payload=date_completeness_payload,
+                date_value=str(options.date).strip(),
+            ),
+        ):
+            ready_summary = _summarize_ready_rows_for_date(
+                options=options,
+                selected_markets=selected_markets,
+                existing_ready_by_market_date=existing_ready_by_market_date,
+                date_value=str(options.date).strip(),
+            )
+            _write_contract_files(options=options)
+            validate_summary = _validate_sequence_tensor_store_incremental(
+                options=options,
+                changed_rows=[],
+                merged_rows=existing_manifest_rows,
+            )
+            build_report = {
+                "run_id": run_id,
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "dataset_name": options.out_dataset,
+                "dataset_root": str(options.out_root),
+                "source_roots": [
+                    str(options.second_root),
+                    str(options.ws_candle_root),
+                    str(options.micro_root),
+                    str(options.lob_root),
+                ],
+                "source_contract_ids": [
+                    "parquet_dataset:candles_second_v1",
+                    "parquet_dataset:ws_candle_v1",
+                    "micro_dataset:micro_v1",
+                    "parquet_dataset:lob30_v1",
+                ],
+                "source_run_ids": [
+                    item
+                    for item in [
+                        str(_load_json_or_empty(options.second_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+                        str(_load_json_or_empty(options.ws_candle_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+                        str(_load_json_or_empty(options.micro_root / "_meta" / "aggregate_report.json").get("run_id") or "").strip(),
+                        str(_load_json_or_empty(options.micro_root / "_meta" / "validate_report.json").get("run_id") or "").strip(),
+                        str(_load_json_or_empty(options.lob_root / "_meta" / "build_report.json").get("run_id") or "").strip(),
+                    ]
+                    if item
+                ],
+                "selected_markets": len(selected_markets),
+                "discovered_anchors": int(ready_summary.get("reused_anchor_count", 0)),
+                "built_anchors": 0,
+                "reused_anchors": int(ready_summary.get("reused_anchor_count", 0)),
+                "ok_anchors": 0,
+                "warn_anchors": 0,
+                "fail_anchors": 0,
+                "delta_support_level_counts": {
+                    SUPPORT_LEVEL_STRICT_FULL: 0,
+                    SUPPORT_LEVEL_REDUCED_CONTEXT: 0,
+                    SUPPORT_LEVEL_STRUCTURAL_INVALID: 0,
+                },
+                "support_level_counts": {
+                    SUPPORT_LEVEL_STRICT_FULL: int(ready_summary.get("strict_full_count", 0)),
+                    SUPPORT_LEVEL_REDUCED_CONTEXT: int(ready_summary.get("reduced_context_count", 0)),
+                    SUPPORT_LEVEL_STRUCTURAL_INVALID: int(ready_summary.get("structural_invalid_count", 0)),
+                },
+                "manifest_status_counts": {
+                    "OK": int(ready_summary.get("ok_count", 0)),
+                    "WARN": int(ready_summary.get("warn_count", 0)),
+                    "FAIL": int(ready_summary.get("fail_count", 0)),
+                },
+                "cache_validity_policy": _TENSOR_CACHE_VALIDITY_POLICY,
+                "manifest_file": str(options.manifest_path),
+                "manifest_rows_total": len(existing_manifest_rows),
+                "sequence_contract_file": str(options.sequence_contract_path),
+                "lob_contract_file": str(options.lob_contract_path),
+                "date_completeness_path": str(options.date_completeness_path),
+                "date_reused_complete": True,
+                "details": [],
+            }
+            options.build_report_path.write_text(json.dumps(build_report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+            return SequenceTensorBuildSummary(
+                selected_markets=len(selected_markets),
+                discovered_anchors=int(ready_summary.get("reused_anchor_count", 0)),
+                built_anchors=0,
+                reused_anchors=int(ready_summary.get("reused_anchor_count", 0)),
+                ok_anchors=0,
+                warn_anchors=0,
+                fail_anchors=0,
+                manifest_file=options.manifest_path,
+                build_report_file=options.build_report_path,
+                validate_report_file=validate_summary.validate_report_file,
+                sequence_contract_file=options.sequence_contract_path,
+                lob_contract_file=options.lob_contract_path,
+                details=tuple(),
+            )
     discovered_anchors = 0
     built_anchors = 0
     ok_anchors = 0
@@ -372,9 +481,18 @@ def build_sequence_tensor_store(options: SequenceTensorBuildOptions) -> Sequence
         "manifest_rows_total": len(merged_manifest_rows),
         "sequence_contract_file": str(options.sequence_contract_path),
         "lob_contract_file": str(options.lob_contract_path),
+        "date_completeness_path": str(options.date_completeness_path),
         "details": details,
     }
     options.build_report_path.write_text(json.dumps(build_report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    _update_date_completeness_payload(
+        path=options.date_completeness_path,
+        existing_payload=date_completeness_payload,
+        options=options,
+        selected_markets=selected_markets,
+        merged_manifest_rows=merged_manifest_rows,
+        current_date_validity_signature=current_date_validity_signature,
+    )
 
     validate_summary = _validate_sequence_tensor_store_incremental(
         options=options,
@@ -428,6 +546,49 @@ def _can_skip_market_source_load(
         )
     )
     return reusable_count >= max(int(options.max_anchors_per_market), 0)
+
+
+def _can_skip_date_build(
+    *,
+    options: SequenceTensorBuildOptions,
+    selected_markets: tuple[str, ...],
+    existing_ready_by_market_date: dict[tuple[str, str], list[dict[str, Any]]],
+    current_date_validity_signature: str | None,
+    date_completeness_entry: dict[str, Any] | None,
+) -> bool:
+    if not bool(options.skip_existing_ready):
+        return False
+    if not options.date:
+        return False
+    target_date = str(options.date).strip()
+    if not target_date:
+        return False
+    if target_date >= datetime.now(timezone.utc).date().isoformat():
+        return False
+    if not current_date_validity_signature:
+        return False
+    if not date_completeness_entry:
+        return False
+    if not bool(date_completeness_entry.get("complete", False)):
+        return False
+    if str(date_completeness_entry.get("date_validity_signature") or "").strip() != str(current_date_validity_signature).strip():
+        return False
+    if int(date_completeness_entry.get("max_anchors_per_market") or 0) != max(int(options.max_anchors_per_market), 0):
+        return False
+    recorded_markets = tuple(
+        str(item).strip().upper()
+        for item in (date_completeness_entry.get("selected_markets") or [])
+        if str(item).strip()
+    )
+    if recorded_markets != tuple(str(item).strip().upper() for item in selected_markets):
+        return False
+    ready_summary = _summarize_ready_rows_for_date(
+        options=options,
+        selected_markets=selected_markets,
+        existing_ready_by_market_date=existing_ready_by_market_date,
+        date_value=target_date,
+    )
+    return int(ready_summary.get("complete_market_count", 0)) >= len(selected_markets)
 
 
 def validate_sequence_tensor_store(*, options: SequenceTensorBuildOptions) -> SequenceTensorValidateSummary:
@@ -1243,6 +1404,82 @@ def _resolve_cached_tensor_cache_validity_signature(
     return value
 
 
+def _resolve_tensor_date_validity_signature(
+    *,
+    options: SequenceTensorBuildOptions,
+    markets: tuple[str, ...],
+    date_value: str,
+) -> str | None:
+    normalized_date = str(date_value).strip()
+    normalized_markets = tuple(str(item).strip().upper() for item in markets if str(item).strip())
+    if not normalized_date or not normalized_markets:
+        return None
+    second_start_ts_ms, second_end_ts_ms, minute_start_ts_ms, minute_end_ts_ms = _resolve_source_time_window(
+        options=options,
+        date_value=normalized_date,
+    )
+    if second_end_ts_ms is None or minute_end_ts_ms is None:
+        return None
+    source_digests = {
+        "second_dataset_1s": _manifest_semantic_digest_for_markets(
+            dataset_root=options.second_root,
+            markets=normalized_markets,
+            start_ts_ms=second_start_ts_ms,
+            end_ts_ms=second_end_ts_ms,
+            tf="1s",
+        ),
+        "ws_candle_1s": _manifest_semantic_digest_for_markets(
+            dataset_root=options.ws_candle_root,
+            markets=normalized_markets,
+            start_ts_ms=second_start_ts_ms,
+            end_ts_ms=second_end_ts_ms,
+            tf="1s",
+        ),
+        "ws_candle_1m": _manifest_semantic_digest_for_markets(
+            dataset_root=options.ws_candle_root,
+            markets=normalized_markets,
+            start_ts_ms=minute_start_ts_ms,
+            end_ts_ms=minute_end_ts_ms,
+            tf="1m",
+        ),
+        "micro_1m": _manifest_semantic_digest_for_markets(
+            dataset_root=options.micro_root,
+            markets=normalized_markets,
+            start_ts_ms=minute_start_ts_ms,
+            end_ts_ms=minute_end_ts_ms,
+            tf="1m",
+        ),
+        "lob30": _manifest_semantic_digest_for_markets(
+            dataset_root=options.lob_root,
+            markets=normalized_markets,
+            start_ts_ms=minute_start_ts_ms,
+            end_ts_ms=second_end_ts_ms,
+            tf=None,
+        ),
+    }
+    if any(value is None for value in source_digests.values()):
+        return None
+    payload = {
+        "policy": _TENSOR_CACHE_VALIDITY_POLICY,
+        "date": normalized_date,
+        "markets": list(normalized_markets),
+        "source_digests": source_digests,
+        "tensor_contract": {
+            "max_anchors_per_market": int(options.max_anchors_per_market),
+            "second_lookback_steps": int(options.second_lookback_steps),
+            "minute_lookback_steps": int(options.minute_lookback_steps),
+            "micro_lookback_steps": int(options.micro_lookback_steps),
+            "lob_lookback_steps": int(options.lob_lookback_steps),
+            "second_dataset": str(options.second_dataset).strip(),
+            "ws_candle_dataset": str(options.ws_candle_dataset).strip(),
+            "micro_dataset": str(options.micro_dataset).strip(),
+            "lob_dataset": str(options.lob_dataset).strip(),
+        },
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _resolve_tensor_cache_validity_signature(
     *,
     options: SequenceTensorBuildOptions,
@@ -1416,6 +1653,95 @@ def _manifest_semantic_digest(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _manifest_semantic_digest_for_markets(
+    *,
+    dataset_root: Path,
+    markets: tuple[str, ...],
+    start_ts_ms: int | None,
+    end_ts_ms: int | None,
+    tf: str | None,
+) -> str | None:
+    manifest_path = dataset_root / "_meta" / "manifest.parquet"
+    frame = _load_source_manifest_frame(manifest_path)
+    normalized_markets = tuple(str(item).strip().upper() for item in markets if str(item).strip())
+    if frame is None or not normalized_markets:
+        return None
+    filtered = frame
+    columns = set(filtered.columns)
+    if "market" not in columns:
+        return None
+    filtered = filtered.filter(pl.col("market").cast(pl.Utf8).str.to_uppercase().is_in(list(normalized_markets)))
+    if tf is not None:
+        if "tf" not in columns:
+            return None
+        filtered = filtered.filter(pl.col("tf").cast(pl.Utf8).str.to_lowercase() == str(tf).strip().lower())
+    if start_ts_ms is not None and end_ts_ms is not None and "min_ts_ms" in columns and "max_ts_ms" in columns:
+        filtered = filtered.filter(
+            (pl.col("max_ts_ms").cast(pl.Int64) >= int(start_ts_ms))
+            & (pl.col("min_ts_ms").cast(pl.Int64) <= int(end_ts_ms))
+        )
+    stable_columns = [
+        name
+        for name in (
+            "dataset_name",
+            "source",
+            "tf",
+            "market",
+            "date",
+            "rows",
+            "min_ts_ms",
+            "max_ts_ms",
+            "status",
+            "reasons_json",
+            "error_message",
+            "trade_source_ws_rows",
+            "trade_source_rest_rows",
+            "trade_source_none_rows",
+            "micro_available_rows",
+            "micro_book_available_rows",
+            "requested_depth",
+            "levels_present",
+        )
+        if name in columns
+    ]
+    if not stable_columns:
+        return None
+    if filtered.height <= 0:
+        raw = json.dumps(
+            {
+                "policy": _TENSOR_CACHE_VALIDITY_POLICY,
+                "dataset_root": str(dataset_root),
+                "markets": list(normalized_markets),
+                "tf": str(tf or ""),
+                "rows": [],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    try:
+        filtered = filtered.sort([name for name in ("market", "date", "min_ts_ms", "max_ts_ms") if name in stable_columns])
+    except Exception:
+        pass
+    normalized_rows: list[dict[str, Any]] = []
+    for row in filtered.select(stable_columns).iter_rows(named=True):
+        normalized_rows.append({key: _normalize_cache_signature_scalar(value) for key, value in row.items()})
+    raw = json.dumps(
+        {
+            "policy": _TENSOR_CACHE_VALIDITY_POLICY,
+            "dataset_root": str(dataset_root),
+            "markets": list(normalized_markets),
+            "tf": str(tf or ""),
+            "rows": normalized_rows,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _normalize_cache_signature_scalar(value: Any) -> Any:
     if value is None:
         return None
@@ -1532,6 +1858,159 @@ def _latest_market_ts_ms(*, dataset_root: Path, market: str) -> int | None:
             continue
         latest_ts_ms = int(value) if latest_ts_ms is None else max(latest_ts_ms, int(value))
     return latest_ts_ms
+
+
+def _load_date_completeness_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"policy": "sequence_tensor_date_completeness_v1", "dates": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"policy": "sequence_tensor_date_completeness_v1", "dates": {}}
+    if not isinstance(payload, dict):
+        return {"policy": "sequence_tensor_date_completeness_v1", "dates": {}}
+    dates = payload.get("dates")
+    if not isinstance(dates, dict):
+        payload["dates"] = {}
+    return payload
+
+
+def _load_date_completeness_entry(*, payload: dict[str, Any], date_value: str) -> dict[str, Any] | None:
+    dates = payload.get("dates")
+    if not isinstance(dates, dict):
+        return None
+    entry = dates.get(str(date_value).strip())
+    return dict(entry) if isinstance(entry, dict) else None
+
+
+def _write_date_completeness_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _summarize_ready_rows_for_date(
+    *,
+    options: SequenceTensorBuildOptions,
+    selected_markets: tuple[str, ...],
+    existing_ready_by_market_date: dict[tuple[str, str], list[dict[str, Any]]],
+    date_value: str,
+) -> dict[str, Any]:
+    required_anchors = max(int(options.max_anchors_per_market), 0)
+    complete_market_count = 0
+    reused_anchor_count = 0
+    strict_full_count = 0
+    reduced_context_count = 0
+    structural_invalid_count = 0
+    ok_count = 0
+    warn_count = 0
+    fail_count = 0
+    per_market: list[dict[str, Any]] = []
+    normalized_date = str(date_value).strip()
+    for market in (str(item).strip().upper() for item in selected_markets if str(item).strip()):
+        ready_rows = [
+            dict(row)
+            for row in existing_ready_by_market_date.get((market, normalized_date), [])
+            if _row_has_reusable_cache(row)
+        ]
+        reusable_count = min(len(ready_rows), required_anchors)
+        reused_anchor_count += reusable_count
+        market_complete = reusable_count >= required_anchors
+        if market_complete:
+            complete_market_count += 1
+        for row in ready_rows:
+            support_level = resolve_sequence_support_level_from_row(row)
+            if support_level == SUPPORT_LEVEL_STRICT_FULL:
+                strict_full_count += 1
+            elif support_level == SUPPORT_LEVEL_REDUCED_CONTEXT:
+                reduced_context_count += 1
+            else:
+                structural_invalid_count += 1
+            status = str(row.get("status") or "").strip().upper() or "WARN"
+            if status == "OK":
+                ok_count += 1
+            elif status == "WARN":
+                warn_count += 1
+            else:
+                fail_count += 1
+        per_market.append(
+            {
+                "market": market,
+                "ready_rows": len(ready_rows),
+                "reusable_count": reusable_count,
+                "complete": market_complete,
+            }
+        )
+    return {
+        "selected_market_count": len(selected_markets),
+        "complete_market_count": complete_market_count,
+        "reused_anchor_count": reused_anchor_count,
+        "strict_full_count": strict_full_count,
+        "reduced_context_count": reduced_context_count,
+        "structural_invalid_count": structural_invalid_count,
+        "ok_count": ok_count,
+        "warn_count": warn_count,
+        "fail_count": fail_count,
+        "per_market": per_market,
+    }
+
+
+def _row_has_reusable_cache(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    if str(row.get("status") or "").strip().upper() == "FAIL":
+        return False
+    cache_file_text = str(row.get("cache_file") or "").strip()
+    if not cache_file_text:
+        return False
+    cache_file = Path(cache_file_text)
+    return cache_file.exists() and cache_file.is_file()
+
+
+def _update_date_completeness_payload(
+    *,
+    path: Path,
+    existing_payload: dict[str, Any],
+    options: SequenceTensorBuildOptions,
+    selected_markets: tuple[str, ...],
+    merged_manifest_rows: list[dict[str, Any]],
+    current_date_validity_signature: str | None,
+) -> None:
+    if not options.date:
+        return
+    dates = existing_payload.get("dates")
+    if not isinstance(dates, dict):
+        dates = {}
+        existing_payload["dates"] = dates
+    date_value = str(options.date).strip()
+    rows_by_market_date: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in merged_manifest_rows:
+        market = str(row.get("market") or "").strip().upper()
+        row_date = str(row.get("date") or "").strip()
+        if not market or not row_date:
+            continue
+        rows_by_market_date.setdefault((market, row_date), []).append(dict(row))
+    ready_summary = _summarize_ready_rows_for_date(
+        options=options,
+        selected_markets=selected_markets,
+        existing_ready_by_market_date=rows_by_market_date,
+        date_value=date_value,
+    )
+    dates[date_value] = {
+        "date": date_value,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "selected_markets": list(selected_markets),
+        "selected_market_count": int(ready_summary.get("selected_market_count", 0)),
+        "complete_market_count": int(ready_summary.get("complete_market_count", 0)),
+        "reused_anchor_count": int(ready_summary.get("reused_anchor_count", 0)),
+        "max_anchors_per_market": int(options.max_anchors_per_market),
+        "complete": int(ready_summary.get("complete_market_count", 0)) >= len(selected_markets),
+        "date_validity_signature": str(current_date_validity_signature or "").strip(),
+        "per_market": list(ready_summary.get("per_market", [])),
+    }
+    existing_payload["policy"] = "sequence_tensor_date_completeness_v1"
+    existing_payload["dataset_name"] = options.out_dataset
+    existing_payload["cache_validity_policy"] = _TENSOR_CACHE_VALIDITY_POLICY
+    _write_date_completeness_payload(path, existing_payload)
 
 
 def _resolve_source_time_window(
