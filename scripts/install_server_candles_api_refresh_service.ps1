@@ -12,7 +12,7 @@ param(
     [string]$Tf = "1m,5m,15m,60m,240m",
     [int]$MaxBackfillDays1m = 3,
     [int]$Workers = 1,
-    [int]$MaxRequests = 240,
+    [int]$MaxRequests = 0,
     [string]$OnBootSec = "4min",
     [string]$OnUnitActiveSec = "20min",
     [string]$LockFile = "/tmp/autobot-candles-api-refresh.lock",
@@ -49,9 +49,11 @@ $refreshArgs = @(
     "-LookbackMonths", ([string]([Math]::Max([int]$LookbackMonths, 1))),
     "-Tf", $Tf,
     "-MaxBackfillDays1m", ([string]([Math]::Max([int]$MaxBackfillDays1m, 1))),
-    "-Workers", ([string]([Math]::Max([int]$Workers, 1))),
-    "-MaxRequests", ([string]([Math]::Max([int]$MaxRequests, 1)))
+    "-Workers", ([string]([Math]::Max([int]$Workers, 1)))
 )
+if ([int]$MaxRequests -gt 0) {
+    $refreshArgs += @("-MaxRequests", ([string][int]$MaxRequests))
+}
 $refreshCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 $execStart = Build-FlockWrappedExecStart `
     -Command $refreshCommand `
@@ -70,7 +72,7 @@ User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$execStart
-TimeoutStartSec=1800
+TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal
 "@

@@ -550,6 +550,18 @@ def test_t23_2_raw_ticks_backfill_wrapper_dry_run_uses_recent_two_days_window() 
     assert "OnCalendar=*-*-* 22:00:00" in _run_script_dry_run("install_server_raw_ticks_backfill_service.ps1")
 
 
+def test_t23_2_candles_api_refresh_wrapper_omits_global_request_cap_when_zero() -> None:
+    stdout = _run_script_dry_run("run_candles_api_refresh.ps1", "-MaxRequests", "0")
+
+    assert "--max-requests" not in stdout
+
+
+def test_t23_2_candles_api_refresh_installer_omits_maxrequests_when_zero() -> None:
+    stdout = _run_script_dry_run("install_server_candles_api_refresh_service.ps1", "-MaxRequests", "0")
+
+    assert "-MaxRequests" not in stdout
+
+
 def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contract() -> None:
     stdout = _run_script_dry_run("close_v5_train_ready_snapshot.ps1")
 
