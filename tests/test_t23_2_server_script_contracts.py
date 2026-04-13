@@ -505,6 +505,7 @@ def test_t23_2_foundation_ingestion_installer_dry_run_keeps_only_first_tier_coll
     assert "[candles-api-install][dry-run] service=autobot-candles-api-refresh.service" in stdout
     assert "[raw-ticks-install][dry-run] service=autobot-raw-ticks-daily.service" in stdout
     assert "[raw-ticks-backfill-install][dry-run] service=autobot-raw-ticks-backfill.service" in stdout
+    assert "[raw-trade-v1-install][dry-run] service=autobot-raw-trade-v1.service" in stdout
     assert "autobot-v5-train-snapshot-close.timer" not in stdout
     assert "close_v5_train_ready_snapshot.ps1" not in stdout
 
@@ -517,9 +518,29 @@ def test_t23_2_source_plane_installer_dry_run_keeps_only_source_plane_units() ->
     assert "[candles-api-install][dry-run] service=autobot-candles-api-refresh.service" in stdout
     assert "[raw-ticks-install][dry-run] service=autobot-raw-ticks-daily.service" in stdout
     assert "[raw-ticks-backfill-install][dry-run] service=autobot-raw-ticks-backfill.service" in stdout
+    assert "[raw-trade-v1-install][dry-run] service=autobot-raw-trade-v1.service" in stdout
     assert "autobot-data-platform-refresh.timer" not in stdout
     assert "refresh_data_platform_layers.ps1" not in stdout
     assert "autobot-v5-train-snapshot-close.timer" not in stdout
+
+
+def test_t23_2_raw_trade_v1_installer_dry_run_keeps_source_plane_contract() -> None:
+    stdout = _run_script_dry_run("install_server_raw_trade_v1_service.ps1")
+
+    assert "[raw-trade-v1-install][dry-run] service=autobot-raw-trade-v1.service" in stdout
+    assert "[raw-trade-v1-install][dry-run] refresh_script=" in stdout
+    assert "run_raw_trade_v1_refresh.ps1" in stdout
+    assert "OnUnitActiveSec=20min" in stdout
+
+
+def test_t23_2_raw_trade_v1_refresh_wrapper_dry_run_emits_rolling_window_build() -> None:
+    stdout = _run_script_dry_run("run_raw_trade_v1_refresh.ps1")
+
+    assert "[raw-trade-v1-refresh] step=build_raw_trade_v1" in stdout
+    assert "autobot.cli" in stdout
+    assert "collect" in stdout
+    assert "raw-trade-v1" in stdout
+    assert "--prefer-source-order" in stdout
 
 
 def test_t23_2_train_snapshot_close_wrapper_dry_run_emits_training_close_contract() -> None:

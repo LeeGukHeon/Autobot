@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 from typing import Any
+
+import polars as pl
 
 from ...micro.raw_readers import (
     discover_rest_tick_files,
@@ -14,7 +17,12 @@ from ...micro.raw_readers import (
     iter_jsonl_zst_rows,
     parse_date_range,
 )
-from .manifest import append_raw_trade_manifest_rows, manifest_path
+from .manifest import (
+    append_raw_trade_manifest_rows,
+    load_raw_trade_manifest,
+    manifest_path,
+    save_raw_trade_manifest,
+)
 from .raw_trade_v1 import (
     merge_canonical_trade_rows,
     normalize_rest_trade_row,
@@ -70,6 +78,7 @@ def build_raw_trade_v1_dataset(options: RawTradeBuildOptions) -> RawTradeBuildSu
     ws_rows_total = 0
     rest_rows_total = 0
     merged_rows_total = 0
+    rebuilt_pairs: list[tuple[str, str]] = []
 
     for date_value in dates:
         ws_rows_by_market = _load_ws_rows_by_market(
@@ -119,6 +128,12 @@ def build_raw_trade_v1_dataset(options: RawTradeBuildOptions) -> RawTradeBuildSu
                 details.append(detail)
                 continue
 
+            _remove_existing_trade_pair(
+                out_root=options.out_root,
+                date_value=date_value,
+                market=market,
+            )
+            rebuilt_pairs.append((date_value, market))
             written_parts = write_raw_trade_partitions(
                 out_root=options.out_root,
                 trades=merged_rows,
@@ -151,6 +166,10 @@ def build_raw_trade_v1_dataset(options: RawTradeBuildOptions) -> RawTradeBuildSu
                 )
 
     manifest_file = manifest_path(options.out_root)
+    _replace_existing_manifest_pairs(
+        manifest_file=manifest_file,
+        rebuilt_pairs=rebuilt_pairs,
+    )
     append_raw_trade_manifest_rows(manifest_file, manifest_rows)
 
     report = {
@@ -231,3 +250,31 @@ def _load_rest_rows_by_market(
                 continue
             rows_by_market.setdefault(market, []).append(normalized)
     return rows_by_market
+
+
+def _remove_existing_trade_pair(*, out_root: Path, date_value: str, market: str) -> None:
+    pair_root = Path(out_root) / f"date={date_value}" / f"market={market}"
+    if pair_root.exists():
+        shutil.rmtree(pair_root, ignore_errors=True)
+
+
+def _replace_existing_manifest_pairs(
+    *,
+    manifest_file: Path,
+    rebuilt_pairs: list[tuple[str, str]],
+) -> None:
+    if not rebuilt_pairs or not manifest_file.exists():
+        return
+    frame = load_raw_trade_manifest(manifest_file)
+    if frame.height <= 0:
+        return
+    rebuilt_keys = {(str(date_value), str(market).upper()) for date_value, market in rebuilt_pairs}
+    filtered = frame.filter(
+        ~(
+            pl.struct(["date", "market"]).map_elements(
+                lambda item: (str(item["date"]), str(item["market"]).upper()) in rebuilt_keys,
+                return_dtype=pl.Boolean,
+            )
+        )
+    )
+    save_raw_trade_manifest(manifest_file, filtered)

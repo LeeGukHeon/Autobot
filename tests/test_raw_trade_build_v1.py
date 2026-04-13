@@ -125,3 +125,85 @@ def test_trade_coverage_reads_raw_trade_manifest(tmp_path) -> None:
     assert result.pass_ is False
     assert result.stale_markets == ("KRW-ETH",)
     assert result.missing_markets == ("KRW-XRP",)
+
+
+def test_build_raw_trade_v1_dataset_replaces_existing_pair_outputs_on_rerun(tmp_path) -> None:
+    raw_ws_root = tmp_path / "raw_ws"
+    raw_ticks_root = tmp_path / "raw_ticks"
+    out_root = tmp_path / "raw_trade_v1"
+
+    writer = WsRawRotatingWriter(raw_root=raw_ws_root, run_id="ws-run-1", rotate_sec=3600)
+    writer.write(
+        channel="trade",
+        row={
+            "channel": "trade",
+            "market": "KRW-BTC",
+            "trade_ts_ms": 1_712_713_200_000,
+            "recv_ts_ms": 1_712_713_200_010,
+            "price": 101.0,
+            "volume": 0.2,
+            "ask_bid": "BID",
+            "sequential_id": 1001,
+            "source": "ws",
+            "collected_at_ms": 1_712_713_200_020,
+        },
+        event_ts_ms=1_712_713_200_000,
+    )
+    writer.close()
+
+    options = RawTradeBuildOptions(
+        raw_ws_root=raw_ws_root,
+        raw_ticks_root=raw_ticks_root,
+        out_root=out_root,
+        meta_dir=out_root / "_meta",
+        start="2024-04-10",
+        end="2024-04-10",
+        markets=("KRW-BTC",),
+    )
+    first = build_raw_trade_v1_dataset(options)
+    first_manifest = pl.read_parquet(first.manifest_file)
+    assert first_manifest.height == 1
+
+    writer = WsRawRotatingWriter(raw_root=raw_ws_root, run_id="ws-run-2", rotate_sec=3600)
+    writer.write(
+        channel="trade",
+        row={
+            "channel": "trade",
+            "market": "KRW-BTC",
+            "trade_ts_ms": 1_712_713_200_000,
+            "recv_ts_ms": 1_712_713_200_011,
+            "price": 101.0,
+            "volume": 0.2,
+            "ask_bid": "BID",
+            "sequential_id": 1001,
+            "source": "ws",
+            "collected_at_ms": 1_712_713_200_021,
+        },
+        event_ts_ms=1_712_713_200_000,
+    )
+    writer.write(
+        channel="trade",
+        row={
+            "channel": "trade",
+            "market": "KRW-BTC",
+            "trade_ts_ms": 1_712_713_201_000,
+            "recv_ts_ms": 1_712_713_201_011,
+            "price": 102.0,
+            "volume": 0.3,
+            "ask_bid": "ASK",
+            "sequential_id": 1002,
+            "source": "ws",
+            "collected_at_ms": 1_712_713_201_021,
+        },
+        event_ts_ms=1_712_713_201_000,
+    )
+    writer.close()
+
+    second = build_raw_trade_v1_dataset(options)
+    second_manifest = pl.read_parquet(second.manifest_file)
+    assert second_manifest.height == 1
+    part_dir = out_root / "date=2024-04-10" / "market=KRW-BTC"
+    part_paths = sorted(part_dir.glob("*.jsonl.zst"))
+    assert len(part_paths) == 1
+    rows = read_raw_trade_part_file(part_paths[0])
+    assert len(rows) == 2
