@@ -347,7 +347,7 @@ def aggregate_1m_for_base(
             pl.len().cast(pl.Int64).alias("one_m_count"),
             pl.col("ts_ms").max().cast(pl.Int64).alias("one_m_last_ts"),
             pl.col("__ret_1m").mean().cast(dtype).alias("one_m_ret_mean"),
-            pl.col("__ret_1m").std().cast(dtype).alias("one_m_ret_std"),
+            pl.col("__ret_1m").std().fill_null(0.0).cast(dtype).alias("one_m_ret_std"),
             pl.col("volume_base").sum().cast(dtype).alias("one_m_volume_sum"),
             pl.col("__range_1m").mean().cast(dtype).alias("one_m_range_mean"),
             pl.col("is_synth_1m").cast(pl.Int64).sum().cast(pl.Int64).alias("one_m_synth_count"),

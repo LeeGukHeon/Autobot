@@ -100,6 +100,7 @@ def test_aggregate_1m_for_base_keeps_boundary_minute_in_current_bar() -> None:
     assert grouped.get_column("one_m_count").to_list() == [5, 1]
     assert grouped.get_column("one_m_last_ts").to_list() == [300_000, 360_000]
     assert grouped.get_column("one_m_volume_sum").to_list() == [150.0, 60.0]
+    assert grouped.get_column("one_m_ret_std").to_list()[1] == 0.0
 
 
 def test_1m_join_can_drop_windows_with_no_real_1m() -> None:
