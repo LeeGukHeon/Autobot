@@ -5,6 +5,7 @@ param(
     [string]$UnitName = "autobot-ws-public.service",
     [string]$Quote = "KRW",
     [int]$TopN = 50,
+    [string]$Channels = "ticker,trade,orderbook",
     [int]$RefreshSec = 900,
     [int]$RetentionDays = 30,
     [double]$DownsampleHz = 1.0,
@@ -33,6 +34,7 @@ $argList = @(
     "--meta-dir", "data/raw_ws/upbit/_meta",
     "--quote", ([string]$Quote).Trim().ToUpperInvariant(),
     "--top-n", ([string]([Math]::Max([int]$TopN, 1))),
+    "--channels", $Channels,
     "--refresh-sec", ([string]([Math]::Max([int]$RefreshSec, 1))),
     "--retention-days", ([string]([Math]::Max([int]$RetentionDays, 1))),
     "--downsample-hz", ([string][double]$DownsampleHz),
@@ -76,6 +78,7 @@ if ($DryRun) {
     Write-Host ("[ws-public-install][dry-run] unit={0}" -f $UnitName)
     Write-Host ("[ws-public-install][dry-run] quote={0}" -f $Quote)
     Write-Host ("[ws-public-install][dry-run] top_n={0}" -f $TopN)
+    Write-Host ("[ws-public-install][dry-run] channels={0}" -f $Channels)
     Write-Host ("[ws-public-install][dry-run] orderbook_topk={0}" -f $OrderbookTopk)
     Write-Host $unitContent
     exit 0

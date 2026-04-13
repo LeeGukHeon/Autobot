@@ -435,7 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_plan_ws_parser.add_argument("--top-n", type=int, default=20)
     collect_plan_ws_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
-    collect_plan_ws_parser.add_argument("--channels", default="trade,orderbook", help="Comma separated channels")
+    collect_plan_ws_parser.add_argument("--channels", default="ticker,trade,orderbook", help="Comma separated channels")
     collect_plan_ws_parser.add_argument(
         "--format",
         default="DEFAULT",
@@ -654,7 +654,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="DEFAULT",
         choices=("DEFAULT", "SIMPLE", "JSON_LIST", "SIMPLE_LIST"),
     )
-    collect_ws_public_daemon_parser.add_argument("--channels", default="trade,orderbook")
+    collect_ws_public_daemon_parser.add_argument("--channels", default="ticker,trade,orderbook")
     collect_ws_public_daemon_parser.add_argument("--orderbook-topk", type=int, default=30)
     collect_ws_public_daemon_parser.add_argument("--orderbook-level", default="0")
     collect_ws_public_daemon_parser.add_argument("--rotate-sec", type=int, default=3600)

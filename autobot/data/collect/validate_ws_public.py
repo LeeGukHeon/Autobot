@@ -54,7 +54,7 @@ def validate_ws_public_raw_dataset(
     rows_schema_ok = 0
 
     per_market_counts: dict[str, dict[str, int]] = {}
-    coverage: dict[str, dict[str, dict[str, int | None]]] = {"trade": {}, "orderbook": {}}
+    coverage: dict[str, dict[str, dict[str, int | None]]] = {"ticker": {}, "trade": {}, "orderbook": {}}
 
     for part_file in part_files:
         channel_tag, date_tag, hour_tag = _partition_tags(part_file)
@@ -162,7 +162,7 @@ def validate_ws_public_raw_dataset(
             if max_ts_ms is None or ts_ms > max_ts_ms:
                 max_ts_ms = ts_ms
 
-            market_bucket = per_market_counts.setdefault(market, {"trade": 0, "orderbook": 0})
+            market_bucket = per_market_counts.setdefault(market, {"ticker": 0, "trade": 0, "orderbook": 0})
             market_bucket[channel] = int(market_bucket.get(channel, 0) + 1)
 
             market_coverage = coverage[channel].setdefault(market, {"min_ts_ms": None, "max_ts_ms": None})
@@ -209,6 +209,7 @@ def validate_ws_public_raw_dataset(
 
     parse_ok_ratio = (float(rows_schema_ok) / float(rows_raw_total)) if rows_raw_total > 0 else 1.0
     per_channel_messages = {
+        "ticker": int(sum(item.get("ticker", 0) for item in per_market_counts.values())),
         "trade": int(sum(item.get("trade", 0) for item in per_market_counts.values())),
         "orderbook": int(sum(item.get("orderbook", 0) for item in per_market_counts.values())),
     }
@@ -243,6 +244,7 @@ def validate_ws_public_raw_dataset(
         "per_market_counts": [
             {
                 "market": market,
+                "ticker": int(counts.get("ticker", 0)),
                 "trade": int(counts.get("trade", 0)),
                 "orderbook": int(counts.get("orderbook", 0)),
             }
@@ -366,11 +368,13 @@ def _append_quarantine_report(
 def _discover_part_files(*, raw_root: Path, date_filter: str | None) -> list[Path]:
     if date_filter:
         patterns = [
+            f"ticker/date={date_filter}/hour=*/*.jsonl.zst",
             f"trade/date={date_filter}/hour=*/*.jsonl.zst",
             f"orderbook/date={date_filter}/hour=*/*.jsonl.zst",
         ]
     else:
         patterns = [
+            "ticker/date=*/hour=*/*.jsonl.zst",
             "trade/date=*/hour=*/*.jsonl.zst",
             "orderbook/date=*/hour=*/*.jsonl.zst",
         ]
@@ -400,6 +404,18 @@ def _validate_row(*, row: dict[str, Any], expected_channel: str) -> tuple[dict[s
         return {}, False
     if source.lower() != "ws":
         return {}, False
+
+    if channel == "ticker":
+        ts_ms = _to_int(row.get("ts_ms"))
+        trade_price = _to_float(row.get("trade_price"))
+        acc_trade_price_24h = _to_float(row.get("acc_trade_price_24h"))
+        if ts_ms is None or trade_price is None or acc_trade_price_24h is None:
+            return {}, False
+        return {
+            "channel": channel,
+            "market": market,
+            "event_ts_ms": int(ts_ms),
+        }, True
 
     if channel == "trade":
         ts_ms = _to_int(row.get("trade_ts_ms"))
@@ -465,7 +481,7 @@ def _warn_zero_markets(*, meta_dir: Path, per_market_counts: dict[str, dict[str,
     warnings: list[dict[str, Any]] = []
     for market in sorted(set(codes)):
         counts = per_market_counts.get(market, {})
-        total = int(counts.get("trade", 0)) + int(counts.get("orderbook", 0))
+        total = int(counts.get("ticker", 0)) + int(counts.get("trade", 0)) + int(counts.get("orderbook", 0))
         if total <= 0:
             warnings.append(
                 {

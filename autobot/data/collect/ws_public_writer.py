@@ -13,7 +13,7 @@ from typing import Any
 import zstandard as zstd
 
 
-VALID_CHANNELS: set[str] = {"trade", "orderbook"}
+VALID_CHANNELS: set[str] = {"ticker", "trade", "orderbook"}
 
 
 @dataclass
@@ -184,11 +184,13 @@ def discover_ws_part_files(
     files: list[Path] = []
     if date_filter:
         patterns = [
+            f"ticker/date={date_filter}/hour=*/*.jsonl.zst",
             f"trade/date={date_filter}/hour=*/*.jsonl.zst",
             f"orderbook/date={date_filter}/hour=*/*.jsonl.zst",
         ]
     else:
         patterns = [
+            "ticker/date=*/hour=*/*.jsonl.zst",
             "trade/date=*/hour=*/*.jsonl.zst",
             "orderbook/date=*/hour=*/*.jsonl.zst",
         ]

@@ -27,6 +27,7 @@ collect:
     refresh_sec: 900
     max_markets: 60
     channels:
+      - ticker
       - trade
       - orderbook
     format: DEFAULT

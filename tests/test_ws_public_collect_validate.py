@@ -16,7 +16,7 @@ def test_ws_offline_fixture_normalize_write_validate(tmp_path: Path) -> None:
 
     plan = {
         "codes": ["KRW-BTC", "KRW-ETH"],
-        "filters": {"channels": ["trade", "orderbook"]},
+        "filters": {"channels": ["ticker", "trade", "orderbook"]},
     }
     (meta_dir / "ws_public_plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -27,6 +27,15 @@ def test_ws_offline_fixture_normalize_write_validate(tmp_path: Path) -> None:
         max_bytes=64 * 1024 * 1024,
     )
 
+    ticker_message = {
+        "type": "ticker",
+        "code": "KRW-BTC",
+        "timestamp": 1_700_000_000_050,
+        "trade_price": 101.0,
+        "acc_trade_price_24h": 5_000_000_000.0,
+        "market_state": "ACTIVE",
+        "market_warning": "NONE",
+    }
     trade_message = {
         "type": "trade",
         "code": "KRW-BTC",
@@ -49,6 +58,12 @@ def test_ws_offline_fixture_normalize_write_validate(tmp_path: Path) -> None:
         ],
     }
 
+    ticker_row = _normalize_public_ws_row(
+        message=ticker_message,
+        orderbook_topk=5,
+        orderbook_level=0,
+        collected_at_ms=1_700_000_000_060,
+    )
     trade_row = _normalize_public_ws_row(
         message=trade_message,
         orderbook_topk=5,
@@ -61,9 +76,11 @@ def test_ws_offline_fixture_normalize_write_validate(tmp_path: Path) -> None:
         orderbook_level=0,
         collected_at_ms=1_700_000_000_510,
     )
+    assert ticker_row is not None
     assert trade_row is not None
     assert orderbook_row is not None
 
+    writer.write(channel="ticker", row=ticker_row, event_ts_ms=int(ticker_row["ts_ms"]))
     writer.write(channel="trade", row=trade_row, event_ts_ms=int(trade_row["trade_ts_ms"]))
     writer.write(channel="orderbook", row=orderbook_row, event_ts_ms=int(orderbook_row["ts_ms"]))
     manifest_rows = writer.close()
@@ -76,6 +93,6 @@ def test_ws_offline_fixture_normalize_write_validate(tmp_path: Path) -> None:
     )
 
     assert summary.fail_files == 0
-    assert summary.checked_files >= 2
-    assert summary.rows_total == 2
+    assert summary.checked_files >= 3
+    assert summary.rows_total == 3
     assert summary.parse_ok_ratio == 1.0

@@ -1,4 +1,4 @@
-"""Plan-driven collector for Upbit public websocket trade/orderbook data."""
+"""Plan-driven collector for Upbit public websocket ticker/trade/orderbook data."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .ws_public_manifest import append_ws_manifest_rows, load_ws_manifest
 from .ws_public_writer import WsRawRotatingWriter
 
 
-VALID_WS_PUBLIC_CHANNELS: set[str] = {"trade", "orderbook"}
+VALID_WS_PUBLIC_CHANNELS: set[str] = {"ticker", "trade", "orderbook"}
 VALID_KEEPALIVE_MODES: set[str] = {"message", "frame", "auto", "off"}
 
 
@@ -86,7 +86,7 @@ class WsPublicDaemonOptions:
     downsample_hz: float = 1.0
     max_markets: int = 60
     format: str = "DEFAULT"
-    channels: tuple[str, ...] = ("trade", "orderbook")
+    channels: tuple[str, ...] = ("ticker", "trade", "orderbook")
     orderbook_topk: int = 30
     orderbook_level: int | str | None = 0
     keepalive_mode: str = "message"
@@ -141,8 +141,10 @@ class WsPublicCollectSummary:
     run_id: str
     duration_sec: int
     codes_count: int
+    received_ticker: int
     received_trade: int
     received_orderbook: int
+    written_ticker: int
     written_trade: int
     written_orderbook: int
     dropped_orderbook_by_interval: int
@@ -168,8 +170,10 @@ class WsPublicDaemonSummary:
     top_n: int
     refresh_sec: int
     subscribed_markets_count: int
+    received_ticker: int
     received_trade: int
     received_orderbook: int
+    written_ticker: int
     written_trade: int
     written_orderbook: int
     dropped_orderbook_by_interval: int
@@ -229,8 +233,10 @@ def _build_ws_public_daemon_collect_report(
         "codes_count": int(runtime_counters.subscribed_markets_count),
         "channels": list(channels),
         "format": fmt,
+        "received_ticker": int(runtime_counters.received_ticker),
         "received_trade": int(runtime_counters.received_trade),
         "received_orderbook": int(runtime_counters.received_orderbook),
+        "written_ticker": int(runtime_counters.written_ticker),
         "written_trade": int(runtime_counters.written_trade),
         "written_orderbook": int(runtime_counters.written_orderbook),
         "dropped_orderbook_by_interval": int(runtime_counters.dropped_orderbook_by_interval),
@@ -257,8 +263,10 @@ def _build_ws_public_daemon_collect_report(
 
 @dataclass
 class _RuntimeCounters:
+    received_ticker: int = 0
     received_trade: int = 0
     received_orderbook: int = 0
+    written_ticker: int = 0
     written_trade: int = 0
     written_orderbook: int = 0
     dropped_orderbook_by_interval: int = 0
@@ -273,6 +281,7 @@ class _RuntimeCounters:
     refresh_attempt_count: int = 0
     refresh_applied_count: int = 0
     refresh_noop_count: int = 0
+    last_ticker_rx_ts_ms: int | None = None
     last_trade_rx_ts_ms: int | None = None
     last_orderbook_rx_ts_ms: int | None = None
     subscribed_markets_count: int = 0
@@ -412,8 +421,10 @@ def collect_ws_public_from_plan(options: WsPublicCollectOptions) -> WsPublicColl
         "codes_count": len(codes),
         "channels": list(channels),
         "format": fmt,
+        "received_ticker": int(counters.received_ticker),
         "received_trade": int(counters.received_trade),
         "received_orderbook": int(counters.received_orderbook),
+        "written_ticker": int(counters.written_ticker),
         "written_trade": int(counters.written_trade),
         "written_orderbook": int(counters.written_orderbook),
         "dropped_orderbook_by_interval": int(counters.dropped_orderbook_by_interval),
@@ -443,8 +454,10 @@ def collect_ws_public_from_plan(options: WsPublicCollectOptions) -> WsPublicColl
         run_id=run_id,
         duration_sec=max(int(options.duration_sec), 1),
         codes_count=len(codes),
+        received_ticker=int(counters.received_ticker),
         received_trade=int(counters.received_trade),
         received_orderbook=int(counters.received_orderbook),
+        written_ticker=int(counters.written_ticker),
         written_trade=int(counters.written_trade),
         written_orderbook=int(counters.written_orderbook),
         dropped_orderbook_by_interval=int(counters.dropped_orderbook_by_interval),
@@ -700,8 +713,10 @@ def collect_ws_public_daemon(options: WsPublicDaemonOptions) -> WsPublicDaemonSu
         top_n=top_n,
         refresh_sec=refresh_sec,
         subscribed_markets_count=int(runtime_counters.subscribed_markets_count),
+        received_ticker=int(runtime_counters.received_ticker),
         received_trade=int(runtime_counters.received_trade),
         received_orderbook=int(runtime_counters.received_orderbook),
+        written_ticker=int(runtime_counters.written_ticker),
         written_trade=int(runtime_counters.written_trade),
         written_orderbook=int(runtime_counters.written_orderbook),
         dropped_orderbook_by_interval=int(runtime_counters.dropped_orderbook_by_interval),
@@ -1061,7 +1076,18 @@ async def _run_ws_collection(
                         continue
 
                     channel = str(normalized.get("channel"))
-                    if channel == "trade":
+                    if channel == "ticker":
+                        counters.received_ticker += 1
+                        counters.last_ticker_rx_ts_ms = int(collected_at_ms)
+                        writer.write(
+                            channel="ticker",
+                            row=normalized,
+                            event_ts_ms=int(normalized.get("ts_ms")),
+                        )
+                        if manifest_flush_callback is not None:
+                            manifest_flush_callback()
+                        counters.written_ticker += 1
+                    elif channel == "trade":
                         counters.received_trade += 1
                         counters.last_trade_rx_ts_ms = int(collected_at_ms)
                         writer.write(
@@ -1206,6 +1232,25 @@ def _normalize_public_ws_row(
             "volume": float(volume),
             "ask_bid": ask_bid,
             "sequential_id": sequential_id,
+            "source": "ws",
+            "collected_at_ms": int(collected_at_ms),
+        }
+
+    if raw_type == "TICKER":
+        market = _as_str(_coalesce(message, "code", "cd", "market"), upper=True)
+        ts_ms = _to_ts_ms(_coalesce(message, "timestamp", "tms", "trade_timestamp", "ttms"))
+        trade_price = _to_float(_coalesce(message, "trade_price", "tp"))
+        acc_trade_price_24h = _to_float(_coalesce(message, "acc_trade_price_24h", "atp24h"))
+        if not market or ts_ms is None or trade_price is None or acc_trade_price_24h is None:
+            return None
+        return {
+            "channel": "ticker",
+            "market": market,
+            "ts_ms": int(ts_ms),
+            "trade_price": float(trade_price),
+            "acc_trade_price_24h": float(acc_trade_price_24h),
+            "market_state": _as_str(_coalesce(message, "market_state", "ms"), upper=True),
+            "market_warning": _as_str(_coalesce(message, "market_warning", "mw"), upper=True),
             "source": "ws",
             "collected_at_ms": int(collected_at_ms),
         }
@@ -1513,7 +1558,7 @@ def _normalize_keepalive_mode(value: Any) -> str:
 
 
 def _health_payload(*, run_id: str, counters: _RuntimeCounters, connected: bool) -> dict[str, Any]:
-    written_total = int(counters.written_trade + counters.written_orderbook)
+    written_total = int(counters.written_ticker + counters.written_trade + counters.written_orderbook)
     dropped_total = int(counters.dropped_orderbook_by_interval + counters.dropped_by_parse_error)
     return {
         "run_id": run_id,
@@ -1521,10 +1566,12 @@ def _health_payload(*, run_id: str, counters: _RuntimeCounters, connected: bool)
         "connected": bool(connected),
         "reconnect_count": int(counters.reconnect_count),
         "last_rx_ts_ms": {
+            "ticker": counters.last_ticker_rx_ts_ms,
             "trade": counters.last_trade_rx_ts_ms,
             "orderbook": counters.last_orderbook_rx_ts_ms,
         },
         "written_rows": {
+            "ticker": int(counters.written_ticker),
             "trade": int(counters.written_trade),
             "orderbook": int(counters.written_orderbook),
             "total": written_total,

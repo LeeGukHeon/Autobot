@@ -1,4 +1,4 @@
-"""Plan generator for Upbit public websocket (trade/orderbook) collection."""
+"""Plan generator for Upbit public websocket (ticker/trade/orderbook) collection."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from ...upbit.ws.payloads import VALID_WS_FORMATS
 from ..inventory import build_candle_inventory, default_inventory_window, estimate_recent_value_by_market
 
 
-DEFAULT_WS_CHANNELS: tuple[str, ...] = ("trade", "orderbook")
+DEFAULT_WS_CHANNELS: tuple[str, ...] = ("ticker", "trade", "orderbook")
 VALID_MARKET_MODES = {"fixed_list", "top_n_by_recent_value_est", "one_m_existing_only"}
-VALID_CHANNELS = {"trade", "orderbook"}
+VALID_CHANNELS = {"ticker", "trade", "orderbook"}
 
 
 @dataclass(frozen=True)

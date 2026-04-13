@@ -34,6 +34,29 @@ def test_normalize_trade_default_payload() -> None:
     assert row["ask_bid"] == "BID"
 
 
+def test_normalize_ticker_default_payload() -> None:
+    row = _normalize_public_ws_row(
+        message={
+            "type": "ticker",
+            "code": "KRW-BTC",
+            "timestamp": 1_700_000_000_000,
+            "trade_price": 100.5,
+            "acc_trade_price_24h": 123456789.0,
+            "market_state": "ACTIVE",
+            "market_warning": "NONE",
+        },
+        orderbook_topk=5,
+        orderbook_level=0,
+        collected_at_ms=1_700_000_000_200,
+    )
+    assert row is not None
+    assert row["channel"] == "ticker"
+    assert row["market"] == "KRW-BTC"
+    assert row["ts_ms"] == 1_700_000_000_000
+    assert row["trade_price"] == 100.5
+    assert row["acc_trade_price_24h"] == 123456789.0
+
+
 def test_normalize_orderbook_simple_payload() -> None:
     row = _normalize_public_ws_row(
         message={

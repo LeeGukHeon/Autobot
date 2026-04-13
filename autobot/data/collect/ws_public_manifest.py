@@ -119,7 +119,7 @@ def _coerce_channel(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip().lower()
-    if text not in {"trade", "orderbook"}:
+    if text not in {"ticker", "trade", "orderbook"}:
         return None
     return text
 
