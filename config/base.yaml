@@ -67,38 +67,47 @@ universe:
 source_plane:
   fixed_collection:
     enabled: true
+    selection_policy: "upbit_krw_top_market_cap_ex_stables_v1"
+    selection_generated_at_utc: "2026-04-13T18:55:00Z"
     quote: KRW
+    exclude_symbols:
+      - USDT
+      - USDC
+      - USDS
+      - USDE
+      - USD1
+      - XAUT
     markets:
-      - KRW-XRP
       - KRW-BTC
       - KRW-ETH
+      - KRW-XRP
       - KRW-SOL
+      - KRW-TRX
       - KRW-DOGE
-      - KRW-KITE
-      - KRW-G
-      - KRW-ENSO
-      - KRW-IP
       - KRW-ADA
-      - KRW-ANKR
-      - KRW-GAS
-      - KRW-ANIME
-      - KRW-BERA
-      - KRW-AXS
-      - KRW-XLM
-      - KRW-CPOOL
-      - KRW-JTO
-      - KRW-F
-      - KRW-BSV
-      - KRW-0G
-      - KRW-LINK
-      - KRW-LA
       - KRW-BCH
-      - KRW-AZTEC
-      - KRW-BREV
-      - KRW-ETC
+      - KRW-LINK
+      - KRW-XLM
+      - KRW-AVAX
       - KRW-HBAR
-      - KRW-ELSA
-      - KRW-AQT
+      - KRW-SUI
+      - KRW-SHIB
+      - KRW-CRO
+      - KRW-WLFI
+      - KRW-TAO
+      - KRW-MNT
+      - KRW-DOT
+      - KRW-UNI
+      - KRW-NEAR
+      - KRW-SKY
+      - KRW-PEPE
+      - KRW-AAVE
+      - KRW-ICP
+      - KRW-ETC
+      - KRW-ONDO
+      - KRW-PUMP
+      - KRW-RENDER
+      - KRW-WLD
 
 storage:
   raw_dir: data/raw
