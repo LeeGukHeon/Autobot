@@ -1989,7 +1989,8 @@
             compactStat("티커 행", fmtNumber((health.written_rows || {}).ticker, 0)),
             compactStat("체결 행", fmtNumber((health.written_rows || {}).trade, 0)),
             compactStat("호가 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
-            compactStat("총 누락 행", fmtNumber((health.dropped_rows || {}).total, 0)),
+            compactStat("다운샘플 생략 행", fmtNumber((health.dropped_rows || {}).orderbook_downsample, 0)),
+            compactStat("파싱 오류 행", fmtNumber((health.dropped_rows || {}).parse_error, 0)),
           ],
         }),
         compactRow({
