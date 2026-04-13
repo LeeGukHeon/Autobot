@@ -44,6 +44,7 @@ autobot/data/*
 !autobot/data/sources/
 autobot/data/sources/*
 !autobot/data/sources/__init__.py
+!autobot/data/sources/completeness.py
 !autobot/data/sources/trades/
 !autobot/data/sources/trades/**
 autobot/data/micro/__pycache__/

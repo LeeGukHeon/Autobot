@@ -75,6 +75,7 @@ from .data.micro import (
     micro_stats_v1,
     validate_micro_dataset_v1,
 )
+from .data.sources.trades.build_raw_trade_v1 import RawTradeBuildOptions, build_raw_trade_v1_dataset
 from .features import (
     FeatureBuildOptions,
     FeatureBuildV2Options,
@@ -415,6 +416,19 @@ def build_parser() -> argparse.ArgumentParser:
     collect_plan_ticks_parser.add_argument("--top-n", type=int, default=20)
     collect_plan_ticks_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
     collect_plan_ticks_parser.add_argument("--days-ago", default="1,2,3,4,5,6,7", help="Comma separated 1..7")
+
+    collect_raw_trade_parser = collect_subparsers.add_parser(
+        "raw-trade-v1",
+        help="Build canonical raw_trade_v1 from WS-primary and REST-repair inputs.",
+    )
+    collect_raw_trade_parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
+    collect_raw_trade_parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    collect_raw_trade_parser.add_argument("--markets", help="Comma separated fixed market list, ex: KRW-BTC,KRW-ETH")
+    collect_raw_trade_parser.add_argument("--raw-ws-root", default="data/raw_ws/upbit/public")
+    collect_raw_trade_parser.add_argument("--raw-ticks-root", default="data/raw_ticks/upbit/trades")
+    collect_raw_trade_parser.add_argument("--out-root", default="data/raw_trade_v1")
+    collect_raw_trade_parser.add_argument("--meta-dir", default="data/raw_trade_v1/_meta")
+    collect_raw_trade_parser.add_argument("--prefer-source-order", default="ws,rest")
 
     collect_plan_ws_parser = collect_subparsers.add_parser(
         "plan-ws-public",
@@ -1833,6 +1847,8 @@ def _handle_collect_command(args: argparse.Namespace, config_dir: Path, base_con
         return _handle_collect_tensors(args, base_config)
     if args.collect_command == "plan-ticks":
         return _handle_collect_plan_ticks(args, config_dir, base_config)
+    if args.collect_command == "raw-trade-v1":
+        return _handle_collect_raw_trade_v1(args)
     if args.collect_command == "plan-ws-public":
         return _handle_collect_plan_ws_public(args, config_dir, base_config)
     if args.collect_command == "ticks":
@@ -2202,6 +2218,36 @@ def _handle_collect_plan_ws_public(args: argparse.Namespace, config_dir: Path, c
         f"channels_count={plan['summary']['channels_count']}"
     )
     print(f"[collect][plan-ws-public] out={plan_options.output_path}")
+    return 0
+
+
+def _handle_collect_raw_trade_v1(args: argparse.Namespace) -> int:
+    summary = build_raw_trade_v1_dataset(
+        RawTradeBuildOptions(
+            raw_ws_root=Path(args.raw_ws_root),
+            raw_ticks_root=Path(args.raw_ticks_root),
+            out_root=Path(args.out_root),
+            meta_dir=Path(args.meta_dir),
+            start=str(args.start).strip(),
+            end=str(args.end).strip(),
+            markets=_parse_csv_list(args.markets, normalize=str.upper),
+            prefer_source_order=tuple(
+                str(item).strip().lower()
+                for item in str(args.prefer_source_order or "ws,rest").split(",")
+                if str(item).strip()
+            )
+            or ("ws", "rest"),
+        )
+    )
+    print(
+        "[collect][raw-trade-v1] "
+        f"run_id={summary.run_id} dates={len(summary.dates)} "
+        f"built_pairs={summary.built_pairs} skipped_pairs={summary.skipped_pairs} "
+        f"ws_rows={summary.ws_rows_total} rest_rows={summary.rest_rows_total} "
+        f"merged_rows={summary.merged_rows_total}"
+    )
+    print(f"[collect][raw-trade-v1] build_report={summary.build_report_file}")
+    print(f"[collect][raw-trade-v1] manifest={summary.manifest_file}")
     return 0
 
 

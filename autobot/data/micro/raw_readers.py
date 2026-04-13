@@ -11,7 +11,7 @@ from typing import Any, Iterator
 
 import zstandard as zstd
 
-from ..sources.trades import (
+from ..sources.trades.raw_trade_v1 import (
     normalize_rest_trade_row as normalize_canonical_rest_trade_row,
     normalize_ws_trade_row as normalize_canonical_ws_trade_row,
 )

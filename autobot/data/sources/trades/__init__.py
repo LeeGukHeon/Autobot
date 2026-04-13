@@ -1,5 +1,6 @@
 """Canonical raw trade source helpers."""
 
+from .manifest import manifest_path as raw_trade_manifest_path
 from .raw_trade_v1 import (
     RAW_TRADE_V1_COLUMNS,
     canonical_trade_key,
@@ -14,4 +15,5 @@ __all__ = [
     "merge_canonical_trade_rows",
     "normalize_rest_trade_row",
     "normalize_ws_trade_row",
+    "raw_trade_manifest_path",
 ]

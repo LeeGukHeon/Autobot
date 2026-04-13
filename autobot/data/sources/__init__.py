@@ -3,10 +3,12 @@
 from .completeness import (
     LobCoverageRequest,
     MicroCoverageRequest,
+    TradeCoverageRequest,
     SequenceCoverageRequest,
     build_sequence_coverage_request,
     summarize_lob_coverage,
     summarize_micro_coverage,
+    summarize_trade_coverage,
     summarize_sequence_coverage,
 )
 from .trades import (
@@ -22,6 +24,7 @@ __all__ = [
     "MicroCoverageRequest",
     "RAW_TRADE_V1_COLUMNS",
     "SequenceCoverageRequest",
+    "TradeCoverageRequest",
     "build_sequence_coverage_request",
     "canonical_trade_key",
     "merge_canonical_trade_rows",
@@ -29,5 +32,6 @@ __all__ = [
     "normalize_ws_trade_row",
     "summarize_lob_coverage",
     "summarize_micro_coverage",
+    "summarize_trade_coverage",
     "summarize_sequence_coverage",
 ]
