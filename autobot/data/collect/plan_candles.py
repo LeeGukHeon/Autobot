@@ -144,7 +144,7 @@ def generate_candle_topup_plan(options: CandlePlanOptions) -> dict[str, Any]:
                     planned["coverage_before_pct"] = float(entry.get("coverage_pct", 0.0))
                 targets.append(planned)
 
-    targets.sort(key=lambda item: (item["tf"], item["market"], item["need_from_ts_ms"]))
+    targets.sort(key=_target_priority_key)
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     plan = {
         "version": "t13.1a-candle-topup-plan-v1",
@@ -419,6 +419,19 @@ def _build_target_range(
         "estimated_bars": estimated_bars,
         "max_calls_budget_hint": max_calls,
     }
+
+
+def _target_priority_key(item: dict[str, Any]) -> tuple[int, int, str, int]:
+    tf = str(item.get("tf", "")).strip().lower()
+    try:
+        interval_ms = int(expected_interval_ms(tf))
+    except Exception:
+        interval_ms = 0
+    max_calls_hint = max(int(item.get("max_calls_budget_hint", 0) or 0), 0)
+    market = str(item.get("market", "")).strip().upper()
+    need_from_ts_ms = int(item.get("need_from_ts_ms", 0) or 0)
+    # Under a global request budget, cover cheap higher-timeframe tails first.
+    return (max_calls_hint, -interval_ms, market, need_from_ts_ms)
 
 
 def _dedupe_preserve(values: list[str]) -> list[str]:

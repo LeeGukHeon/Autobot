@@ -147,3 +147,61 @@ def test_plan_filters_inactive_markets_from_fixed_list(tmp_path: Path) -> None:
     active_filter = dict(plan["market_selection"]["active_market_filter"])
     assert active_filter["status"] == "override"
     assert active_filter["dropped_count"] == 1
+
+
+def test_plan_prioritizes_low_call_high_tf_targets_before_one_minute_targets(tmp_path: Path) -> None:
+    parquet_root = tmp_path / "parquet"
+    manifest_file = parquet_root / "candles_v1" / "_meta" / "manifest.parquet"
+    end_ts_ms = parse_utc_ts_ms("2026-04-12", end_of_day=True)
+    assert end_ts_ms is not None
+
+    append_manifest_rows(
+        manifest_file,
+        [
+            {
+                "quote": "KRW",
+                "symbol": "BTC",
+                "market": "KRW-BTC",
+                "tf": "1m",
+                "rows": 1000,
+                "min_ts_ms": end_ts_ms - (10 * DAY_MS),
+                "max_ts_ms": end_ts_ms - (4 * DAY_MS),
+                "status": "OK",
+                "ingested_at": 1,
+                "reasons_json": "[]",
+            },
+            {
+                "quote": "KRW",
+                "symbol": "BTC",
+                "market": "KRW-BTC",
+                "tf": "60m",
+                "rows": 100,
+                "min_ts_ms": end_ts_ms - (30 * DAY_MS),
+                "max_ts_ms": end_ts_ms - (10 * DAY_MS),
+                "status": "OK",
+                "ingested_at": 1,
+                "reasons_json": "[]",
+            },
+        ],
+    )
+
+    options = CandlePlanOptions(
+        parquet_root=parquet_root,
+        base_dataset="candles_v1",
+        output_path=tmp_path / "plan.json",
+        lookback_months=2,
+        tf_set=("1m", "60m"),
+        quote="KRW",
+        market_mode="fixed_list",
+        fixed_markets=("KRW-BTC",),
+        max_backfill_days_1m=10,
+        end_ts_ms=end_ts_ms,
+    )
+    plan = generate_candle_topup_plan(options)
+    targets = [item for item in plan["targets"] if item["market"] == "KRW-BTC"]
+
+    assert len(targets) >= 2
+    first_one_m_index = next(idx for idx, item in enumerate(targets) if item["tf"] == "1m")
+    first_sixty_index = next(idx for idx, item in enumerate(targets) if item["tf"] == "60m")
+    assert first_sixty_index < first_one_m_index
+    assert int(targets[first_sixty_index]["max_calls_budget_hint"]) <= int(targets[first_one_m_index]["max_calls_budget_hint"])
