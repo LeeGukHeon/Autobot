@@ -14,7 +14,7 @@ param(
     [int]$MaxBackfillDays1m = 3,
     [string[]]$Markets = @(),
     [int]$Workers = 1,
-    [int]$MaxRequests = 240,
+    [int]$MaxRequests = 0,
     [string]$RateLimitStrict = "true",
     [switch]$DryRun
 )
@@ -110,9 +110,11 @@ $collectArgs = @(
     "--validate-report", $validateReportPath,
     "--workers", ([string]([Math]::Max([int]$Workers, 1))),
     "--dry-run", "false",
-    "--max-requests", ([string]([Math]::Max([int]$MaxRequests, 1))),
     "--rate-limit-strict", $RateLimitStrict
 )
+if ([int]$MaxRequests -gt 0) {
+    $collectArgs += @("--max-requests", ([string][int]$MaxRequests))
+}
 
 $stepResults = @()
 Push-Location $resolvedProjectRoot
