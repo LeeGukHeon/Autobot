@@ -131,24 +131,24 @@
     paper_champion: "페이퍼 챔피언",
     paper_challenger: "페이퍼 챌린저",
     paper_paired: "페어드 페이퍼",
-    ws_public: "WS 수집기",
+    ws_public: "공용 WS 수집",
     live_main: "메인 라이브",
     live_candidate: "후보 카나리아",
-    data_platform_refresh_service: "운영 데이터 갱신 서비스",
     spawn_service: "야간 학습 체인 서비스",
     promote_service: "후보 승급 서비스",
     rank_shadow_service: "랭크 그림자 서비스",
-    candles_api_refresh_service: "캔들 API 갱신 서비스",
-    raw_ticks_backfill_service: "체결 데이터 보강 서비스",
-    private_ws_archive_service: "개인 WS 보관 서비스",
-    data_platform_refresh_timer: "운영 데이터 갱신 타이머",
+    candles_api_refresh_service: "캔들 원천 수집 서비스",
+    raw_ticks_daily_service: "체결 REST 일간 수집 서비스",
+    raw_ticks_backfill_service: "체결 REST 보강 서비스",
+    raw_trade_v1_service: "통합 체결 원천 빌드 서비스",
+    private_ws_archive_service: "개인 WS 수집",
     spawn_timer: "야간 학습 체인 타이머",
     promote_timer: "후보 승급 타이머",
     rank_shadow_timer: "랭크 그림자 타이머",
-    candles_api_refresh_timer: "캔들 API 갱신 타이머",
-    raw_ticks_backfill_timer: "체결 데이터 보강 타이머",
-    train_snapshot_close_service: "학습 스냅샷 확정 서비스",
-    train_snapshot_close_timer: "학습 스냅샷 확정 타이머"
+    candles_api_refresh_timer: "캔들 원천 수집 타이머",
+    raw_ticks_daily_timer: "체결 REST 일간 수집 타이머",
+    raw_ticks_backfill_timer: "체결 REST 보강 타이머",
+    raw_trade_v1_timer: "통합 체결 원천 빌드 타이머"
   };
 
   const OPS_ACTION_TEXT = {
@@ -200,8 +200,8 @@
     },
     ws: {
       eyebrow: "데이터 흐름",
-      title: "WS 수집 현황",
-      text: "수집 연결과 적재 신선도를 살피는 데이터 흐름 화면입니다."
+      title: "원천 데이터 수집",
+      text: "ticker·trade·orderbook, 개인 WS, 캔들, 체결 보강과 통합 체결 원천을 함께 보는 화면입니다."
     },
     ops: {
       eyebrow: "운영 제어",
@@ -902,10 +902,14 @@
 
     const services = snapshot.services || {};
     const hiddenOverviewServiceKeys = new Set([
+      "candles_api_refresh_service",
+      "candles_api_refresh_timer",
       "raw_ticks_daily_service",
       "raw_ticks_daily_timer",
-      "train_snapshot_close_service",
-      "train_snapshot_close_timer",
+      "raw_ticks_backfill_service",
+      "raw_ticks_backfill_timer",
+      "raw_trade_v1_service",
+      "raw_trade_v1_timer",
     ]);
     document.getElementById("services-grid").innerHTML = terminalTable(
       ["서비스", "상태", "최근 시작", "다음 실행"],
@@ -1925,23 +1929,23 @@
     const ws = snapshot.ws_public || {};
     const dataPlatform = snapshot.data_platform || {};
     const foundation = snapshot.foundation_ingestion || {};
-    const refresh = dataPlatform.refresh || {};
     const datasets = dataPlatform.datasets || {};
     const services = snapshot.services || {};
-    const dataRefreshService = services.data_platform_refresh_service || {};
-    const dataRefreshTimer = services.data_platform_refresh_timer || {};
     const candlesRefreshService = services.candles_api_refresh_service || {};
     const candlesRefreshTimer = services.candles_api_refresh_timer || {};
     const rawTicksService = services.raw_ticks_daily_service || {};
     const rawTicksTimer = services.raw_ticks_daily_timer || {};
     const rawTicksBackfillService = services.raw_ticks_backfill_service || {};
     const rawTicksBackfillTimer = services.raw_ticks_backfill_timer || {};
+    const rawTradeService = services.raw_trade_v1_service || {};
+    const rawTradeTimer = services.raw_trade_v1_timer || {};
     const health = ws.health_snapshot || {};
     const latestRun = ws.runs_summary_latest || {};
     const rawWs = foundation.raw_ws_public || {};
     const rawPrivate = foundation.raw_ws_private || {};
     const rawTicks = foundation.raw_ticks_daily || {};
     const rawTicksBackfill = foundation.raw_ticks_backfill || {};
+    const rawTrade = foundation.raw_trade_v1 || {};
     const candlesApi = foundation.candles_api_v1 || {};
     const sequenceSupport = ((datasets.sequence_v1 || {}).support_level_counts) || {};
     const sequenceCurrent = (((datasets.sequence_v1 || {}).current_window_support || {}).support_level_counts) || {};
@@ -1949,14 +1953,18 @@
     const sequenceCurrentDates = (((datasets.sequence_v1 || {}).current_window_support || {}).latest_dates) || [];
     const lastRxTs = Math.max(
       toNumber(health.updated_at_ms) || 0,
+      toNumber((health.last_rx_ts_ms || {}).ticker) || 0,
       toNumber((health.last_rx_ts_ms || {}).trade) || 0,
       toNumber((health.last_rx_ts_ms || {}).orderbook) || 0
     );
-    document.getElementById("ws-headline").textContent = health.connected ? "WS 수집기는 정상 연결 상태입니다." : "WS 수집기가 끊겨 있습니다.";
-    document.getElementById("ws-subhead").textContent = health.connected ? "라이브와 학습이 같은 데이터 플레인을 공유합니다." : "데이터 신선도를 먼저 확인해야 합니다.";
+    document.getElementById("ws-headline").textContent = health.connected ? "공용 WS 수집기(ticker·trade·orderbook)는 정상 연결 상태입니다." : "공용 WS 수집기가 끊겨 있습니다.";
+    document.getElementById("ws-subhead").textContent = health.connected ? "원천 데이터층은 공용 WS, 개인 WS, 캔들, 체결 보강, 통합 체결 원천으로 구성됩니다." : "원천 데이터층 신선도를 먼저 확인해야 합니다.";
     document.getElementById("ws-kpis").innerHTML = [
       metric("연결", boolLabel(health.connected)),
       metric("구독 종목", maybe(health.subscribed_markets_count, "-")),
+      metric("티커 행", fmtNumber((health.written_rows || {}).ticker, 0)),
+      metric("체결 행", fmtNumber((health.written_rows || {}).trade, 0)),
+      metric("호가 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
       metric("최근 수신", fmtAge(lastRxTs)),
       metric("현재 실행", shortRun(health.run_id || latestRun.run_id))
     ].join("");
@@ -1964,9 +1972,10 @@
       [
         compactRow({
           title: "수집기 상태",
-          summary: health.connected ? "WS 수집기가 정상 연결 상태입니다." : "WS 수집기가 끊겨 있습니다.",
+          summary: health.connected ? "공용 WS 수집기(ticker·trade·orderbook)가 정상 연결 상태입니다." : "공용 WS 수집기가 끊겨 있습니다.",
           items: [
             compactStat("연결", boolLabel(health.connected)),
+            compactStat("채널", (rawWs.channels || ["ticker", "trade", "orderbook"]).join(" · ")),
             compactStat("재연결 횟수", maybe(health.reconnect_count, "0")),
             compactStat("최근 수신", fmtDateTime(lastRxTs)),
             compactStat("치명 사유", maybe(health.fatal_reason)),
@@ -1977,45 +1986,33 @@
           summary: `최근 실행 ${fmtNumber(latestRun.parts, 0)}개 조각 · ${fmtNumber(latestRun.rows_total, 0)}행`,
           items: [
             compactStat("총 적재 행", fmtNumber((health.written_rows || {}).total, 0)),
+            compactStat("티커 행", fmtNumber((health.written_rows || {}).ticker, 0)),
             compactStat("체결 행", fmtNumber((health.written_rows || {}).trade, 0)),
             compactStat("호가 행", fmtNumber((health.written_rows || {}).orderbook, 0)),
             compactStat("총 누락 행", fmtNumber((health.dropped_rows || {}).total, 0)),
           ],
         }),
         compactRow({
-          title: "데이터 갱신 주기",
-          summary: refresh.standalone_legacy
-            ? (refresh.exists
-              ? `최근 갱신 산출물은 ${fmtDateTime(refresh.generated_at_utc)} 기준이며, standalone 서비스는 레거시 보조 경로입니다. 실제 학습 필수 갱신은 야간 스냅샷 확정 체인이 담당합니다.`
-              : "standalone 데이터 플랫폼 갱신 산출물은 없지만, 실제 학습 필수 갱신은 야간 스냅샷 확정 체인이 담당합니다.")
-            : (refresh.exists
-              ? `최근 갱신이 ${fmtDateTime(refresh.generated_at_utc)}에 ${maybe(refresh.step_count, "0")}단계로 완료됐습니다.`
-              : "데이터 플랫폼 갱신 산출물이 아직 없습니다."),
-          items: [
-            compactStat(refresh.standalone_legacy ? "레거시 서비스" : "서비스", translate(dataRefreshService.active_state)),
-            compactStat(refresh.standalone_legacy ? "레거시 타이머" : "타이머", translate(dataRefreshTimer.active_state)),
-            compactStat("최근 갱신", fmtDateTime(refresh.generated_at_utc)),
-            compactStat("단계 수", maybe(refresh.step_count)),
-            compactStat("산출물", shortPath(refresh.artifact_path)),
-          ],
-        }),
-        compactRow({
           title: "원천 데이터 수집",
-          summary: "공용 원천 WS, 체결 원천, 캔들 API 수집 상태를 함께 보여줍니다.",
+          summary: "공용 WS, 개인 WS, 캔들, REST 체결 수집과 통합 체결 원천 상태를 함께 보여줍니다.",
           items: [
             compactStat("공용 원천 WS", boolLabel(Boolean(rawWs.connected))),
-            compactStat("공용 WS 호가 깊이", maybe(rawWs.orderbook_topk)),
+            compactStat("공용 WS 채널", (rawWs.channels || ["ticker", "trade", "orderbook"]).join(" · ")),
             compactStat("개인 WS", maybe(rawPrivate.status)),
             compactStat("개인 WS 최근", fmtDateTime(rawPrivate.latest_event_ts_ms)),
-            compactStat("체결 타이머", translate(rawTicksTimer.active_state)),
-            compactStat("체결 최근", fmtDateTime(rawTicks.latest_generated_at_utc)),
-            compactStat("보강 타이머", translate(rawTicksBackfillTimer.active_state)),
-            compactStat("보강 최근", fmtDateTime(rawTicksBackfill.latest_generated_at_utc)),
-            compactStat("캔들 타이머", translate(candlesRefreshTimer.active_state)),
+            compactStat("캔들 수집 타이머", translate(candlesRefreshTimer.active_state)),
             compactStat("캔들 최근", fmtDateTime(candlesApi.summary_generated_at_utc || candlesApi.build_generated_at)),
-            compactStat("캔들 상태", maybe(candlesApi.status)),
-            compactStat("체결 파일 수", fmtNumber(rawTicks.file_count, 0)),
+            compactStat("일간 체결 타이머", translate(rawTicksTimer.active_state)),
+            compactStat("일간 체결 최근", fmtDateTime(rawTicks.latest_generated_at_utc)),
+            compactStat("체결 보강 타이머", translate(rawTicksBackfillTimer.active_state)),
+            compactStat("체결 보강 최근", fmtDateTime(rawTicksBackfill.latest_generated_at_utc)),
+            compactStat("통합 체결 타이머", translate(rawTradeTimer.active_state)),
+            compactStat("통합 체결 최근", fmtDateTime(rawTrade.latest_generated_at_utc)),
+            compactStat("통합 체결 행", fmtNumber(rawTrade.merged_rows_total, 0)),
+            compactStat("통합 페어 수", fmtNumber(rawTrade.built_pairs, 0)),
             compactStat("개인 WS 파일 수", fmtNumber(rawPrivate.file_count, 0)),
+            compactStat("REST 체결 파일 수", fmtNumber(rawTicks.file_count, 0)),
+            compactStat("통합 체결 파일 수", fmtNumber(rawTrade.file_count, 0)),
           ],
         }),
         compactRow({

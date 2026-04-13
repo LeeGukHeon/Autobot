@@ -2150,7 +2150,7 @@ def test_build_dashboard_snapshot_surfaces_spawn_owned_nightly_chain(tmp_path: P
     assert close_report["snapshot_id"] == "snapshot-001"
 
 
-def test_dashboard_asset_mentions_data_platform_refresh_surface() -> None:
+def test_dashboard_asset_mentions_source_plane_surface() -> None:
     js = str(_load_dashboard_asset("dashboard.js"))
-    assert "data_platform_refresh_service" in js
-    assert "레거시 standalone" in js
+    assert "raw_trade_v1_service" in js
+    assert "ticker·trade·orderbook" in js

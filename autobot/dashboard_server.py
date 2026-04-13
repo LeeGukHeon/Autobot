@@ -727,9 +727,9 @@ def _summarize_training_activity_legacy_unused(
         {
             "match": ("run_raw_ticks_daily.ps1",),
             "stage_key": "raw_ticks_daily",
-            "stage_label_ko": "체결 데이터 수집",
+            "stage_label_ko": "REST 체결 수집",
             "progress_pct": 18,
-            "headline_ko": "오늘 배치용 체결 데이터를 수집하고 있습니다.",
+            "headline_ko": "REST 체결 원천 데이터를 수집하고 있습니다.",
             "detail_builder": lambda command: (
                 f"배치 날짜 {_command_flag_value(command, '-BatchDate') or '?'} 기준으로 체결 데이터를 채우는 단계입니다."
             ),
@@ -737,10 +737,18 @@ def _summarize_training_activity_legacy_unused(
         {
             "match": ("run_candles_api_refresh.ps1",),
             "stage_key": "candles_api_refresh",
-            "stage_label_ko": "캔들 보강",
+            "stage_label_ko": "캔들 원천 수집",
             "progress_pct": 8,
-            "headline_ko": "학습 체인 시작 전 캔들 보강을 진행 중입니다.",
-            "detail_builder": lambda command: "candles_api_v1을 먼저 보강해 야간 학습 체인 입력을 준비하는 단계입니다.",
+            "headline_ko": "캔들 원천 데이터를 보강하고 있습니다.",
+            "detail_builder": lambda command: "candles_api_v1 원천 데이터를 보강하는 단계입니다.",
+        },
+        {
+            "match": ("run_raw_trade_v1_refresh.ps1",),
+            "stage_key": "raw_trade_v1_refresh",
+            "stage_label_ko": "통합 체결 원천 빌드",
+            "progress_pct": 24,
+            "headline_ko": "WS와 REST 체결 원천을 통합 정규화하고 있습니다.",
+            "detail_builder": lambda command: "ws trade를 기준으로 raw_ticks 보강분을 합쳐 canonical raw_trade_v1을 다시 만드는 단계입니다.",
         },
         {
             "match": ("autobot.cli", "model", "promote"),
@@ -2990,6 +2998,12 @@ def _raw_private_ws_file_count(root: Path) -> int:
     return len(list(root.glob("my*/date=*/hour=*/*.jsonl.zst")))
 
 
+def _raw_trade_file_count(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return len(list(root.glob("date=*/market=*/*.jsonl.zst")))
+
+
 def _summarize_foundation_ingestion(
     project_root: Path,
     *,
@@ -3009,6 +3023,11 @@ def _summarize_foundation_ingestion(
     raw_ticks_summary = _load_json(raw_ticks_summary_path)
     raw_ticks_backfill_summary_path = project_root / "data" / "raw_ticks" / "upbit" / "_meta" / "ticks_backfill_latest.json"
     raw_ticks_backfill_summary = _load_json(raw_ticks_backfill_summary_path)
+    raw_trade_root = project_root / "data" / "raw_trade_v1"
+    raw_trade_summary_path = project_root / "data" / "raw_trade_v1" / "_meta" / "raw_trade_v1_latest.json"
+    raw_trade_summary = _load_json(raw_trade_summary_path)
+    raw_trade_build_report_path = project_root / "data" / "raw_trade_v1" / "_meta" / "build_report.json"
+    raw_trade_build_report = _load_json(raw_trade_build_report_path)
     train_snapshot_close_summary_path = project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json"
     train_snapshot_close_summary = _load_json(train_snapshot_close_summary_path)
     private_ws_root = project_root / "data" / "raw_ws" / "upbit" / "private"
@@ -3023,12 +3042,13 @@ def _summarize_foundation_ingestion(
     if raw_details and isinstance(raw_details[0], dict):
         ws_details = dict(raw_details[0])
     ws_last_rx_ms = max(
+        _coerce_int((ws_health.get("last_rx_ts_ms") or {}).get("ticker")) or 0,
         _coerce_int((ws_health.get("last_rx_ts_ms") or {}).get("trade")) or 0,
         _coerce_int((ws_health.get("last_rx_ts_ms") or {}).get("orderbook")) or 0,
         _coerce_int(ws_health.get("updated_at_ms")) or 0,
     )
     raw_ticks_timer = dict(services.get("raw_ticks_daily_timer") or {})
-    train_close_timer = dict(services.get("train_snapshot_close_timer") or {})
+    train_close_timer = _unit_snapshot("autobot-v5-train-snapshot-close.timer", timer=True)
     spawn_timer = dict(services.get("spawn_timer") or {})
     raw_ticks_timer_active = str(raw_ticks_timer.get("active_state") or "").strip().lower() in {"active", "activating"}
     train_close_timer_active = str(train_close_timer.get("active_state") or "").strip().lower() in {"active", "activating"}
@@ -3040,7 +3060,9 @@ def _summarize_foundation_ingestion(
             "connected": bool(ws_health.get("connected")),
             "last_event_ts_ms": ws_last_rx_ms or None,
             "subscribed_markets_count": _coerce_int(ws_health.get("subscribed_markets_count")),
+            "channels": list(ws_collect_report.get("channels") or ["ticker", "trade", "orderbook"]),
             "orderbook_topk": _coerce_int(ws_details.get("orderbook_topk")),
+            "written_ticker": _coerce_int(ws_health.get("written_rows", {}).get("ticker")),
             "written_trade": _coerce_int(ws_health.get("written_rows", {}).get("trade")),
             "written_orderbook": _coerce_int(ws_health.get("written_rows", {}).get("orderbook")),
             "collect_report_path": str(project_root / "data" / "raw_ws" / "upbit" / "_meta" / "ws_collect_report.json"),
@@ -3064,6 +3086,20 @@ def _summarize_foundation_ingestion(
             "summary_path": str(raw_ticks_backfill_summary_path),
             "service": dict(services.get("raw_ticks_backfill_service") or {}),
             "timer": dict(services.get("raw_ticks_backfill_timer") or {}),
+        },
+        "raw_trade_v1": {
+            "status": "ready" if bool(raw_trade_summary) and raw_trade_root.exists() else ("present" if raw_trade_root.exists() else "missing"),
+            "exists": raw_trade_root.exists(),
+            "latest_generated_at_utc": raw_trade_summary.get("generated_at_utc") or _path_mtime_iso(raw_trade_summary_path),
+            "summary_path": str(raw_trade_summary_path),
+            "build_report_path": str(raw_trade_build_report_path),
+            "window_start_utc": raw_trade_summary.get("start_date_utc"),
+            "window_end_utc": raw_trade_summary.get("end_date_utc"),
+            "file_count": _raw_trade_file_count(raw_trade_root),
+            "merged_rows_total": _coerce_int(raw_trade_build_report.get("merged_rows_total")),
+            "built_pairs": _coerce_int(raw_trade_build_report.get("built_pairs")),
+            "service": dict(services.get("raw_trade_v1_service") or {}),
+            "timer": dict(services.get("raw_trade_v1_timer") or {}),
         },
         "raw_ws_private": {
             "status": "ready" if bool(private_ws_report) else ("present" if private_ws_root.exists() else "missing"),
@@ -3775,10 +3811,10 @@ def _dashboard_ops_catalog(project_root: Path) -> dict[str, dict[str, Any]]:
         },
         "restart_ws_public": {
             "id": "restart_ws_public",
-            "label": "WS 수집기 재시작",
-            "description": "autobot-ws-public.service 재시작",
+            "label": "공용 WS 수집 재시작",
+            "description": "ticker·trade·orderbook 공용 WS 수집기 재시작",
             "category": "services",
-            "confirm": "공용 WS 수집기를 지금 재시작할까요?",
+            "confirm": "공용 WS 수집기(ticker·trade·orderbook)를 지금 재시작할까요?",
             "kind": "command",
             "command": ["sudo", "-n", "systemctl", "restart", "autobot-ws-public.service"],
         },
@@ -3946,23 +3982,21 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "ws_public": _unit_snapshot("autobot-ws-public.service"),
         "live_main": _unit_snapshot("autobot-live-alpha.service"),
         "live_candidate": _unit_snapshot_first(*_CANDIDATE_LIVE_UNITS),
-        "data_platform_refresh_service": _unit_snapshot("autobot-data-platform-refresh.service"),
         "spawn_service": _unit_snapshot("autobot-v5-challenger-spawn.service"),
         "promote_service": _unit_snapshot("autobot-v5-challenger-promote.service"),
         "rank_shadow_service": _unit_snapshot("autobot-v4-rank-shadow.service"),
         "candles_api_refresh_service": _unit_snapshot("autobot-candles-api-refresh.service"),
         "raw_ticks_daily_service": _unit_snapshot("autobot-raw-ticks-daily.service"),
         "raw_ticks_backfill_service": _unit_snapshot("autobot-raw-ticks-backfill.service"),
+        "raw_trade_v1_service": _unit_snapshot("autobot-raw-trade-v1.service"),
         "private_ws_archive_service": _unit_snapshot("autobot-private-ws-archive.service"),
-        "data_platform_refresh_timer": _unit_snapshot("autobot-data-platform-refresh.timer", timer=True),
         "spawn_timer": _unit_snapshot_first(*_SPAWN_TIMER_UNITS, timer=True),
         "promote_timer": _unit_snapshot_first(*_PROMOTE_TIMER_UNITS, timer=True),
         "rank_shadow_timer": _unit_snapshot("autobot-v4-rank-shadow.timer", timer=True),
         "candles_api_refresh_timer": _unit_snapshot("autobot-candles-api-refresh.timer", timer=True),
         "raw_ticks_daily_timer": _unit_snapshot("autobot-raw-ticks-daily.timer", timer=True),
         "raw_ticks_backfill_timer": _unit_snapshot("autobot-raw-ticks-backfill.timer", timer=True),
-        "train_snapshot_close_service": _unit_snapshot("autobot-v5-train-snapshot-close.service"),
-        "train_snapshot_close_timer": _unit_snapshot("autobot-v5-train-snapshot-close.timer", timer=True),
+        "raw_trade_v1_timer": _unit_snapshot("autobot-raw-trade-v1.timer", timer=True),
     }
     foundation_ingestion = _summarize_foundation_ingestion(
         project_root,
