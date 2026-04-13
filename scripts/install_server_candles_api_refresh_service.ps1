@@ -12,7 +12,7 @@ param(
     [string]$Tf = "1m,5m,15m,60m,240m",
     [int]$MaxBackfillDays1m = 3,
     [int]$Workers = 1,
-    [int]$MaxRequests = 120,
+    [int]$MaxRequests = 240,
     [string]$OnBootSec = "4min",
     [string]$OnUnitActiveSec = "20min",
     [string]$LockFile = "/tmp/autobot-candles-api-refresh.lock",

@@ -14,7 +14,7 @@ param(
     [int]$MaxBackfillDays1m = 3,
     [string[]]$Markets = @(),
     [int]$Workers = 1,
-    [int]$MaxRequests = 120,
+    [int]$MaxRequests = 240,
     [string]$RateLimitStrict = "true",
     [switch]$DryRun
 )

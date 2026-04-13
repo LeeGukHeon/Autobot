@@ -9,7 +9,7 @@ param(
     [string]$MarketMode = "top_n_by_recent_value_est",
     [int]$TopN = 50,
     [int]$SecondMaxBackfillDays = 7,
-    [int]$CandlesMaxRequests = 120,
+    [int]$CandlesMaxRequests = 240,
     [int]$WsCandleDurationSec = 1800,
     [int]$Lob30DurationSec = 180,
     [int]$TensorMaxMarkets = 20,

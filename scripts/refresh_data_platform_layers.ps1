@@ -12,7 +12,7 @@ param(
     [string]$SecondMarketSourceDataset = "candles_api_v1",
     [string]$SecondPlanPath = "data/collect/_meta/candle_second_plan.json",
     [int]$SecondMaxBackfillDays = 7,
-    [int]$CandlesMaxRequests = 120,
+    [int]$CandlesMaxRequests = 240,
     [string]$WsCandleBaseDataset = "ws_candle_v1",
     [string]$WsCandleMarketSourceDataset = "candles_api_v1",
     [string]$WsCandlePlanPath = "data/collect/_meta/ws_candle_plan.json",
