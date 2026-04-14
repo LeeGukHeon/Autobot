@@ -157,6 +157,7 @@ class MarketStateBuildOptions:
     max_join_spread_bps: float = DEFAULT_MAX_JOIN_SPREAD_BPS
     operating_timezone: str = "Asia/Seoul"
     closed_operating_dates_only: bool = True
+    skip_existing_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,7 @@ class MarketStateBuildSummary:
     dates: tuple[str, ...]
     selected_markets: tuple[str, ...]
     built_pairs: int
+    reused_pairs: int
     skipped_pairs: int
     market_state_manifest_file: Path
     tradeable_manifest_file: Path
@@ -190,9 +192,39 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
     tradeable_manifest_rows: list[dict[str, Any]] = []
     net_edge_manifest_rows: list[dict[str, Any]] = []
     built_pairs = 0
+    reused_pairs = 0
     skipped_pairs = 0
+    existing_complete_pairs = (
+        _load_existing_complete_pairs(
+            market_state_root=options.market_state_root,
+            tradeable_label_root=options.tradeable_label_root,
+            net_edge_label_root=options.net_edge_label_root,
+        )
+        if bool(options.skip_existing_complete)
+        else set()
+    )
 
     for operating_date_kst in operating_dates:
+        pending_markets = tuple(
+            market
+            for market in selected_markets
+            if (str(operating_date_kst), str(market).upper()) not in existing_complete_pairs
+        )
+        for market in selected_markets:
+            if market in pending_markets:
+                continue
+            reused_pairs += 1
+            build_details.append(
+                {
+                    "operating_date_kst": operating_date_kst,
+                    "market": market,
+                    "status": "SKIPPED_ALREADY_COMPLETE",
+                    "reused_existing": True,
+                    "date_selected_markets": int(len(selected_markets)),
+                }
+            )
+        if not pending_markets:
+            continue
         operating_start_ts_ms, operating_end_ts_ms = _operating_day_window_utc(operating_date_kst)
         label_end_ts_ms = int(operating_end_ts_ms) + (max(ALL_HORIZON_MINUTES) * 60_000)
         source_date_values = _resolve_source_utc_dates(
@@ -202,17 +234,17 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
         date_ticker_frames = _load_date_ticker_frames(
             raw_ws_root=options.raw_ws_root,
             date_values=source_date_values,
-            selected_markets=selected_markets,
+            selected_markets=pending_markets,
         )
         date_orderbook_frames = _load_date_orderbook_frames(
             raw_ws_root=options.raw_ws_root,
             date_values=source_date_values,
-            selected_markets=selected_markets,
+            selected_markets=pending_markets,
         )
         date_trade_frames = _load_date_trade_frames(
             raw_trade_root=options.raw_trade_root,
             date_values=source_date_values,
-            selected_markets=selected_markets,
+            selected_markets=pending_markets,
         )
         candle_cache: dict[tuple[str, str, int, int], pl.DataFrame] = {}
         date_ticker_rows_total = sum(int(frame.height) for frame in date_ticker_frames.values())
@@ -222,7 +254,7 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
         per_market_tradeable_labels: dict[str, pl.DataFrame] = {}
         per_market_net_edge_labels: dict[str, pl.DataFrame] = {}
 
-        for market in selected_markets:
+        for market in pending_markets:
             state_frame, tradeable_labels, net_edge_labels, detail = _build_market_date_payload(
                 options=options,
                 operating_date_kst=operating_date_kst,
@@ -237,6 +269,7 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
             detail["date_orderbook_rows_total"] = int(date_orderbook_rows_total)
             detail["date_trade_rows_total"] = int(date_trade_rows_total)
             detail["date_selected_markets"] = int(len(selected_markets))
+            detail["date_build_markets"] = int(len(pending_markets))
             detail["source_date_utc_values"] = list(source_date_values)
             build_details.append(detail)
             if state_frame.height <= 0:
@@ -327,7 +360,9 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
         "no_trade_threshold_bps": float(options.no_trade_threshold_bps),
         "fee_bps": float(options.fee_bps),
         "max_join_spread_bps": float(options.max_join_spread_bps),
+        "skip_existing_complete": bool(options.skip_existing_complete),
         "built_pairs": int(built_pairs),
+        "reused_pairs": int(reused_pairs),
         "skipped_pairs": int(skipped_pairs),
         "market_state_root": str(options.market_state_root),
         "tradeable_label_root": str(options.tradeable_label_root),
@@ -344,6 +379,7 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
         dates=operating_dates,
         selected_markets=selected_markets,
         built_pairs=built_pairs,
+        reused_pairs=reused_pairs,
         skipped_pairs=skipped_pairs,
         market_state_manifest_file=_manifest_path(options.market_state_root),
         tradeable_manifest_file=_manifest_path(options.tradeable_label_root),
@@ -1478,6 +1514,41 @@ def _load_manifest(path: Path) -> pl.DataFrame:
         return pl.DataFrame([], schema=DERIVED_MANIFEST_SCHEMA, orient="row")
     frame = pl.read_parquet(path)
     return _align_schema(frame, schema=DERIVED_MANIFEST_SCHEMA)
+
+
+def _load_existing_complete_pairs(
+    *,
+    market_state_root: Path,
+    tradeable_label_root: Path,
+    net_edge_label_root: Path,
+) -> set[tuple[str, str]]:
+    market_state_manifest = _load_manifest(_manifest_path(market_state_root)).select(["date", "market", "part_file"])
+    tradeable_manifest = _load_manifest(_manifest_path(tradeable_label_root)).select(["date", "market", "part_file"])
+    net_edge_manifest = _load_manifest(_manifest_path(net_edge_label_root)).select(["date", "market", "part_file"])
+    if market_state_manifest.height <= 0 or tradeable_manifest.height <= 0 or net_edge_manifest.height <= 0:
+        return set()
+    complete = (
+        market_state_manifest.rename({"part_file": "market_state_part"})
+        .join(
+            tradeable_manifest.rename({"part_file": "tradeable_part"}),
+            on=["date", "market"],
+            how="inner",
+        )
+        .join(
+            net_edge_manifest.rename({"part_file": "net_edge_part"}),
+            on=["date", "market"],
+            how="inner",
+        )
+        .unique(subset=["date", "market"], keep="last")
+    )
+    pairs: set[tuple[str, str]] = set()
+    for row in complete.iter_rows(named=True):
+        market_state_part = Path(str(row.get("market_state_part") or ""))
+        tradeable_part = Path(str(row.get("tradeable_part") or ""))
+        net_edge_part = Path(str(row.get("net_edge_part") or ""))
+        if market_state_part.exists() and tradeable_part.exists() and net_edge_part.exists():
+            pairs.add((str(row["date"]), str(row["market"]).upper()))
+    return pairs
 
 
 def _save_manifest(path: Path, frame: pl.DataFrame) -> None:

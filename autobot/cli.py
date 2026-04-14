@@ -372,6 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_market_state_parser.add_argument("--market-state-root", default="data/derived/market_state_v1")
     build_market_state_parser.add_argument("--tradeable-label-root", default="data/derived/tradeable_label_v1")
     build_market_state_parser.add_argument("--net-edge-label-root", default="data/derived/net_edge_label_v1")
+    build_market_state_parser.add_argument("--skip-existing-complete", default="true", help="true|false")
 
     build_training_slice_parser = data_subparsers.add_parser(
         "build-market-state-training-slice-v1",
@@ -1896,12 +1897,13 @@ def _handle_data_build_market_state_v1(args: argparse.Namespace) -> int:
             market_state_root=Path(args.market_state_root),
             tradeable_label_root=Path(args.tradeable_label_root),
             net_edge_label_root=Path(args.net_edge_label_root),
+            skip_existing_complete=_parse_bool_arg(args.skip_existing_complete, default=True),
         )
     )
     print(
         "[data][build-market-state-v1] "
         f"dates={len(summary.dates)} markets={len(summary.selected_markets)} "
-        f"built_pairs={summary.built_pairs} skipped_pairs={summary.skipped_pairs}"
+        f"built_pairs={summary.built_pairs} reused_pairs={summary.reused_pairs} skipped_pairs={summary.skipped_pairs}"
     )
     print(f"[data][build-market-state-v1] report={summary.build_report_file}")
     return 0
@@ -3249,118 +3251,13 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             return 0
 
         if args.model_command == "train-variant-matrix":
-            trainer = str(getattr(args, "trainer", "")).strip().lower()
-            top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
-            if trainer == "v5_sequence":
-                ready_sequence_root = _resolve_data_platform_ready_dataset_root(
-                    project_root=config_dir.resolve().parent,
-                    dataset_name="sequence_v1",
-                )
-                sequence_dataset_root = (
-                    Path(str(args.sequence_dataset_root))
-                    if getattr(args, "sequence_dataset_root", None)
-                    else (
-                        ready_sequence_root
-                        if ready_sequence_root is not None
-                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
-                    )
-                )
-                payload = run_v5_sequence_variant_matrix(
-                    TrainV5SequenceOptions(
-                        dataset_root=sequence_dataset_root,
-                        registry_root=registry_root,
-                        logs_root=logs_root,
-                        model_family=str(getattr(args, "model_family", None) or "train_v5_sequence").strip() or "train_v5_sequence",
-                        quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
-                        top_n=top_n,
-                        start=str(args.start or defaults["start"]).strip(),
-                        end=str(args.end or defaults["end"]).strip(),
-                        seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                        operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
-                        run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
-                        batch_size=int(getattr(args, "sequence_batch_size", None) or 16),
-                        pretrain_epochs=int(getattr(args, "sequence_pretrain_epochs", None) or 1),
-                        finetune_epochs=int(getattr(args, "sequence_finetune_epochs", None) or 5),
-                    )
-                )
-                print(json.dumps(payload, ensure_ascii=False))
-                return 0
-            if trainer == "v5_lob":
-                ready_sequence_root = _resolve_data_platform_ready_dataset_root(
-                    project_root=config_dir.resolve().parent,
-                    dataset_name="sequence_v1",
-                )
-                lob_dataset_root = (
-                    Path(str(args.lob_dataset_root))
-                    if getattr(args, "lob_dataset_root", None)
-                    else (
-                        ready_sequence_root
-                        if ready_sequence_root is not None
-                        else (Path(str(defaults.get("parquet_root", "data/parquet"))) / "sequence_v1")
-                    )
-                )
-                payload = run_v5_lob_variant_matrix(
-                    TrainV5LobOptions(
-                        dataset_root=lob_dataset_root,
-                        registry_root=registry_root,
-                        logs_root=logs_root,
-                        model_family=str(getattr(args, "model_family", None) or "train_v5_lob").strip() or "train_v5_lob",
-                        quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
-                        top_n=top_n,
-                        start=str(args.start or defaults["start"]).strip(),
-                        end=str(args.end or defaults["end"]).strip(),
-                        seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                        operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
-                        run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
-                        batch_size=int(getattr(args, "lob_batch_size", None) or 16),
-                        epochs=int(getattr(args, "lob_epochs", None) or 5),
-                    )
-                )
-                print(json.dumps(payload, ensure_ascii=False))
-                return 0
-            if trainer == "v5_fusion":
-                panel_input = getattr(args, "fusion_panel_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_panel_ensemble")
-                sequence_input = getattr(args, "fusion_sequence_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_sequence")
-                lob_input = getattr(args, "fusion_lob_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_lob")
-                tradability_input = getattr(args, "fusion_tradability_input", None) or _resolve_latest_expert_prediction_table(registry_root, "train_v5_tradability")
-                if not panel_input or not sequence_input or not lob_input or not tradability_input:
-                    raise ValueError(
-                        "v5_fusion variant matrix requires panel/sequence/lob/tradability expert prediction tables."
-                    )
-                fusion_options = TrainV5FusionOptions(
-                    panel_input_path=Path(str(panel_input)),
-                    sequence_input_path=Path(str(sequence_input)),
-                    lob_input_path=Path(str(lob_input)),
-                    tradability_input_path=Path(str(tradability_input)),
-                    panel_runtime_input_path=(Path(str(getattr(args, "fusion_panel_runtime_input"))) if getattr(args, "fusion_panel_runtime_input", None) else None),
-                    sequence_runtime_input_path=(Path(str(getattr(args, "fusion_sequence_runtime_input"))) if getattr(args, "fusion_sequence_runtime_input", None) else None),
-                    lob_runtime_input_path=(Path(str(getattr(args, "fusion_lob_runtime_input"))) if getattr(args, "fusion_lob_runtime_input", None) else None),
-                    tradability_runtime_input_path=(Path(str(getattr(args, "fusion_tradability_runtime_input"))) if getattr(args, "fusion_tradability_runtime_input", None) else None),
-                    registry_root=registry_root,
-                    logs_root=logs_root,
-                    model_family=str(getattr(args, "model_family", None) or "train_v5_fusion").strip() or "train_v5_fusion",
-                    quote=str(args.quote or defaults["quote"]).strip().upper() or "KRW",
-                    start=str(args.start or defaults["start"]).strip(),
-                    end=str(args.end or defaults["end"]).strip(),
-                    runtime_start=(str(getattr(args, "fusion_runtime_start", "")).strip() or None),
-                    runtime_end=(str(getattr(args, "fusion_runtime_end", "")).strip() or None),
-                    seed=int(args.seed if args.seed is not None else defaults["seed"]),
-                    operating_tf=str(args.tf or defaults["tf"]).strip().lower(),
-                    input_variant_name=str(getattr(args, "fusion_input_variant_name", None) or "full_fusion").strip() or "full_fusion",
-                    run_scope=str(getattr(args, "run_scope", None) or "scheduled_daily").strip() or "scheduled_daily",
-                )
-                payload = (
-                    run_v5_fusion_input_ablation_matrix(fusion_options)
-                    if bool(getattr(args, "fusion_enable_input_ablation_matrix", False))
-                    else run_v5_fusion_variant_matrix(fusion_options)
-                )
-                print(json.dumps(payload, ensure_ascii=False))
-                return 0
-            raise ValueError(f"unsupported variant matrix trainer: {trainer}")
+            raise ValueError("legacy v5 variant-matrix training is removed; use model train-edge2stage")
 
         if args.model_command == "train":
             trainer = str(getattr(args, "trainer", "v1")).strip().lower() or "v1"
             top_n = int(args.top_n if args.top_n is not None else defaults["top_n"])
+            if trainer in {"v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability", "v5_fusion"}:
+                raise ValueError("legacy v5 training stack is removed; use model train-edge2stage")
             if trainer == "v5_fusion":
                 panel_input = getattr(args, "fusion_panel_input", None)
                 sequence_input = getattr(args, "fusion_sequence_input", None)
