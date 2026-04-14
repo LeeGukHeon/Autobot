@@ -77,6 +77,31 @@ class ModelPredictor:
 
     def predict_score_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
         estimator = self.model_bundle.get("estimator") if isinstance(self.model_bundle, dict) else None
+        if estimator is not None and hasattr(estimator, "predict_edge2stage_contract"):
+            payload = estimator.predict_edge2stage_contract(x)
+            if isinstance(payload, dict):
+                result = {key: np.asarray(value, dtype=np.float64) for key, value in payload.items() if key != "final_trade_flag"}
+                if "final_trade_flag" in payload:
+                    result["final_trade_flag"] = np.asarray(payload["final_trade_flag"])
+                size = len(next(iter(result.values()))) if result else 0
+                if "final_rank_score" not in result and "final_go_score" in result:
+                    result["final_rank_score"] = np.asarray(result["final_go_score"], dtype=np.float64)
+                if "score_mean" not in result and "final_go_score" in result:
+                    result["score_mean"] = np.asarray(result["final_go_score"], dtype=np.float64)
+                if "score_std" not in result:
+                    result["score_std"] = np.full(size, np.nan, dtype=np.float64)
+                if "score_lcb" not in result and "score_mean" in result:
+                    result["score_lcb"] = np.asarray(result["score_mean"], dtype=np.float64)
+                if "final_tradability" not in result and "final_tradeable_prob" in result:
+                    result["final_tradability"] = np.asarray(result["final_tradeable_prob"], dtype=np.float64)
+                if "final_expected_return" not in result and "final_expected_net_edge_bps" in result:
+                    result["final_expected_return"] = np.asarray(result["final_expected_net_edge_bps"], dtype=np.float64) / 10_000.0
+                if "final_expected_es" not in result:
+                    result["final_expected_es"] = np.zeros(size, dtype=np.float64)
+                if "final_alpha_lcb" not in result and "final_expected_return" in result:
+                    result["final_alpha_lcb"] = np.asarray(result["final_expected_return"], dtype=np.float64)
+                result["uncertainty_available"] = np.full(size, False, dtype=bool)
+                return result
         if estimator is not None and hasattr(estimator, "predict_panel_contract"):
             payload = estimator.predict_panel_contract(x)
             if isinstance(payload, dict):

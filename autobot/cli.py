@@ -71,6 +71,10 @@ from .data.collect import (
 )
 from .data.collect.fixed_collection_contract import resolve_fixed_collection_markets
 from .data.derived.market_state_v1 import MarketStateBuildOptions, build_market_state_v1_datasets
+from .data.derived.market_state_training_slice_v1 import (
+    MarketStateTrainingSliceBuildOptions,
+    build_market_state_training_slice_v1,
+)
 from .data.micro import (
     MicroAggregateOptions,
     aggregate_micro_v1,
@@ -150,6 +154,7 @@ from .models import (
     TrainRunOptions,
     TrainV2MicroOptions,
     TrainV3MtfMicroOptions,
+    TrainV6Edge2StageOptions,
     TrainV5SequenceOptions,
     TrainV5LobOptions,
     TrainV5FusionOptions,
@@ -174,6 +179,7 @@ from .models import (
     train_and_register_v2_micro,
     train_and_register_v3_mtf_micro,
     train_and_register_v4_crypto_cs,
+    train_and_register_v6_edge2stage,
     train_and_register_v5_fusion,
     train_and_register_v5_lob,
     train_and_register_v5_panel_ensemble,
@@ -366,6 +372,19 @@ def build_parser() -> argparse.ArgumentParser:
     build_market_state_parser.add_argument("--market-state-root", default="data/derived/market_state_v1")
     build_market_state_parser.add_argument("--tradeable-label-root", default="data/derived/tradeable_label_v1")
     build_market_state_parser.add_argument("--net-edge-label-root", default="data/derived/net_edge_label_v1")
+
+    build_training_slice_parser = data_subparsers.add_parser(
+        "build-market-state-training-slice-v1",
+        help="Build train-ready tabular slice from market_state_v1 and label datasets.",
+    )
+    build_training_slice_parser.add_argument("--start", required=True, help="Start operating date YYYY-MM-DD")
+    build_training_slice_parser.add_argument("--end", required=True, help="End operating date YYYY-MM-DD")
+    build_training_slice_parser.add_argument("--quote", default="KRW")
+    build_training_slice_parser.add_argument("--markets", help="Comma separated markets. Defaults to fixed source-plane markets.")
+    build_training_slice_parser.add_argument("--market-state-root", default="data/derived/market_state_v1")
+    build_training_slice_parser.add_argument("--tradeable-label-root", default="data/derived/tradeable_label_v1")
+    build_training_slice_parser.add_argument("--net-edge-label-root", default="data/derived/net_edge_label_v1")
+    build_training_slice_parser.add_argument("--out-root", default="data/derived/market_state_training_slice_v1")
 
     collect_parser = subparsers.add_parser("collect", help="Data collection operations.")
     collect_subparsers = collect_parser.add_subparsers(dest="collect_command", required=True)
@@ -871,7 +890,7 @@ def build_parser() -> argparse.ArgumentParser:
     model_subparsers = model_parser.add_subparsers(dest="model_command", required=True)
 
     model_train_parser = model_subparsers.add_parser("train", help="Train baseline+booster and register champion.")
-    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs", "v5_panel_ensemble", "v5_sequence", "v5_lob", "v5_tradability", "v5_fusion"))
+    model_train_parser.add_argument("--trainer", default="v1", choices=("v1", "v2_micro", "v3_mtf_micro", "v4_crypto_cs"))
     model_train_parser.add_argument("--tf", help="Timeframe, ex: 1m")
     model_train_parser.add_argument("--quote", help="Quote filter, ex: KRW")
     model_train_parser.add_argument("--top-n", type=int, help="Universe size")
@@ -989,6 +1008,18 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_parser.add_argument("--tradability-sequence-input", help="Path to sequence tradability input predictions parquet.")
     model_train_parser.add_argument("--tradability-lob-input", help="Path to lob tradability input predictions parquet.")
     model_train_parser.add_argument("--private-execution-root", help="Override private_execution_v1 dataset root for trainer=v5_tradability.")
+
+    model_train_edge2stage_parser = model_subparsers.add_parser(
+        "train-edge2stage",
+        help="Train the v6 two-stage edge stack from market_state_training_slice_v1.",
+    )
+    model_train_edge2stage_parser.add_argument("--dataset-root", default="data/derived/market_state_training_slice_v1")
+    model_train_edge2stage_parser.add_argument("--quote", default="KRW")
+    model_train_edge2stage_parser.add_argument("--start", required=True, help="Start operating date YYYY-MM-DD")
+    model_train_edge2stage_parser.add_argument("--end", required=True, help="End operating date YYYY-MM-DD")
+    model_train_edge2stage_parser.add_argument("--model-family", default="train_v6_edge2stage")
+    model_train_edge2stage_parser.add_argument("--seed", type=int, default=42)
+    model_train_edge2stage_parser.add_argument("--nthread", type=int, default=1)
 
     model_train_variant_parser = model_subparsers.add_parser(
         "train-variant-matrix",
@@ -1673,6 +1704,8 @@ def _handle_data_command(args: argparse.Namespace, config: dict[str, Any]) -> in
         return _handle_data_inventory(args, config)
     if args.data_command == "build-market-state-v1":
         return _handle_data_build_market_state_v1(args)
+    if args.data_command == "build-market-state-training-slice-v1":
+        return _handle_data_build_market_state_training_slice_v1(args)
     raise ValueError(f"Unsupported data command: {args.data_command}")
 
 
@@ -1871,6 +1904,28 @@ def _handle_data_build_market_state_v1(args: argparse.Namespace) -> int:
         f"built_pairs={summary.built_pairs} skipped_pairs={summary.skipped_pairs}"
     )
     print(f"[data][build-market-state-v1] report={summary.build_report_file}")
+    return 0
+
+
+def _handle_data_build_market_state_training_slice_v1(args: argparse.Namespace) -> int:
+    summary = build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start=str(args.start).strip(),
+            end=str(args.end).strip(),
+            quote=str(args.quote).strip().upper() or "KRW",
+            markets=_parse_csv_list(args.markets, normalize=str.upper),
+            market_state_root=Path(args.market_state_root),
+            tradeable_label_root=Path(args.tradeable_label_root),
+            net_edge_label_root=Path(args.net_edge_label_root),
+            out_root=Path(args.out_root),
+        )
+    )
+    print(
+        "[data][build-market-state-training-slice-v1] "
+        f"dates={len(summary.dates)} markets={len(summary.selected_markets)} "
+        f"built_dates={summary.built_dates} rows_total={summary.rows_total}"
+    )
+    print(f"[data][build-market-state-training-slice-v1] report={summary.build_report_file}")
     return 0
 
 
@@ -3165,6 +3220,32 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
             dataset_root = Path(str(getattr(args, "dataset_root", "")).strip()).resolve()
             payload = summarize_runtime_feature_dataset(dataset_root)
             print(json.dumps(payload, ensure_ascii=False))
+            return 0
+
+        if args.model_command == "train-edge2stage":
+            summary_v6 = train_and_register_v6_edge2stage(
+                TrainV6Edge2StageOptions(
+                    dataset_root=Path(str(getattr(args, "dataset_root", "data/derived/market_state_training_slice_v1"))).resolve(),
+                    registry_root=registry_root,
+                    logs_root=logs_root,
+                    model_family=str(getattr(args, "model_family", None) or "train_v6_edge2stage").strip() or "train_v6_edge2stage",
+                    quote=str(getattr(args, "quote", None) or defaults["quote"]).strip().upper() or "KRW",
+                    start=str(getattr(args, "start", "")).strip(),
+                    end=str(getattr(args, "end", "")).strip(),
+                    seed=int(getattr(args, "seed", None) if getattr(args, "seed", None) is not None else defaults["seed"]),
+                    nthread=int(getattr(args, "nthread", None) if getattr(args, "nthread", None) is not None else 1),
+                )
+            )
+            print(
+                "[model][train-edge2stage] "
+                f"run_id={summary_v6.run_id} status={summary_v6.status} "
+                f"test_pr_auc={summary_v6.leaderboard_row.get('test_pr_auc', 0.0):.6f} "
+                f"test_edge_mae_bps={summary_v6.leaderboard_row.get('test_edge_mae_bps', 0.0):.6f} "
+                f"test_go_top10_mean_true_edge_bps={summary_v6.leaderboard_row.get('test_go_top10_mean_true_edge_bps', 0.0):.6f}"
+            )
+            print(f"[model][train-edge2stage] run_dir={summary_v6.run_dir}")
+            print(f"[model][train-edge2stage] train_report={summary_v6.train_report_path}")
+            print(f"[model][train-edge2stage] predictor_contract={summary_v6.predictor_contract_path}")
             return 0
 
         if args.model_command == "train-variant-matrix":

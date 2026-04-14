@@ -27,6 +27,11 @@ from .train_v4_crypto_cs import (
     TrainV4CryptoCsResult,
     train_and_register_v4_crypto_cs,
 )
+from .train_v6_edge2stage import (
+    TrainV6Edge2StageOptions,
+    TrainV6Edge2StageResult,
+    train_and_register_v6_edge2stage,
+)
 from .train_v5_panel_ensemble import (
     TrainV5PanelEnsembleOptions,
     TrainV5PanelEnsembleResult,
@@ -90,6 +95,9 @@ __all__ = [
     "TrainV4CryptoCsOptions",
     "TrainV4CryptoCsResult",
     "train_and_register_v4_crypto_cs",
+    "TrainV6Edge2StageOptions",
+    "TrainV6Edge2StageResult",
+    "train_and_register_v6_edge2stage",
     "TrainV5PanelEnsembleOptions",
     "TrainV5PanelEnsembleResult",
     "materialize_v5_panel_ensemble_runtime_export",
