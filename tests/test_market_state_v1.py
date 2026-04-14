@@ -30,7 +30,7 @@ def test_build_market_state_v1_outputs_expected_features_and_labels(tmp_path: Pa
             market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
             tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
             net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
-            closed_utc_dates_only=False,
+            closed_operating_dates_only=False,
         )
     )
 
@@ -72,7 +72,7 @@ def test_build_market_state_v1_marks_untradeable_when_net_edge_is_too_small(tmp_
             market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
             tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
             net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
-            closed_utc_dates_only=False,
+            closed_operating_dates_only=False,
         )
     )
 
@@ -93,7 +93,7 @@ def test_build_market_state_v1_rerun_replaces_existing_pair_outputs(tmp_path: Pa
         market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
         tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
         net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
-        closed_utc_dates_only=False,
+        closed_operating_dates_only=False,
     )
     first = build_market_state_v1_datasets(options)
     manifest_first = pl.read_parquet(first.market_state_manifest_file)
@@ -144,7 +144,7 @@ def test_build_market_state_v1_scans_date_raw_once_per_helper(tmp_path: Path, mo
             market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
             tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
             net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
-            closed_utc_dates_only=False,
+            closed_operating_dates_only=False,
         )
     )
 
