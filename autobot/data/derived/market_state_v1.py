@@ -42,6 +42,8 @@ MARKET_STATE_SCHEMA: dict[str, pl.DataType] = {
     "acc_trade_price_24h": pl.Float64,
     "signed_change_rate": pl.Float64,
     "ticker_age_ms": pl.Int64,
+    "ticker_proxy_available": pl.Boolean,
+    "ticker_source_kind": pl.Utf8,
     "trade_events_5s": pl.Int64,
     "trade_events_15s": pl.Int64,
     "trade_events_60s": pl.Int64,
@@ -510,7 +512,48 @@ def _build_market_date_payload(
         ]
     ).with_columns(
         [
-            ((pl.col("ticker_ts_ms").is_not_null()) & (pl.col("ticker_age_ms") >= 0) & (pl.col("ticker_age_ms") <= int(bucket_interval_ms))).alias("ticker_available"),
+            ((pl.col("ticker_ts_ms").is_not_null()) & (pl.col("ticker_age_ms") >= 0) & (pl.col("ticker_age_ms") <= int(bucket_interval_ms))).alias("__ticker_raw_available"),
+        ]
+    ).with_columns(
+        [
+            (
+                (~pl.col("__ticker_raw_available"))
+                & pl.col("close_1m").is_not_null()
+                & pl.col("acc_trade_price_24h_proxy").is_not_null()
+            ).alias("ticker_proxy_available"),
+        ]
+    ).with_columns(
+        [
+            (
+                pl.when(pl.col("__ticker_raw_available"))
+                .then(pl.lit("ws_raw", dtype=pl.Utf8))
+                .when(pl.col("ticker_proxy_available"))
+                .then(pl.lit("candle_proxy", dtype=pl.Utf8))
+                .otherwise(pl.lit("missing", dtype=pl.Utf8))
+            ).alias("ticker_source_kind"),
+            (
+                pl.when(pl.col("__ticker_raw_available"))
+                .then(pl.col("last_price"))
+                .when(pl.col("ticker_proxy_available"))
+                .then(pl.col("close_1m"))
+                .otherwise(pl.col("last_price"))
+            ).cast(pl.Float64).alias("last_price"),
+            (
+                pl.when(pl.col("__ticker_raw_available"))
+                .then(pl.col("acc_trade_price_24h"))
+                .when(pl.col("ticker_proxy_available"))
+                .then(pl.col("acc_trade_price_24h_proxy"))
+                .otherwise(pl.col("acc_trade_price_24h"))
+            ).cast(pl.Float64).alias("acc_trade_price_24h"),
+        ]
+    ).with_columns(
+        [
+            (
+                pl.when(pl.col("close_24h_ago").is_not_null() & (pl.col("close_24h_ago") > 0) & pl.col("last_price").is_not_null())
+                .then((pl.col("last_price") / pl.col("close_24h_ago")) - 1.0)
+                .otherwise(None)
+            ).cast(pl.Float64).alias("signed_change_rate"),
+            (pl.col("__ticker_raw_available") | pl.col("ticker_proxy_available")).alias("ticker_available"),
             (pl.col("trade_events_60s") > 0).alias("trade_available"),
             ((pl.col("book_ts_ms").is_not_null()) & ((pl.col("bucket_end_ts_ms") - pl.col("book_ts_ms")) >= 0) & ((pl.col("bucket_end_ts_ms") - pl.col("book_ts_ms")) <= int(bucket_interval_ms))).alias("book_available"),
             (
@@ -526,12 +569,20 @@ def _build_market_date_payload(
         ]
     ).with_columns(
         (
-            pl.col("ticker_available").cast(pl.Float64)
+            pl.when(pl.col("ticker_source_kind") == "ws_raw")
+            .then(pl.lit(1.0, dtype=pl.Float64))
+            .when(pl.col("ticker_source_kind") == "candle_proxy")
+            .then(pl.lit(0.5, dtype=pl.Float64))
+            .otherwise(pl.lit(0.0, dtype=pl.Float64))
+        ).alias("__ticker_quality_score")
+    ).with_columns(
+        (
+            pl.col("__ticker_quality_score")
             + pl.col("trade_available").cast(pl.Float64)
             + pl.col("book_available").cast(pl.Float64)
             + pl.col("candle_context_available").cast(pl.Float64)
         ).truediv(4.0).alias("source_quality_score")
-    )
+    ).drop("__ticker_raw_available", "__ticker_quality_score", "close_1m", "close_24h_ago", "acc_trade_price_24h_proxy")
 
     bucket_frame = _align_schema(bucket_frame, schema=MARKET_STATE_SCHEMA)
     tradeable_labels, net_edge_labels = _build_labels(
@@ -694,6 +745,8 @@ def _attach_candle_context(
                 pl.lit(None, dtype=pl.Float64).alias("atr_pct_14"),
                 pl.lit(None, dtype=pl.Float64).alias("distance_from_15m_high_low"),
                 pl.lit(None, dtype=pl.Float64).alias("close_1m"),
+                pl.lit(None, dtype=pl.Float64).alias("acc_trade_price_24h_proxy"),
+                pl.lit(None, dtype=pl.Float64).alias("close_24h_ago"),
             ]
         )
     for frame, prefix in ((five_m_features, "5m"), (fifteen_m_features, "15m"), (sixty_m_features, "60m")):
@@ -716,19 +769,18 @@ def _attach_candle_context(
             right_on="ts_ms_24h_source",
             strategy="backward",
         ).drop("__lookup_24h_ts_ms")
-        current = current.with_columns(
-            (
-                pl.when(pl.col("close_24h_ago").is_not_null() & (pl.col("close_24h_ago") > 0) & pl.col("last_price").is_not_null())
-                .then((pl.col("last_price") / pl.col("close_24h_ago")) - 1.0)
-                .otherwise(None)
-            ).cast(pl.Float64).alias("signed_change_rate")
-        ).drop("close_24h_ago", "ts_ms_24h_source")
+        current = current.drop("ts_ms_24h_source")
     else:
-        current = current.with_columns(pl.lit(None, dtype=pl.Float64).alias("signed_change_rate"))
+        current = current.with_columns(
+            [
+                pl.lit(None, dtype=pl.Float64).alias("close_24h_ago"),
+                pl.lit(None, dtype=pl.Float64).alias("acc_trade_price_24h_proxy"),
+            ]
+        )
     return current.drop(
         [
             name
-            for name in ("ts_ms_1m", "ts_ms_5m", "ts_ms_15m", "ts_ms_60m", "close_1m")
+            for name in ("ts_ms_1m", "ts_ms_5m", "ts_ms_15m", "ts_ms_60m")
             if name in current.columns
         ]
     )
@@ -744,6 +796,7 @@ def _prepare_1m_context_frame(frame: pl.DataFrame) -> pl.DataFrame:
             pl.col("close").alias("close_1m"),
             pl.col("close").rolling_max(window_size=15, min_samples=1).alias("__high_15m"),
             pl.col("close").rolling_min(window_size=15, min_samples=1).alias("__low_15m"),
+            (pl.col("close") * pl.col("volume_base")).cast(pl.Float64).alias("__notional_1m"),
             pl.max_horizontal(
                 [
                     (pl.col("high") - pl.col("low")),
@@ -756,6 +809,7 @@ def _prepare_1m_context_frame(frame: pl.DataFrame) -> pl.DataFrame:
         [
             (pl.col("__log_ret") * pl.col("__log_ret")).rolling_sum(window_size=5, min_samples=1).alias("rv_1m_5m_window"),
             (pl.col("__log_ret") * pl.col("__log_ret")).rolling_sum(window_size=15, min_samples=1).alias("rv_1m_15m_window"),
+            pl.col("__notional_1m").rolling_sum(window_size=1440, min_samples=1).alias("acc_trade_price_24h_proxy"),
             (pl.col("__true_range").rolling_mean(window_size=14, min_samples=14) / pl.col("close")).alias("atr_pct_14"),
             (
                 pl.when((pl.col("__high_15m") - pl.col("__low_15m")).abs() > 1e-12)
@@ -764,7 +818,18 @@ def _prepare_1m_context_frame(frame: pl.DataFrame) -> pl.DataFrame:
             ).cast(pl.Float64).alias("distance_from_15m_high_low"),
         ]
     )
-    return result.select(["ts_ms", "ret_1m", "rv_1m_5m_window", "rv_1m_15m_window", "atr_pct_14", "distance_from_15m_high_low", "close_1m"])
+    return result.select(
+        [
+            "ts_ms",
+            "ret_1m",
+            "rv_1m_5m_window",
+            "rv_1m_15m_window",
+            "atr_pct_14",
+            "distance_from_15m_high_low",
+            "close_1m",
+            "acc_trade_price_24h_proxy",
+        ]
+    )
 
 
 def _prepare_tf_return_frame(frame: pl.DataFrame, *, prefix: str) -> pl.DataFrame:

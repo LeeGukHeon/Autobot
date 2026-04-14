@@ -151,6 +151,36 @@ def test_build_market_state_v1_scans_date_raw_once_per_helper(tmp_path: Path, mo
     assert call_counts == {"ticker": 1, "orderbook": 1, "trade": 1}
 
 
+def test_build_market_state_v1_uses_ticker_proxy_when_raw_ticker_is_missing(tmp_path: Path) -> None:
+    _write_source_plane_fixture(tmp_path, btc_future_bid=100.25, eth_future_bid=200.15)
+    _clear_dir(tmp_path / "data" / "raw_ws" / "upbit" / "public" / "ticker")
+
+    build_market_state_v1_datasets(
+        MarketStateBuildOptions(
+            start="2026-04-10",
+            end="2026-04-10",
+            markets=("KRW-BTC",),
+            raw_ws_root=tmp_path / "data" / "raw_ws" / "upbit" / "public",
+            raw_trade_root=tmp_path / "data" / "raw_trade_v1",
+            candles_root=tmp_path / "data" / "parquet" / "candles_api_v1",
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            closed_operating_dates_only=False,
+        )
+    )
+
+    market_state = _load_single_market_parquet(tmp_path / "data" / "derived" / "market_state_v1", "2026-04-10", "KRW-BTC")
+    tradeable = _load_single_market_parquet(tmp_path / "data" / "derived" / "tradeable_label_v1", "2026-04-10", "KRW-BTC")
+    first = market_state.row(0, named=True)
+    label_first = tradeable.row(0, named=True)
+    assert first["ticker_source_kind"] == "candle_proxy"
+    assert first["ticker_proxy_available"] is True
+    assert first["ticker_available"] is True
+    assert first["acc_trade_price_24h"] is not None
+    assert label_first["label_available_20m"] is True
+
+
 def _write_source_plane_fixture(root: Path, *, btc_future_bid: float, eth_future_bid: float) -> None:
     raw_ws_root = root / "data" / "raw_ws" / "upbit" / "public"
     raw_trade_root = root / "data" / "raw_trade_v1"
