@@ -70,6 +70,7 @@ def build_raw_trade_v1_dataset(options: RawTradeBuildOptions) -> RawTradeBuildSu
         if str(market).strip()
     )
     market_filter = set(selected_markets) if selected_markets else None
+    target_dates = tuple(str(item) for item in dates)
 
     manifest_rows: list[dict[str, Any]] = []
     details: list[dict[str, Any]] = []
@@ -171,6 +172,21 @@ def build_raw_trade_v1_dataset(options: RawTradeBuildOptions) -> RawTradeBuildSu
         rebuilt_pairs=rebuilt_pairs,
     )
     append_raw_trade_manifest_rows(manifest_file, manifest_rows)
+    _prune_legacy_trade_market_dirs(
+        out_root=options.out_root,
+        target_dates=target_dates,
+        selected_markets=selected_markets,
+    )
+    _prune_future_trade_dates(
+        out_root=options.out_root,
+        max_closed_date=target_dates[-1] if target_dates else None,
+    )
+    _prune_trade_manifest_rows(
+        manifest_file=manifest_file,
+        target_dates=target_dates,
+        selected_markets=selected_markets,
+        max_closed_date=target_dates[-1] if target_dates else None,
+    )
 
     report = {
         "policy": "raw_trade_v1_build_v1",
@@ -278,3 +294,85 @@ def _replace_existing_manifest_pairs(
         )
     )
     save_raw_trade_manifest(manifest_file, filtered)
+
+
+def _prune_legacy_trade_market_dirs(
+    *,
+    out_root: Path,
+    target_dates: tuple[str, ...],
+    selected_markets: tuple[str, ...],
+) -> None:
+    if not target_dates or not selected_markets:
+        return
+    selected = {str(market).strip().upper() for market in selected_markets if str(market).strip()}
+    for date_value in target_dates:
+        date_dir = Path(out_root) / f"date={date_value}"
+        if not date_dir.exists():
+            continue
+        for market_dir in date_dir.glob("market=*"):
+            if not market_dir.is_dir():
+                continue
+            market = market_dir.name.replace("market=", "", 1).strip().upper()
+            if market not in selected:
+                shutil.rmtree(market_dir, ignore_errors=True)
+
+
+def _prune_future_trade_dates(
+    *,
+    out_root: Path,
+    max_closed_date: str | None,
+) -> None:
+    if not max_closed_date:
+        return
+    for date_dir in Path(out_root).glob("date=*"):
+        if not date_dir.is_dir():
+            continue
+        date_value = date_dir.name.replace("date=", "", 1).strip()
+        if date_value > str(max_closed_date).strip():
+            shutil.rmtree(date_dir, ignore_errors=True)
+
+
+def _prune_trade_manifest_rows(
+    *,
+    manifest_file: Path,
+    target_dates: tuple[str, ...],
+    selected_markets: tuple[str, ...],
+    max_closed_date: str | None,
+) -> None:
+    if not manifest_file.exists():
+        return
+    frame = load_raw_trade_manifest(manifest_file)
+    if frame.height <= 0:
+        return
+    target_date_set = {str(item).strip() for item in target_dates if str(item).strip()}
+    selected_market_set = {str(item).strip().upper() for item in selected_markets if str(item).strip()}
+    filtered = frame.filter(
+        pl.struct(["date", "market"]).map_elements(
+            lambda item: _keep_trade_manifest_row(
+                date_value=str(item["date"]),
+                market_value=str(item["market"]),
+                target_date_set=target_date_set,
+                selected_market_set=selected_market_set,
+                max_closed_date=max_closed_date,
+            ),
+            return_dtype=pl.Boolean,
+        )
+    )
+    save_raw_trade_manifest(manifest_file, filtered)
+
+
+def _keep_trade_manifest_row(
+    *,
+    date_value: str,
+    market_value: str,
+    target_date_set: set[str],
+    selected_market_set: set[str],
+    max_closed_date: str | None,
+) -> bool:
+    normalized_date = str(date_value).strip()
+    normalized_market = str(market_value).strip().upper()
+    if max_closed_date and normalized_date > str(max_closed_date).strip():
+        return False
+    if normalized_date in target_date_set and selected_market_set and normalized_market not in selected_market_set:
+        return False
+    return True

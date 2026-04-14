@@ -84,14 +84,49 @@ function Resolve-DaysAgoSpec {
             [System.Globalization.CultureInfo]::InvariantCulture,
             [System.Globalization.DateTimeStyles]::None
         )
-        $todayLocal = (Get-Date).Date
-        $deltaDays = [int]($todayLocal - $batchDateValue.Date).TotalDays
+        $todayUtc = (Get-Date).ToUniversalTime().Date
+        $deltaDays = [int]($todayUtc - $batchDateValue.Date).TotalDays
         return ([string]([Math]::Max($deltaDays, 1)))
     }
     if (-not [string]::IsNullOrWhiteSpace($DaysAgoCsvText)) {
         return $DaysAgoCsvText.Trim()
     }
     return ([string]([Math]::Max([int]$SingleDay, 1)))
+}
+
+function Remove-LegacyRawTicksMarkets {
+    param(
+        [string]$RawRootPath,
+        [string[]]$TargetDates,
+        [string[]]$SelectedMarkets
+    )
+    $rawRootResolved = [System.IO.Path]::GetFullPath($RawRootPath)
+    $marketSet = @{}
+    foreach ($market in @($SelectedMarkets)) {
+        $text = [string]$market
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        $marketSet[$text.Trim().ToUpperInvariant()] = $true
+    }
+    $pruned = @()
+    foreach ($dateValue in @($TargetDates)) {
+        if ([string]::IsNullOrWhiteSpace([string]$dateValue)) {
+            continue
+        }
+        $dateDir = Join-Path $rawRootResolved ("date=" + ([string]$dateValue).Trim())
+        if (-not (Test-Path $dateDir)) {
+            continue
+        }
+        Get-ChildItem -Path $dateDir -Directory -Filter "market=*" | ForEach-Object {
+            $market = $_.Name.Replace("market=", "").Trim().ToUpperInvariant()
+            if (-not $marketSet.ContainsKey($market)) {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                $pruned += ([string]::Format("{0}:{1}", ([string]$dateValue).Trim(), $market))
+            }
+        }
+    }
+    return @($pruned)
 }
 
 $resolvedProjectRoot = if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { Resolve-DefaultProjectRoot } else { $ProjectRoot }
@@ -103,7 +138,7 @@ $resolvedRawRoot = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $Ra
 $resolvedMetaDir = Resolve-ProjectPath -Root $resolvedProjectRoot -PathValue $MetaDir
 $resolvedBatchDate = if ([string]::IsNullOrWhiteSpace($BatchDate)) {
     if ([string]::IsNullOrWhiteSpace($DaysAgoCsv)) {
-        (Get-Date).Date.AddDays(-1).ToString("yyyy-MM-dd")
+        (Get-Date).ToUniversalTime().Date.AddDays(-1).ToString("yyyy-MM-dd")
     } else {
         ""
     }
@@ -152,6 +187,7 @@ if ([int]$MaxPagesPerTarget -gt 0) {
 }
 
 $stepResults = @()
+$legacyPrunedMarkets = @()
 Push-Location $resolvedProjectRoot
 try {
     $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName "plan_raw_ticks_daily" -ArgList $planArgs)
@@ -165,6 +201,22 @@ try {
             "--meta-dir", $resolvedMetaDir
         )
         $stepResults += ,(Invoke-ProjectPythonStep -PythonPath $resolvedPythonExe -StepName ("validate_raw_ticks_" + $validateDate) -ArgList $validateArgs)
+    }
+    if (-not $DryRun) {
+        $planPayload = @{}
+        if (Test-Path $resolvedPlanPath) {
+            try {
+                $planPayload = Get-Content -Raw -Path $resolvedPlanPath -Encoding UTF8 | ConvertFrom-Json
+            } catch {
+                $planPayload = @{}
+            }
+        }
+        $marketSelection = if ($null -ne $planPayload -and ($planPayload.PSObject.Properties.Name -contains "market_selection")) { $planPayload.market_selection } else { $null }
+        $selectedMarkets = if ($null -ne $planPayload -and ($planPayload.PSObject.Properties.Name -contains "selected_markets")) { @($planPayload.selected_markets) } else { @() }
+        $selectionMode = if ($null -ne $marketSelection -and ($marketSelection.PSObject.Properties.Name -contains "mode")) { [string]$marketSelection.mode } else { "" }
+        if ($selectionMode.Trim().ToLowerInvariant() -eq "fixed_collection_contract" -and $selectedMarkets.Count -gt 0) {
+            $legacyPrunedMarkets = @(Remove-LegacyRawTicksMarkets -RawRootPath $resolvedRawRoot -TargetDates $validateDates -SelectedMarkets $selectedMarkets)
+        }
     }
 } finally {
     Pop-Location
@@ -181,6 +233,7 @@ $summary = [ordered]@{
     batch_date = $resolvedBatchDate
     days_ago = @($daysAgoValues)
     validate_dates = @($validateDates)
+    legacy_pruned_markets = @($legacyPrunedMarkets)
     steps = @($stepResults)
 }
 $summaryDir = Split-Path -Parent $resolvedSummaryPath
