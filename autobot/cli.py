@@ -70,6 +70,7 @@ from .data.collect import (
     validate_ws_public_raw_dataset,
 )
 from .data.collect.fixed_collection_contract import resolve_fixed_collection_markets
+from .data.derived.market_state_v1 import MarketStateBuildOptions, build_market_state_v1_datasets
 from .data.micro import (
     MicroAggregateOptions,
     aggregate_micro_v1,
@@ -350,6 +351,21 @@ def build_parser() -> argparse.ArgumentParser:
     inventory_parser.add_argument("--end", help="Window end date/time (YYYY-MM-DD or ISO UTC)")
     inventory_parser.add_argument("--lookback-months", type=int, default=24)
     inventory_parser.add_argument("--out", help="Optional output JSON path")
+
+    build_market_state_parser = data_subparsers.add_parser(
+        "build-market-state-v1",
+        help="Build market_state_v1 and two-stage label datasets from the source plane.",
+    )
+    build_market_state_parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
+    build_market_state_parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    build_market_state_parser.add_argument("--quote", default="KRW")
+    build_market_state_parser.add_argument("--markets", help="Comma separated markets. Defaults to fixed source-plane markets.")
+    build_market_state_parser.add_argument("--raw-ws-root", default="data/raw_ws/upbit/public")
+    build_market_state_parser.add_argument("--raw-trade-root", default="data/raw_trade_v1")
+    build_market_state_parser.add_argument("--candles-root", default="data/parquet/candles_api_v1")
+    build_market_state_parser.add_argument("--market-state-root", default="data/derived/market_state_v1")
+    build_market_state_parser.add_argument("--tradeable-label-root", default="data/derived/tradeable_label_v1")
+    build_market_state_parser.add_argument("--net-edge-label-root", default="data/derived/net_edge_label_v1")
 
     collect_parser = subparsers.add_parser("collect", help="Data collection operations.")
     collect_subparsers = collect_parser.add_subparsers(dest="collect_command", required=True)
@@ -1655,6 +1671,8 @@ def _handle_data_command(args: argparse.Namespace, config: dict[str, Any]) -> in
         return _handle_data_validate(args, config)
     if args.data_command == "inventory":
         return _handle_data_inventory(args, config)
+    if args.data_command == "build-market-state-v1":
+        return _handle_data_build_market_state_v1(args)
     raise ValueError(f"Unsupported data command: {args.data_command}")
 
 
@@ -1829,6 +1847,30 @@ def _handle_data_inventory(args: argparse.Namespace, config: dict[str, Any]) -> 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
         print(f"[inventory] out={out_path}")
+    return 0
+
+
+def _handle_data_build_market_state_v1(args: argparse.Namespace) -> int:
+    summary = build_market_state_v1_datasets(
+        MarketStateBuildOptions(
+            start=str(args.start).strip(),
+            end=str(args.end).strip(),
+            quote=str(args.quote).strip().upper() or "KRW",
+            markets=_parse_csv_list(args.markets, normalize=str.upper),
+            raw_ws_root=Path(args.raw_ws_root),
+            raw_trade_root=Path(args.raw_trade_root),
+            candles_root=Path(args.candles_root),
+            market_state_root=Path(args.market_state_root),
+            tradeable_label_root=Path(args.tradeable_label_root),
+            net_edge_label_root=Path(args.net_edge_label_root),
+        )
+    )
+    print(
+        "[data][build-market-state-v1] "
+        f"dates={len(summary.dates)} markets={len(summary.selected_markets)} "
+        f"built_pairs={summary.built_pairs} skipped_pairs={summary.skipped_pairs}"
+    )
+    print(f"[data][build-market-state-v1] report={summary.build_report_file}")
     return 0
 
 
