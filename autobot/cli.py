@@ -601,7 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_ticks_parser.add_argument("--retention-days", type=int, default=30)
     collect_ticks_parser.add_argument("--workers", type=int, default=1)
     collect_ticks_parser.add_argument("--rate-limit-strict", default="true", help="true|false")
-    collect_ticks_parser.add_argument("--max-pages-per-target", type=int, default=500)
+    collect_ticks_parser.add_argument("--max-pages-per-target", type=int, default=0)
     collect_ticks_parser.add_argument("--max-requests", type=int)
     collect_ticks_parser.add_argument("--dry-run", default="false", help="true|false")
     collect_ticks_subparsers = collect_ticks_parser.add_subparsers(dest="collect_ticks_command")
@@ -2310,7 +2310,11 @@ def _handle_collect_ticks(args: argparse.Namespace, config_dir: Path, base_confi
         dry_run=_parse_bool_arg(args.dry_run, default=False),
         workers=max(int(args.workers), 1),
         rate_limit_strict=_parse_bool_arg(args.rate_limit_strict, default=True),
-        max_pages_per_target=(max(int(args.max_pages_per_target), 1) if args.max_pages_per_target is not None else None),
+        max_pages_per_target=(
+            max(int(args.max_pages_per_target), 1)
+            if args.max_pages_per_target is not None and int(args.max_pages_per_target) > 0
+            else None
+        ),
         max_requests=args.max_requests,
         retention_days=max(int(args.retention_days), 1),
         config_dir=config_dir,

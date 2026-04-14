@@ -11,7 +11,7 @@ param(
     [string]$RawRoot = "data/raw_ticks/upbit/trades",
     [string]$MetaDir = "data/raw_ticks/upbit/_meta",
     [int]$Workers = 1,
-    [int]$MaxPagesPerTarget = 50,
+    [int]$MaxPagesPerTarget = 0,
     [string]$RateLimitStrict = "true",
     [switch]$DryRun
 )
@@ -145,9 +145,11 @@ $collectArgs = @(
     "--meta-dir", $resolvedMetaDir,
     "--rate-limit-strict", $RateLimitStrict,
     "--workers", ([string]([Math]::Max([int]$Workers, 1))),
-    "--max-pages-per-target", ([string]([Math]::Max([int]$MaxPagesPerTarget, 1))),
     "--dry-run", "false"
 )
+if ([int]$MaxPagesPerTarget -gt 0) {
+    $collectArgs += @("--max-pages-per-target", ([string][int]$MaxPagesPerTarget))
+}
 
 $stepResults = @()
 Push-Location $resolvedProjectRoot

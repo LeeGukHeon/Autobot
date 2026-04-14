@@ -547,7 +547,22 @@ def test_t23_2_raw_ticks_backfill_wrapper_dry_run_uses_recent_two_days_window() 
     stdout = _run_script_dry_run("run_raw_ticks_backfill_sweep.ps1")
 
     assert "--days-ago' '1,2" in stdout or '--days-ago" "1,2' in stdout or "--days-ago 1,2" in stdout
+    assert "--max-pages-per-target" not in stdout
     assert "OnCalendar=*-*-* 22:00:00" in _run_script_dry_run("install_server_raw_ticks_backfill_service.ps1")
+
+
+def test_t23_2_raw_ticks_daily_wrapper_omits_page_cap_when_zero() -> None:
+    stdout = _run_script_dry_run("run_raw_ticks_daily.ps1", "-MaxPagesPerTarget", "0")
+
+    assert "--max-pages-per-target" not in stdout
+
+
+def test_t23_2_raw_ticks_installers_omit_page_cap_when_zero() -> None:
+    daily_stdout = _run_script_dry_run("install_server_raw_ticks_daily_service.ps1", "-MaxPagesPerTarget", "0")
+    backfill_stdout = _run_script_dry_run("install_server_raw_ticks_backfill_service.ps1", "-MaxPagesPerTarget", "0")
+
+    assert "-MaxPagesPerTarget" not in daily_stdout
+    assert "-MaxPagesPerTarget" not in backfill_stdout
 
 
 def test_t23_2_candles_api_refresh_wrapper_omits_global_request_cap_when_zero() -> None:

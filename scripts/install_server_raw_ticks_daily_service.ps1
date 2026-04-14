@@ -9,7 +9,7 @@ param(
     [int]$TopN = 30,
     [int]$DaysAgo = 1,
     [int]$Workers = 1,
-    [int]$MaxPagesPerTarget = 50,
+    [int]$MaxPagesPerTarget = 0,
     [string]$OnCalendar = "*-*-* 00:00:00",
     [string]$LockFile = "/tmp/autobot-raw-ticks-daily.lock",
     [switch]$NoStart,
@@ -42,9 +42,11 @@ $refreshArgs = @(
     "-Quote", $Quote,
     "-TopN", ([string]([Math]::Max([int]$TopN, 1))),
     "-DaysAgo", ([string]([Math]::Max([int]$DaysAgo, 1))),
-    "-Workers", ([string]([Math]::Max([int]$Workers, 1))),
-    "-MaxPagesPerTarget", ([string]([Math]::Max([int]$MaxPagesPerTarget, 1)))
+    "-Workers", ([string]([Math]::Max([int]$Workers, 1)))
 )
+if ([int]$MaxPagesPerTarget -gt 0) {
+    $refreshArgs += @("-MaxPagesPerTarget", ([string][int]$MaxPagesPerTarget))
+}
 $refreshCommand = $resolvedPwshExe + " " + (($refreshArgs | ForEach-Object { Quote-ShellArg ([string]$_) }) -join " ")
 $lockCommand = "if command -v flock >/dev/null 2>&1; then exec flock -n " + (Quote-ShellArg $LockFile) + " bash -lc " + (Quote-ShellArg $refreshCommand) + "; else exec bash -lc " + (Quote-ShellArg $refreshCommand) + "; fi"
 $execStart = "/bin/bash -lc " + (Quote-ShellArg $lockCommand)
@@ -61,7 +63,7 @@ User=$ServiceUser
 WorkingDirectory=$resolvedProjectRoot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=$execStart
-TimeoutStartSec=3600
+TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal
 "@

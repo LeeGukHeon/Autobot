@@ -34,7 +34,7 @@ class TicksCollectOptions:
     dry_run: bool = False
     workers: int = 1
     rate_limit_strict: bool = True
-    max_pages_per_target: int | None = 500
+    max_pages_per_target: int | None = None
     max_requests: int | None = None
     retention_days: int = 30
     config_dir: Path = Path("config")

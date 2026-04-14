@@ -9,7 +9,7 @@ param(
     [string]$RawRoot = "data/raw_ticks/upbit/trades",
     [string]$MetaDir = "data/raw_ticks/upbit/_meta",
     [int]$Workers = 1,
-    [int]$MaxPagesPerTarget = 50,
+    [int]$MaxPagesPerTarget = 0,
     [string]$RateLimitStrict = "true",
     [switch]$DryRun
 )
