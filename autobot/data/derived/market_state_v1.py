@@ -510,11 +510,13 @@ def _build_market_date_payload(
             pl.lit(None, dtype=pl.Float64).alias("universe_breadth_up_ratio"),
             pl.lit(None, dtype=pl.Float64).alias("universe_notional_rank_pct"),
         ]
-    ).with_columns(
+    )
+    bucket_frame = bucket_frame.with_columns(
         [
             ((pl.col("ticker_ts_ms").is_not_null()) & (pl.col("ticker_age_ms") >= 0) & (pl.col("ticker_age_ms") <= int(bucket_interval_ms))).alias("__ticker_raw_available"),
         ]
-    ).with_columns(
+    )
+    bucket_frame = bucket_frame.with_columns(
         [
             (
                 (~pl.col("__ticker_raw_available"))
@@ -522,7 +524,8 @@ def _build_market_date_payload(
                 & pl.col("acc_trade_price_24h_proxy").is_not_null()
             ).alias("ticker_proxy_available"),
         ]
-    ).with_columns(
+    )
+    bucket_frame = bucket_frame.with_columns(
         [
             (
                 pl.when(pl.col("__ticker_raw_available"))
@@ -546,7 +549,8 @@ def _build_market_date_payload(
                 .otherwise(pl.col("acc_trade_price_24h"))
             ).cast(pl.Float64).alias("acc_trade_price_24h"),
         ]
-    ).with_columns(
+    )
+    bucket_frame = bucket_frame.with_columns(
         [
             (
                 pl.when(pl.col("close_24h_ago").is_not_null() & (pl.col("close_24h_ago") > 0) & pl.col("last_price").is_not_null())
@@ -567,7 +571,8 @@ def _build_market_date_payload(
                 & pl.col("distance_from_15m_high_low").is_not_null()
             ).alias("candle_context_available"),
         ]
-    ).with_columns(
+    )
+    bucket_frame = bucket_frame.with_columns(
         (
             pl.when(pl.col("ticker_source_kind") == "ws_raw")
             .then(pl.lit(1.0, dtype=pl.Float64))
@@ -575,7 +580,8 @@ def _build_market_date_payload(
             .then(pl.lit(0.5, dtype=pl.Float64))
             .otherwise(pl.lit(0.0, dtype=pl.Float64))
         ).alias("__ticker_quality_score")
-    ).with_columns(
+    )
+    bucket_frame = bucket_frame.with_columns(
         (
             pl.col("__ticker_quality_score")
             + pl.col("trade_available").cast(pl.Float64)
