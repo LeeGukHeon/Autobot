@@ -386,6 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_training_slice_parser.add_argument("--tradeable-label-root", default="data/derived/tradeable_label_v1")
     build_training_slice_parser.add_argument("--net-edge-label-root", default="data/derived/net_edge_label_v1")
     build_training_slice_parser.add_argument("--out-root", default="data/derived/market_state_training_slice_v1")
+    build_training_slice_parser.add_argument("--skip-existing-complete", default="true", help="true|false")
 
     collect_parser = subparsers.add_parser("collect", help="Data collection operations.")
     collect_subparsers = collect_parser.add_subparsers(dest="collect_command", required=True)
@@ -1920,12 +1921,13 @@ def _handle_data_build_market_state_training_slice_v1(args: argparse.Namespace) 
             tradeable_label_root=Path(args.tradeable_label_root),
             net_edge_label_root=Path(args.net_edge_label_root),
             out_root=Path(args.out_root),
+            skip_existing_complete=_parse_bool_arg(args.skip_existing_complete, default=True),
         )
     )
     print(
         "[data][build-market-state-training-slice-v1] "
         f"dates={len(summary.dates)} markets={len(summary.selected_markets)} "
-        f"built_dates={summary.built_dates} rows_total={summary.rows_total}"
+        f"built_dates={summary.built_dates} reused_dates={summary.reused_dates} rows_total={summary.rows_total}"
     )
     print(f"[data][build-market-state-training-slice-v1] report={summary.build_report_file}")
     return 0

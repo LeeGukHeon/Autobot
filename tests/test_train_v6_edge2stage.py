@@ -8,6 +8,7 @@ from autobot.data.derived.market_state_training_slice_v1 import (
     MarketStateTrainingSliceBuildOptions,
     build_market_state_training_slice_v1,
 )
+from autobot.models.registry import load_json
 from autobot.models.predictor import load_predictor_from_registry
 from autobot.models.train_v6_edge2stage import TrainV6Edge2StageOptions, train_and_register_v6_edge2stage
 
@@ -120,6 +121,61 @@ def test_train_v6_edge2stage_predictor_returns_edge2stage_fields(tmp_path: Path)
     assert "final_tradeable_prob" in payload
     assert "final_expected_net_edge_bps" in payload
     assert "final_go_score" in payload
+
+
+def test_train_v6_edge2stage_uses_complete_dates_only_when_data_is_not_yet_adequate(tmp_path: Path) -> None:
+    for offset in range(5):
+        date_value = f"2026-04-{offset + 1:02d}"
+        positive = (offset % 2) == 0
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-BTC",
+            label_available=True,
+            tradeable_value=1 if positive else 0,
+            net_edge_20m_bps=8.0 if positive else -4.0,
+        )
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-ETH",
+            label_available=True if offset < 3 else False,
+            tradeable_value=0 if positive else 1,
+            net_edge_20m_bps=-2.0 if positive else 7.0,
+        )
+    build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start="2026-04-01",
+            end="2026-04-05",
+            markets=("KRW-BTC", "KRW-ETH"),
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+        )
+    )
+
+    result = train_and_register_v6_edge2stage(
+        TrainV6Edge2StageOptions(
+            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+            registry_root=tmp_path / "registry",
+            logs_root=tmp_path / "logs",
+            model_family="train_v6_edge2stage",
+            quote="KRW",
+            start="2026-04-01",
+            end="2026-04-05",
+            seed=42,
+            nthread=1,
+        )
+    )
+    train_config = load_json(result.run_dir / "train_config.yaml")
+    assert train_config["date_selection_policy"] == "complete_dates_only_until_adequate"
+    assert train_config["effective_operating_dates"] == ["2026-04-01", "2026-04-02", "2026-04-03"]
+    assert train_config["operating_date_split"] == {
+        "train_dates": ["2026-04-01"],
+        "valid_dates": ["2026-04-02"],
+        "test_dates": ["2026-04-03"],
+    }
 
 
 def _write_market_state_pair(

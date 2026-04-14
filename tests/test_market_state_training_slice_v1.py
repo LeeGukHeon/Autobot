@@ -36,6 +36,28 @@ def test_build_market_state_training_slice_v1_joins_and_filters_label_available(
     assert row["tradeable_20m"] == 1
 
 
+def test_build_market_state_training_slice_v1_reuses_existing_dates_by_default(tmp_path: Path) -> None:
+    _write_market_state_pair(tmp_path, "2026-04-12", "KRW-BTC", label_available=True)
+
+    options = MarketStateTrainingSliceBuildOptions(
+        start="2026-04-12",
+        end="2026-04-12",
+        markets=("KRW-BTC",),
+        market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+        tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+        net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+        out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+    )
+    first = build_market_state_training_slice_v1(options)
+    assert first.built_dates == 1
+
+    second = build_market_state_training_slice_v1(options)
+    assert second.built_dates == 0
+    assert second.reused_dates == 1
+    manifest = pl.read_parquet(tmp_path / "data" / "derived" / "market_state_training_slice_v1" / "_meta" / "manifest.parquet")
+    assert manifest.height == 1
+
+
 def _write_market_state_pair(
     root: Path,
     date_value: str,

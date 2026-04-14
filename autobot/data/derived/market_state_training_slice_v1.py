@@ -148,6 +148,7 @@ class MarketStateTrainingSliceBuildOptions:
     net_edge_label_root: Path = Path("data/derived/net_edge_label_v1")
     out_root: Path = Path("data/derived/market_state_training_slice_v1")
     config_dir: Path = Path("config")
+    skip_existing_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,7 @@ class MarketStateTrainingSliceBuildSummary:
     dates: tuple[str, ...]
     selected_markets: tuple[str, ...]
     built_dates: int
+    reused_dates: int
     rows_total: int
     manifest_file: Path
     build_report_file: Path
@@ -192,11 +194,21 @@ def build_market_state_training_slice_v1(options: MarketStateTrainingSliceBuildO
         available_pairs = available_pairs.filter(pl.col("market").is_in(list(selected_markets)))
 
     built_dates = 0
+    reused_dates = 0
     rows_total = 0
     manifest_rows: list[dict[str, Any]] = []
     detail_rows: list[dict[str, Any]] = []
+    existing_reusable_dates = (
+        _load_existing_reusable_dates(out_root=options.out_root, selected_markets=selected_markets)
+        if bool(options.skip_existing_complete)
+        else set()
+    )
 
     for date_value in requested_dates:
+        if date_value in existing_reusable_dates:
+            reused_dates += 1
+            detail_rows.append({"date": date_value, "rows": None, "markets": int(len(selected_markets)), "status": "SKIPPED_ALREADY_COMPLETE"})
+            continue
         pair_rows = available_pairs.filter(pl.col("date") == date_value)
         if pair_rows.height <= 0:
             continue
@@ -226,6 +238,7 @@ def build_market_state_training_slice_v1(options: MarketStateTrainingSliceBuildO
             detail_rows.append({"date": date_value, "rows": 0, "markets": 0, "status": "SKIPPED_LABEL_EMPTY"})
             continue
         built_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+        _remove_existing_date(options.out_root, date_value)
         part = _write_slice_part(options.out_root, combined, run_id, date_value)
         built_dates += 1
         rows_total += int(combined.height)
@@ -252,7 +265,8 @@ def build_market_state_training_slice_v1(options: MarketStateTrainingSliceBuildO
         )
 
     manifest_path = options.out_root / "_meta" / "manifest.parquet"
-    _save_manifest(manifest_path, manifest_rows)
+    _replace_manifest_dates(manifest_path=manifest_path, rebuilt_dates=[str(row["date"]) for row in manifest_rows])
+    _append_manifest_rows(manifest_path=manifest_path, rows=manifest_rows)
     _write_slice_contracts(options.out_root, selected_markets)
     report = {
         "policy": "market_state_training_slice_v1_build_v1",
@@ -261,7 +275,9 @@ def build_market_state_training_slice_v1(options: MarketStateTrainingSliceBuildO
         "dates": list(requested_dates),
         "selected_markets": list(selected_markets),
         "built_dates": int(built_dates),
+        "reused_dates": int(reused_dates),
         "rows_total": int(rows_total),
+        "skip_existing_complete": bool(options.skip_existing_complete),
         "out_root": str(options.out_root),
         "details": detail_rows,
     }
@@ -275,6 +291,7 @@ def build_market_state_training_slice_v1(options: MarketStateTrainingSliceBuildO
         dates=requested_dates,
         selected_markets=selected_markets,
         built_dates=built_dates,
+        reused_dates=reused_dates,
         rows_total=rows_total,
         manifest_file=manifest_path,
         build_report_file=build_report_path,
@@ -380,6 +397,63 @@ def _save_manifest(path: Path, rows: list[dict[str, Any]]) -> None:
         pl.DataFrame([], schema=SLICE_MANIFEST_SCHEMA, orient="row").write_parquet(path, compression="zstd")
         return
     pl.DataFrame(rows, schema=SLICE_MANIFEST_SCHEMA, orient="row").write_parquet(path, compression="zstd")
+
+
+def _load_slice_manifest(path: Path) -> pl.DataFrame:
+    if not path.exists():
+        return pl.DataFrame([], schema=SLICE_MANIFEST_SCHEMA, orient="row")
+    return pl.read_parquet(path).select(list(SLICE_MANIFEST_SCHEMA.keys()))
+
+
+def _replace_manifest_dates(*, manifest_path: Path, rebuilt_dates: list[str]) -> None:
+    if not rebuilt_dates or not manifest_path.exists():
+        return
+    rebuilt = {str(item) for item in rebuilt_dates}
+    frame = _load_slice_manifest(manifest_path)
+    if frame.height <= 0:
+        return
+    filtered = frame.filter(~pl.col("date").is_in(list(rebuilt)))
+    _save_manifest(manifest_path, filtered.to_dicts())
+
+
+def _append_manifest_rows(*, manifest_path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        if not manifest_path.exists():
+            _save_manifest(manifest_path, [])
+        return
+    incoming = pl.DataFrame(rows, schema=SLICE_MANIFEST_SCHEMA, orient="row")
+    if manifest_path.exists():
+        combined = pl.concat([_load_slice_manifest(manifest_path), incoming], how="vertical")
+    else:
+        combined = incoming
+    _save_manifest(manifest_path, combined.to_dicts())
+
+
+def _remove_existing_date(root: Path, date_value: str) -> None:
+    target = Path(root) / f"date={date_value}"
+    if target.exists():
+        for path in target.glob("*.parquet"):
+            path.unlink(missing_ok=True)
+
+
+def _load_existing_reusable_dates(*, out_root: Path, selected_markets: tuple[str, ...]) -> set[str]:
+    feature_spec_path = Path(out_root) / "_meta" / "feature_spec.json"
+    if not feature_spec_path.exists():
+        return set()
+    try:
+        feature_spec = json.loads(feature_spec_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    existing_selected = tuple(str(item).strip().upper() for item in (feature_spec.get("selected_markets") or []) if str(item).strip())
+    if tuple(selected_markets) != existing_selected:
+        return set()
+    manifest = _load_slice_manifest(Path(out_root) / "_meta" / "manifest.parquet")
+    reusable: set[str] = set()
+    for row in manifest.iter_rows(named=True):
+        part_file = Path(str(row.get("part_file") or ""))
+        if part_file.exists():
+            reusable.add(str(row["date"]))
+    return reusable
 
 
 def _write_slice_contracts(out_root: Path, selected_markets: tuple[str, ...]) -> None:

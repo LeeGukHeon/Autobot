@@ -28,6 +28,8 @@ DEFAULT_NET_EDGE_THRESHOLD_BPS = 3.0
 DEFAULT_HARD_NEGATIVE_LOW_BPS = -6.0
 DEFAULT_HARD_NEGATIVE_HIGH_BPS = 3.0
 DEFAULT_FLAT_NEGATIVE_DOWNSAMPLE = 0.10
+DEFAULT_MIN_STANDARD_DATES = 14
+DEFAULT_MIN_BOOTSTRAP_DATES = 3
 
 
 @dataclass(frozen=True)
@@ -124,10 +126,20 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         start=options.start,
         end=options.end,
     )
+    selected_markets = _load_selected_markets(options.dataset_root)
     operating_dates = sorted({str(item).strip() for item in frame.get_column("operating_date_kst").to_list() if str(item).strip()})
-    if len(operating_dates) < 14:
-        raise ValueError("train_v6_edge2stage requires at least 14 operating dates")
-    split = _resolve_operating_date_split(operating_dates)
+    complete_operating_dates = _resolve_complete_operating_dates(frame=frame, selected_markets=selected_markets)
+    effective_operating_dates, date_selection_policy = _resolve_effective_operating_dates(
+        all_operating_dates=operating_dates,
+        complete_operating_dates=complete_operating_dates,
+    )
+    if len(effective_operating_dates) < DEFAULT_MIN_BOOTSTRAP_DATES:
+        raise ValueError(
+            "train_v6_edge2stage requires at least 3 effective operating dates "
+            f"(found={len(effective_operating_dates)} policy={date_selection_policy})"
+        )
+    frame = frame.filter(pl.col("operating_date_kst").is_in(list(effective_operating_dates)))
+    split = _resolve_operating_date_split(effective_operating_dates)
     train_dates = set(split["train_dates"])
     valid_dates = set(split["valid_dates"])
     test_dates = set(split["test_dates"])
@@ -137,7 +149,6 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     y_tradeable = frame.get_column("tradeable_20m").to_numpy().astype(np.int8, copy=False)
     y_edge = frame.get_column("net_edge_20m_bps").to_numpy().astype(np.float64, copy=False)
     operating_date_values = np.asarray(frame.get_column("operating_date_kst").to_list(), dtype=object)
-    markets = np.asarray(frame.get_column("market").to_list(), dtype=object)
 
     train_mask = np.isin(operating_date_values, list(train_dates))
     valid_mask = np.isin(operating_date_values, list(valid_dates))
@@ -256,6 +267,11 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         "trainer": "v6_edge2stage",
         "feature_columns": list(feature_columns),
         "operating_date_split": split,
+        "date_selection_policy": str(date_selection_policy),
+        "all_operating_dates": list(operating_dates),
+        "complete_operating_dates": list(complete_operating_dates),
+        "effective_operating_dates": list(effective_operating_dates),
+        "selected_markets": list(selected_markets),
         "autobot_version": autobot_version,
     }
     data_fingerprint = _build_data_fingerprint(
@@ -263,7 +279,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         start=options.start,
         end=options.end,
         rows_total=int(frame.height),
-        selected_markets=sorted({str(item).strip().upper() for item in markets if str(item).strip()}),
+        selected_markets=list(selected_markets),
     )
     predictor_contract = {
         "version": 1,
@@ -395,6 +411,14 @@ def _load_feature_columns(dataset_root: Path) -> tuple[str, ...]:
     return values
 
 
+def _load_selected_markets(dataset_root: Path) -> tuple[str, ...]:
+    payload = load_json(Path(dataset_root) / "_meta" / "feature_spec.json")
+    values = tuple(str(item).strip().upper() for item in (payload.get("selected_markets") or []) if str(item).strip())
+    if not values:
+        raise ValueError("training slice feature_spec.json missing selected_markets")
+    return values
+
+
 def _resolve_operating_date_split(operating_dates: list[str]) -> dict[str, list[str]]:
     total = len(operating_dates)
     if total >= 30:
@@ -409,7 +433,32 @@ def _resolve_operating_date_split(operating_dates: list[str]) -> dict[str, list[
             "valid_dates": operating_dates[total - 6 : total - 3],
             "test_dates": operating_dates[total - 3 :],
         }
-    raise ValueError("train_v6_edge2stage requires at least 14 operating dates")
+    if total >= DEFAULT_MIN_BOOTSTRAP_DATES:
+        return {
+            "train_dates": operating_dates[: total - 2],
+            "valid_dates": operating_dates[total - 2 : total - 1],
+            "test_dates": operating_dates[total - 1 :],
+        }
+    raise ValueError("train_v6_edge2stage requires at least 3 operating dates")
+
+
+def _resolve_complete_operating_dates(*, frame: pl.DataFrame, selected_markets: tuple[str, ...]) -> list[str]:
+    expected_market_count = len(tuple(selected_markets))
+    if expected_market_count <= 0:
+        return []
+    counts = (
+        frame.group_by("operating_date_kst")
+        .agg(pl.col("market").n_unique().alias("market_count"))
+        .filter(pl.col("market_count") >= int(expected_market_count))
+        .sort("operating_date_kst")
+    )
+    return [str(item).strip() for item in counts.get_column("operating_date_kst").to_list()]
+
+
+def _resolve_effective_operating_dates(*, all_operating_dates: list[str], complete_operating_dates: list[str]) -> tuple[list[str], str]:
+    if len(all_operating_dates) >= DEFAULT_MIN_STANDARD_DATES:
+        return list(all_operating_dates), "all_dates_standard"
+    return list(complete_operating_dates), "complete_dates_only_until_adequate"
 
 
 def _resolve_scale_pos_weight(y: np.ndarray) -> float:
@@ -500,4 +549,3 @@ def _sha256_file(path: Path) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
