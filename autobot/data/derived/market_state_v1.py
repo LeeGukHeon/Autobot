@@ -186,6 +186,25 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
     skipped_pairs = 0
 
     for date_value in dates:
+        date_ticker_frames = _load_date_ticker_frames(
+            raw_ws_root=options.raw_ws_root,
+            date_value=date_value,
+            selected_markets=selected_markets,
+        )
+        date_orderbook_frames = _load_date_orderbook_frames(
+            raw_ws_root=options.raw_ws_root,
+            date_value=date_value,
+            selected_markets=selected_markets,
+        )
+        date_trade_frames = _load_date_trade_frames(
+            raw_trade_root=options.raw_trade_root,
+            date_value=date_value,
+            selected_markets=selected_markets,
+        )
+        candle_cache: dict[tuple[str, str, int, int], pl.DataFrame] = {}
+        date_ticker_rows_total = sum(int(frame.height) for frame in date_ticker_frames.values())
+        date_orderbook_rows_total = sum(int(frame.height) for frame in date_orderbook_frames.values())
+        date_trade_rows_total = sum(int(frame.height) for frame in date_trade_frames.values())
         per_market_frames: dict[str, pl.DataFrame] = {}
         per_market_tradeable_labels: dict[str, pl.DataFrame] = {}
         per_market_net_edge_labels: dict[str, pl.DataFrame] = {}
@@ -196,7 +215,15 @@ def build_market_state_v1_datasets(options: MarketStateBuildOptions) -> MarketSt
                 date_value=date_value,
                 market=market,
                 market_cap_rank=market_rank_map[market],
+                ticker_frame=date_ticker_frames.get(market, _empty_ticker_frame()),
+                orderbook_frame=date_orderbook_frames.get(market, _empty_orderbook_frame()),
+                trade_frame=date_trade_frames.get(market, _empty_trade_frame()),
+                candle_cache=candle_cache,
             )
+            detail["date_ticker_rows_total"] = int(date_ticker_rows_total)
+            detail["date_orderbook_rows_total"] = int(date_orderbook_rows_total)
+            detail["date_trade_rows_total"] = int(date_trade_rows_total)
+            detail["date_selected_markets"] = int(len(selected_markets))
             build_details.append(detail)
             if state_frame.height <= 0:
                 skipped_pairs += 1
@@ -316,6 +343,10 @@ def _build_market_date_payload(
     date_value: str,
     market: str,
     market_cap_rank: int,
+    ticker_frame: pl.DataFrame,
+    orderbook_frame: pl.DataFrame,
+    trade_frame: pl.DataFrame,
+    candle_cache: dict[tuple[str, str, int, int], pl.DataFrame],
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, dict[str, Any]]:
     bucket_interval_ms = max(int(options.bucket_interval_ms), 1)
     date_start_ts_ms = _parse_date_to_ts_ms(date_value)
@@ -323,9 +354,6 @@ def _build_market_date_payload(
     if date_start_ts_ms is None or date_end_ts_ms is None:
         raise ValueError(f"invalid date: {date_value}")
 
-    ticker_frame = _load_market_ticker_frame(raw_ws_root=options.raw_ws_root, date_value=date_value, market=market)
-    orderbook_frame = _load_market_orderbook_frame(raw_ws_root=options.raw_ws_root, date_value=date_value, market=market)
-    trade_frame = _load_market_trade_frame(raw_trade_root=options.raw_trade_root, date_value=date_value, market=market)
     source_min_ts = _min_non_null(
         ticker_frame.get_column("ticker_ts_ms").min() if ticker_frame.height > 0 else None,
         orderbook_frame.get_column("book_ts_ms").min() if orderbook_frame.height > 0 else None,
@@ -427,6 +455,7 @@ def _build_market_date_payload(
         tf="1m",
         start_ts_ms=max(int(date_start_ts_ms) - ONE_DAY_MS - (15 * ONE_MIN_MS), 0),
         end_ts_ms=int(date_end_ts_ms),
+        cache=candle_cache,
     )
     candles_5m = _load_candle_tf_frame(
         candles_root=options.candles_root,
@@ -434,6 +463,7 @@ def _build_market_date_payload(
         tf="5m",
         start_ts_ms=max(int(date_start_ts_ms) - ONE_DAY_MS, 0),
         end_ts_ms=int(date_end_ts_ms),
+        cache=candle_cache,
     )
     candles_15m = _load_candle_tf_frame(
         candles_root=options.candles_root,
@@ -441,6 +471,7 @@ def _build_market_date_payload(
         tf="15m",
         start_ts_ms=max(int(date_start_ts_ms) - ONE_DAY_MS, 0),
         end_ts_ms=int(date_end_ts_ms),
+        cache=candle_cache,
     )
     candles_60m = _load_candle_tf_frame(
         candles_root=options.candles_root,
@@ -448,6 +479,7 @@ def _build_market_date_payload(
         tf="60m",
         start_ts_ms=max(int(date_start_ts_ms) - ONE_DAY_MS, 0),
         end_ts_ms=int(date_end_ts_ms),
+        cache=candle_cache,
     )
     bucket_frame = _attach_candle_context(
         bucket_frame=bucket_frame,
@@ -883,6 +915,142 @@ def _build_labels(
     return (_align_schema(tradeable_labels, schema=TRADEABLE_LABEL_SCHEMA), _align_schema(net_edge_labels, schema=NET_EDGE_LABEL_SCHEMA))
 
 
+def _load_date_ticker_frames(
+    *,
+    raw_ws_root: Path,
+    date_value: str,
+    selected_markets: tuple[str, ...],
+) -> dict[str, pl.DataFrame]:
+    selected = {str(market).strip().upper() for market in selected_markets if str(market).strip()}
+    rows_by_market: dict[str, list[dict[str, Any]]] = {market: [] for market in selected}
+    for path in sorted((Path(raw_ws_root) / "ticker" / f"date={date_value}").glob("hour=*/*.jsonl.zst")):
+        if not path.is_file():
+            continue
+        for row in iter_jsonl_zst_rows(path):
+            if str(row.get("channel", "")).strip().lower() != "ticker":
+                continue
+            market = str(row.get("market", "")).strip().upper()
+            if market not in selected:
+                continue
+            ts_ms = _to_int(row.get("ts_ms"))
+            price = _to_float(row.get("trade_price"))
+            acc_trade_price_24h = _to_float(row.get("acc_trade_price_24h"))
+            if ts_ms is None or price is None or acc_trade_price_24h is None:
+                continue
+            rows_by_market.setdefault(market, []).append(
+                {
+                    "ticker_ts_ms": int(ts_ms),
+                    "last_price": float(price),
+                    "acc_trade_price_24h": float(acc_trade_price_24h),
+                    "market_state": str(row.get("market_state") or "").strip().upper() or None,
+                    "market_warning": str(row.get("market_warning") or "").strip().upper() or None,
+                }
+            )
+    return {
+        market: (
+            pl.DataFrame(rows).sort("ticker_ts_ms").unique(subset=["ticker_ts_ms"], keep="last", maintain_order=True)
+            if rows
+            else _empty_ticker_frame()
+        )
+        for market, rows in rows_by_market.items()
+    }
+
+
+def _load_date_orderbook_frames(
+    *,
+    raw_ws_root: Path,
+    date_value: str,
+    selected_markets: tuple[str, ...],
+) -> dict[str, pl.DataFrame]:
+    selected = {str(market).strip().upper() for market in selected_markets if str(market).strip()}
+    rows_by_market: dict[str, list[dict[str, Any]]] = {market: [] for market in selected}
+    for path in sorted((Path(raw_ws_root) / "orderbook" / f"date={date_value}").glob("hour=*/*.jsonl.zst")):
+        if not path.is_file():
+            continue
+        for row in iter_jsonl_zst_rows(path):
+            if str(row.get("channel", "")).strip().lower() != "orderbook":
+                continue
+            market = str(row.get("market", "")).strip().upper()
+            if market not in selected:
+                continue
+            ts_ms = _to_int(row.get("ts_ms"))
+            bid1_price = _to_float(row.get("bid1_price"))
+            ask1_price = _to_float(row.get("ask1_price"))
+            bid1_size = _to_float(row.get("bid1_size")) or 0.0
+            ask1_size = _to_float(row.get("ask1_size")) or 0.0
+            if ts_ms is None or bid1_price is None or ask1_price is None:
+                continue
+            if bid1_price <= 0.0 or ask1_price <= 0.0 or ask1_price < bid1_price:
+                continue
+            bid_depth_top5_krw = 0.0
+            ask_depth_top5_krw = 0.0
+            bid_size_top5 = 0.0
+            ask_size_top5 = 0.0
+            for level in range(1, 6):
+                level_bid_price = _to_float(row.get(f"bid{level}_price")) or 0.0
+                level_ask_price = _to_float(row.get(f"ask{level}_price")) or 0.0
+                level_bid_size = _to_float(row.get(f"bid{level}_size")) or 0.0
+                level_ask_size = _to_float(row.get(f"ask{level}_size")) or 0.0
+                bid_depth_top5_krw += max(level_bid_price * level_bid_size, 0.0)
+                ask_depth_top5_krw += max(level_ask_price * level_ask_size, 0.0)
+                bid_size_top5 += max(level_bid_size, 0.0)
+                ask_size_top5 += max(level_ask_size, 0.0)
+            mid = (float(bid1_price) + float(ask1_price)) / 2.0
+            if mid <= 0.0:
+                continue
+            spread_bps = ((float(ask1_price) - float(bid1_price)) / mid) * 10_000.0
+            queue_imbalance_top1 = _safe_ratio(float(bid1_size) - float(ask1_size), float(bid1_size) + float(ask1_size))
+            queue_imbalance_top5 = _safe_ratio(float(bid_size_top5) - float(ask_size_top5), float(bid_size_top5) + float(ask_size_top5))
+            microprice = None
+            microprice_bias_bps = None
+            if (float(bid1_size) + float(ask1_size)) > 0.0:
+                microprice = ((float(ask1_price) * float(bid1_size)) + (float(bid1_price) * float(ask1_size))) / (float(bid1_size) + float(ask1_size))
+                microprice_bias_bps = ((float(microprice) - float(mid)) / float(mid)) * 10_000.0
+            rows_by_market.setdefault(market, []).append(
+                {
+                    "book_ts_ms": int(ts_ms),
+                    "best_bid": float(bid1_price),
+                    "best_ask": float(ask1_price),
+                    "spread_bps": float(spread_bps),
+                    "bid_depth_top1_krw": float(bid1_price) * float(bid1_size),
+                    "ask_depth_top1_krw": float(ask1_price) * float(ask1_size),
+                    "bid_depth_top5_krw": float(bid_depth_top5_krw),
+                    "ask_depth_top5_krw": float(ask_depth_top5_krw),
+                    "queue_imbalance_top1": float(queue_imbalance_top1),
+                    "queue_imbalance_top5": float(queue_imbalance_top5),
+                    "microprice": float(microprice) if microprice is not None else None,
+                    "microprice_bias_bps": float(microprice_bias_bps) if microprice_bias_bps is not None else None,
+                }
+            )
+
+    result: dict[str, pl.DataFrame] = {}
+    for market in selected_markets:
+        rows = rows_by_market.get(market, [])
+        if not rows:
+            result[market] = _empty_orderbook_frame()
+            continue
+        frame = pl.DataFrame(rows).sort("book_ts_ms").unique(subset=["book_ts_ms"], keep="last", maintain_order=True)
+        bucket_events = frame.with_columns(
+            (((pl.col("book_ts_ms") / int(BUCKET_INTERVAL_MS)).floor()) * int(BUCKET_INTERVAL_MS)).cast(pl.Int64).alias("bucket_start_ts_ms")
+        ).group_by("bucket_start_ts_ms").agg(pl.len().cast(pl.Int64).alias("book_update_count_5s"))
+        result[market] = frame.with_columns(
+            (((pl.col("book_ts_ms") / int(BUCKET_INTERVAL_MS)).floor()) * int(BUCKET_INTERVAL_MS)).cast(pl.Int64).alias("bucket_start_ts_ms")
+        ).join(bucket_events, on="bucket_start_ts_ms", how="left").drop("bucket_start_ts_ms")
+    return result
+
+
+def _load_date_trade_frames(
+    *,
+    raw_trade_root: Path,
+    date_value: str,
+    selected_markets: tuple[str, ...],
+) -> dict[str, pl.DataFrame]:
+    result: dict[str, pl.DataFrame] = {}
+    for market in selected_markets:
+        result[market] = _load_market_trade_frame(raw_trade_root=raw_trade_root, date_value=date_value, market=market)
+    return result
+
+
 def _load_market_ticker_frame(*, raw_ws_root: Path, date_value: str, market: str) -> pl.DataFrame:
     rows: list[dict[str, Any]] = []
     for path in sorted((Path(raw_ws_root) / "ticker" / f"date={date_value}").glob("hour=*/*.jsonl.zst")):
@@ -1033,10 +1201,23 @@ def _load_candle_tf_frame(
     tf: str,
     start_ts_ms: int,
     end_ts_ms: int,
+    cache: dict[tuple[str, str, int, int], pl.DataFrame] | None = None,
 ) -> pl.DataFrame:
-    files = _market_candle_files(candles_root=candles_root, tf=tf, market=market)
+    cache_key = (str(market).strip().upper(), str(tf).strip().lower(), int(start_ts_ms), int(end_ts_ms))
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+    files = _market_candle_files(
+        candles_root=candles_root,
+        tf=tf,
+        market=market,
+        start_ts_ms=start_ts_ms,
+        end_ts_ms=end_ts_ms,
+    )
     if not files:
-        return pl.DataFrame(schema={"ts_ms": pl.Int64, "open": pl.Float64, "high": pl.Float64, "low": pl.Float64, "close": pl.Float64, "volume_base": pl.Float64})
+        frame = pl.DataFrame(schema={"ts_ms": pl.Int64, "open": pl.Float64, "high": pl.Float64, "low": pl.Float64, "close": pl.Float64, "volume_base": pl.Float64})
+        if cache is not None:
+            cache[cache_key] = frame
+        return frame
     lazy = (
         pl.scan_parquet([str(path) for path in files])
         .select(
@@ -1053,7 +1234,10 @@ def _load_candle_tf_frame(
         .sort("ts_ms")
         .unique(subset=["ts_ms"], keep="last", maintain_order=True)
     )
-    return _collect_lazy(lazy)
+    frame = _collect_lazy(lazy)
+    if cache is not None:
+        cache[cache_key] = frame
+    return frame
 
 
 def _resolve_target_dates(*, start: str, end: str, closed_utc_dates_only: bool) -> tuple[str, ...]:
@@ -1208,7 +1392,14 @@ def _remove_existing_market_date_pair(*, root: Path, date_value: str, market: st
         shutil.rmtree(target, ignore_errors=True)
 
 
-def _market_candle_files(*, candles_root: Path, tf: str, market: str) -> list[Path]:
+def _market_candle_files(
+    *,
+    candles_root: Path,
+    tf: str,
+    market: str,
+    start_ts_ms: int | None = None,
+    end_ts_ms: int | None = None,
+) -> list[Path]:
     market_dir = Path(candles_root) / f"tf={str(tf).strip().lower()}" / f"market={str(market).strip().upper()}"
     if not market_dir.exists():
         return []
@@ -1222,8 +1413,53 @@ def _market_candle_files(*, candles_root: Path, tf: str, market: str) -> list[Pa
     for date_dir in sorted(market_dir.glob("date=*")):
         if not date_dir.is_dir():
             continue
+        date_label = date_dir.name.replace("date=", "", 1).strip()
+        if start_ts_ms is not None or end_ts_ms is not None:
+            date_start = _parse_date_to_ts_ms(date_label)
+            date_end = _parse_date_to_ts_ms(date_label, end_of_day=True)
+            if date_start is not None and date_end is not None:
+                if start_ts_ms is not None and int(date_end) < int(start_ts_ms):
+                    continue
+                if end_ts_ms is not None and int(date_start) > int(end_ts_ms):
+                    continue
         nested.extend(sorted(path for path in date_dir.glob("*.parquet") if path.is_file()))
     return nested
+
+
+def _empty_ticker_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "ticker_ts_ms": pl.Int64,
+            "last_price": pl.Float64,
+            "acc_trade_price_24h": pl.Float64,
+            "market_state": pl.Utf8,
+            "market_warning": pl.Utf8,
+        }
+    )
+
+
+def _empty_orderbook_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "book_ts_ms": pl.Int64,
+            "best_bid": pl.Float64,
+            "best_ask": pl.Float64,
+            "spread_bps": pl.Float64,
+            "bid_depth_top1_krw": pl.Float64,
+            "ask_depth_top1_krw": pl.Float64,
+            "bid_depth_top5_krw": pl.Float64,
+            "ask_depth_top5_krw": pl.Float64,
+            "queue_imbalance_top1": pl.Float64,
+            "queue_imbalance_top5": pl.Float64,
+            "microprice": pl.Float64,
+            "microprice_bias_bps": pl.Float64,
+            "book_update_count_5s": pl.Int64,
+        }
+    )
+
+
+def _empty_trade_frame() -> pl.DataFrame:
+    return pl.DataFrame(schema={"event_ts_ms": pl.Int64, "price": pl.Float64, "volume": pl.Float64, "side": pl.Utf8})
 
 
 def _align_schema(frame: pl.DataFrame, *, schema: dict[str, pl.DataType]) -> pl.DataFrame:

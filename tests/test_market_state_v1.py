@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 
+import autobot.data.derived.market_state_v1 as market_state_module
 from autobot.data.collect.ws_public_writer import WsRawRotatingWriter
 from autobot.data.derived.market_state_v1 import MarketStateBuildOptions, build_market_state_v1_datasets
 from autobot.data.sources.trades.writer import write_raw_trade_partitions
@@ -105,6 +107,48 @@ def test_build_market_state_v1_rerun_replaces_existing_pair_outputs(tmp_path: Pa
     assert len(list(part_dir.glob("*.parquet"))) == 1
     net_edge = _load_single_market_parquet(tmp_path / "data" / "derived" / "net_edge_label_v1", "2026-04-10", "KRW-BTC")
     assert float(net_edge.row(0, named=True)["net_edge_20m_bps"]) > 20.0
+
+
+def test_build_market_state_v1_scans_date_raw_once_per_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_source_plane_fixture(tmp_path, btc_future_bid=100.25, eth_future_bid=200.15)
+
+    call_counts = {"ticker": 0, "orderbook": 0, "trade": 0}
+    original_ticker = market_state_module._load_date_ticker_frames
+    original_orderbook = market_state_module._load_date_orderbook_frames
+    original_trade = market_state_module._load_date_trade_frames
+
+    def _wrap_ticker(*args, **kwargs):
+        call_counts["ticker"] += 1
+        return original_ticker(*args, **kwargs)
+
+    def _wrap_orderbook(*args, **kwargs):
+        call_counts["orderbook"] += 1
+        return original_orderbook(*args, **kwargs)
+
+    def _wrap_trade(*args, **kwargs):
+        call_counts["trade"] += 1
+        return original_trade(*args, **kwargs)
+
+    monkeypatch.setattr(market_state_module, "_load_date_ticker_frames", _wrap_ticker)
+    monkeypatch.setattr(market_state_module, "_load_date_orderbook_frames", _wrap_orderbook)
+    monkeypatch.setattr(market_state_module, "_load_date_trade_frames", _wrap_trade)
+
+    build_market_state_v1_datasets(
+        MarketStateBuildOptions(
+            start="2026-04-10",
+            end="2026-04-10",
+            markets=("KRW-BTC", "KRW-ETH"),
+            raw_ws_root=tmp_path / "data" / "raw_ws" / "upbit" / "public",
+            raw_trade_root=tmp_path / "data" / "raw_trade_v1",
+            candles_root=tmp_path / "data" / "parquet" / "candles_api_v1",
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            closed_utc_dates_only=False,
+        )
+    )
+
+    assert call_counts == {"ticker": 1, "orderbook": 1, "trade": 1}
 
 
 def _write_source_plane_fixture(root: Path, *, btc_future_bid: float, eth_future_bid: float) -> None:
