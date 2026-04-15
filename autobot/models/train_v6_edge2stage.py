@@ -13,7 +13,13 @@ import numpy as np
 import polars as pl
 
 from autobot import __version__ as autobot_version
+from autobot.live.small_account import (
+    compute_small_account_cost_breakdown,
+    cost_breakdown_to_payload,
+    derive_volume_from_target_notional,
+)
 
+from .economic_objective import build_v4_shared_economic_objective_profile
 from .metrics import classification_metrics
 from .model_card import render_model_card
 from .registry import RegistrySavePayload, load_json, make_run_id, save_run
@@ -31,6 +37,11 @@ DEFAULT_HARD_NEGATIVE_HIGH_BPS = 3.0
 DEFAULT_FLAT_NEGATIVE_DOWNSAMPLE = 0.10
 DEFAULT_MIN_STANDARD_DATES = 14
 DEFAULT_MIN_BOOTSTRAP_DATES = 3
+DEFAULT_SMALL_ACCOUNT_TARGET_NOTIONAL_QUOTE = 10_000.0
+DEFAULT_SMALL_ACCOUNT_MIN_ORDER_QUOTE = 5_000.0
+DEFAULT_SMALL_ACCOUNT_FEE_RATE = 0.0005
+DEFAULT_SMALL_ACCOUNT_REPLACE_RISK_STEPS = 2
+DEFAULT_SMALL_ACCOUNT_MAX_POSITIONS = 1
 DEFAULT_BOOTSTRAP_MIN_TICKER_RATIO = 0.99
 DEFAULT_BOOTSTRAP_MIN_TRADE_RATIO = 0.20
 DEFAULT_BOOTSTRAP_MIN_BOOK_RATIO = 0.20
@@ -56,6 +67,11 @@ class TrainV6Edge2StageOptions:
     hard_negative_low_bps: float = DEFAULT_HARD_NEGATIVE_LOW_BPS
     hard_negative_high_bps: float = DEFAULT_HARD_NEGATIVE_HIGH_BPS
     flat_negative_downsample: float = DEFAULT_FLAT_NEGATIVE_DOWNSAMPLE
+    small_account_target_notional_quote: float = DEFAULT_SMALL_ACCOUNT_TARGET_NOTIONAL_QUOTE
+    small_account_min_order_quote: float = DEFAULT_SMALL_ACCOUNT_MIN_ORDER_QUOTE
+    small_account_fee_rate: float = DEFAULT_SMALL_ACCOUNT_FEE_RATE
+    small_account_replace_risk_steps: int = DEFAULT_SMALL_ACCOUNT_REPLACE_RISK_STEPS
+    small_account_max_positions: int = DEFAULT_SMALL_ACCOUNT_MAX_POSITIONS
     bootstrap_min_ticker_ratio: float = DEFAULT_BOOTSTRAP_MIN_TICKER_RATIO
     bootstrap_min_trade_ratio: float = DEFAULT_BOOTSTRAP_MIN_TRADE_RATIO
     bootstrap_min_book_ratio: float = DEFAULT_BOOTSTRAP_MIN_BOOK_RATIO
@@ -177,6 +193,8 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     y_tradeable = frame.get_column("tradeable_20m").to_numpy().astype(np.int8, copy=False)
     y_edge = frame.get_column("net_edge_20m_bps").to_numpy().astype(np.float64, copy=False)
     operating_date_values = np.asarray(frame.get_column("operating_date_kst").to_list(), dtype=object)
+    bucket_start_values = frame.get_column("bucket_start_ts_ms").to_numpy().astype(np.int64, copy=False)
+    price_values = frame.get_column("last_price").to_numpy().astype(np.float64, copy=False)
     label_audit = _build_label_audit(
         stage_a_label=stage_a_label,
         y_stage_a=y_stage_a,
@@ -277,26 +295,44 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         y_stage_a=y_stage_a[valid_mask],
         y_tradeable=y_tradeable[valid_mask],
         y_edge_bps=y_edge[valid_mask],
+        operating_date_values=operating_date_values[valid_mask],
+        bucket_start_ts_ms=bucket_start_values[valid_mask],
+        prices=price_values[valid_mask],
         payload=valid_payload,
         tradeable_prob_threshold=float(options.tradeable_prob_threshold),
         edge_threshold_bps=float(options.net_edge_threshold_bps),
+        small_account_options=options,
     )
     test_metrics = _build_edge2stage_metrics(
         y_stage_a=y_stage_a[test_mask],
         y_tradeable=y_tradeable[test_mask],
         y_edge_bps=y_edge[test_mask],
+        operating_date_values=operating_date_values[test_mask],
+        bucket_start_ts_ms=bucket_start_values[test_mask],
+        prices=price_values[test_mask],
         payload=test_payload,
         tradeable_prob_threshold=float(options.tradeable_prob_threshold),
         edge_threshold_bps=float(options.net_edge_threshold_bps),
+        small_account_options=options,
     )
     valid_challenger_metrics = _build_direct_ranker_metrics(
         y_edge_bps=y_edge[valid_mask],
+        operating_date_values=operating_date_values[valid_mask],
+        bucket_start_ts_ms=bucket_start_values[valid_mask],
+        prices=price_values[valid_mask],
         payload=valid_direct_ranker_payload,
+        small_account_options=options,
     )
     test_challenger_metrics = _build_direct_ranker_metrics(
         y_edge_bps=y_edge[test_mask],
+        operating_date_values=operating_date_values[test_mask],
+        bucket_start_ts_ms=bucket_start_values[test_mask],
+        prices=price_values[test_mask],
         payload=test_direct_ranker_payload,
+        small_account_options=options,
     )
+    valid_small_account_realism = dict(((valid_metrics.get("economic") or {}).get("small_account")) or {})
+    test_small_account_realism = dict(((test_metrics.get("economic") or {}).get("small_account")) or {})
 
     run_id = make_run_id(seed=options.seed)
     thresholds = {
@@ -321,6 +357,11 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         "test_no_trade_ratio": float((test_metrics.get("joint") or {}).get("no_trade_ratio") or 0.0),
         "test_selected_mean_true_edge_bps": float((test_metrics.get("economic") or {}).get("selected_mean_true_edge_bps") or 0.0),
         "test_false_positive_churn_ratio": float((test_metrics.get("economic") or {}).get("false_positive_churn_ratio") or 0.0),
+        "test_small_account_admissible_ratio": float(test_small_account_realism.get("selected_viability_rate") or 0.0),
+        "test_small_account_viable_selected_ratio": float(test_small_account_realism.get("viable_selected_ratio") or 0.0),
+        "test_small_account_mean_true_edge_bps": float(
+            test_small_account_realism.get("viable_selected_mean_true_edge_bps") or 0.0
+        ),
         "rows_train": int(np.sum(train_mask)),
         "rows_valid": int(np.sum(valid_mask)),
         "rows_test": int(np.sum(test_mask)),
@@ -367,6 +408,11 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         ),
         "horizon_diagnostics": horizon_diagnostics,
         "label_audit": label_audit,
+        "small_account_realism": {
+            "assumptions": _build_small_account_assumptions(options),
+            "valid": valid_small_account_realism,
+            "test": test_small_account_realism,
+        },
         "autobot_version": autobot_version,
     }
     data_fingerprint = _build_data_fingerprint(
@@ -390,6 +436,11 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         "go_score_field": "final_go_score",
         "promotion_label": "tradeable_20m",
         "decision_rule": decision_rule,
+        "small_account_assumptions": {
+            **_build_small_account_assumptions(options),
+            "tick_size_policy": "upbit_price_ladder_proxy",
+            "predicted_edge_semantics": "small-account report applies configured fee/tick/replace and min-order assumptions to final_expected_net_edge_bps for conservative execution viability scoring",
+        },
         "feature_columns": list(feature_columns),
     }
     selection_policy = normalize_selection_policy(
@@ -406,6 +457,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     selection_recommendations = {
         "version": 1,
         "recommended_threshold_key": "edge2stage_default",
+        "small_account_realism": _build_small_account_assumptions(options),
         "by_threshold_key": {
             "edge2stage_default": {
                 "tradeable_prob_min": float(options.tradeable_prob_threshold),
@@ -424,8 +476,14 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
             "tradeable_prob_threshold": float(options.tradeable_prob_threshold),
             "net_edge_bps_threshold": float(options.net_edge_threshold_bps),
             "decision_rule": decision_rule,
+            "small_account_realism": {
+                **_build_small_account_assumptions(options),
+                "test_summary": test_small_account_realism,
+            },
         }
     )
+    economic_objective_profile = build_v4_shared_economic_objective_profile()
+    economic_objective_profile["v6_small_account_realism"] = _build_small_account_assumptions(options)
     model_card = render_model_card(
         run_id=run_id,
         model_family=options.model_family,
@@ -457,6 +515,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     )
     predictor_contract_path = run_dir / "predictor_contract.json"
     predictor_contract_path.write_text(json.dumps(predictor_contract, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_json(run_dir / "economic_objective_profile.json", economic_objective_profile)
     train_report_path = options.logs_root / "train_v6_edge2stage_report.json"
     train_report_path.parent.mkdir(parents=True, exist_ok=True)
     train_report_path.write_text(
@@ -467,9 +526,14 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
                 "run_dir": str(run_dir),
                 "metrics": {"valid": valid_metrics, "test": test_metrics},
                 "label_audit": label_audit,
+                "economic_objective_profile": economic_objective_profile,
                 "architecture_bakeoff": {
                     "default_candidate": {"valid": valid_metrics, "test": test_metrics},
                     "direct_ranker_challenger": {"valid": valid_challenger_metrics, "test": test_challenger_metrics},
+                },
+                "small_account_realism": {
+                    "valid": valid_small_account_realism,
+                    "test": test_small_account_realism,
                 },
                 "leaderboard_row": leaderboard_row,
                 "thresholds": thresholds,
@@ -649,9 +713,13 @@ def _build_edge2stage_metrics(
     y_stage_a: np.ndarray,
     y_tradeable: np.ndarray,
     y_edge_bps: np.ndarray,
+    operating_date_values: np.ndarray,
+    bucket_start_ts_ms: np.ndarray,
+    prices: np.ndarray,
     payload: dict[str, np.ndarray],
     tradeable_prob_threshold: float,
     edge_threshold_bps: float,
+    small_account_options: TrainV6Edge2StageOptions,
 ) -> dict[str, Any]:
     y_stage = np.asarray(y_stage_a, dtype=np.int8)
     y_trade = np.asarray(y_tradeable, dtype=np.int8)
@@ -689,6 +757,15 @@ def _build_edge2stage_metrics(
             pred_edge_bps=pred_edge,
             score=go_score,
             trade_mask=trade_mask,
+            operating_date_values=operating_date_values,
+            bucket_start_ts_ms=bucket_start_ts_ms,
+            prices=prices,
+            quote=small_account_options.quote,
+            target_notional_quote=float(small_account_options.small_account_target_notional_quote),
+            min_order_quote=float(small_account_options.small_account_min_order_quote),
+            fee_rate=float(small_account_options.small_account_fee_rate),
+            replace_risk_steps=int(small_account_options.small_account_replace_risk_steps),
+            max_positions=int(small_account_options.small_account_max_positions),
         ),
     }
 
@@ -706,7 +783,15 @@ def _build_direct_ranker_payload(pred_edge_bps: np.ndarray, *, edge_threshold_bp
     }
 
 
-def _build_direct_ranker_metrics(*, y_edge_bps: np.ndarray, payload: dict[str, np.ndarray]) -> dict[str, Any]:
+def _build_direct_ranker_metrics(
+    *,
+    y_edge_bps: np.ndarray,
+    operating_date_values: np.ndarray,
+    bucket_start_ts_ms: np.ndarray,
+    prices: np.ndarray,
+    payload: dict[str, np.ndarray],
+    small_account_options: TrainV6Edge2StageOptions,
+) -> dict[str, Any]:
     y_edge = np.asarray(y_edge_bps, dtype=np.float64)
     pred_edge = np.asarray(payload["final_expected_net_edge_bps"], dtype=np.float64)
     trade_mask = np.asarray(payload["final_trade_flag"], dtype=np.int8) == 1
@@ -724,6 +809,15 @@ def _build_direct_ranker_metrics(*, y_edge_bps: np.ndarray, payload: dict[str, n
             pred_edge_bps=pred_edge,
             score=score,
             trade_mask=trade_mask,
+            operating_date_values=operating_date_values,
+            bucket_start_ts_ms=bucket_start_ts_ms,
+            prices=prices,
+            quote=small_account_options.quote,
+            target_notional_quote=float(small_account_options.small_account_target_notional_quote),
+            min_order_quote=float(small_account_options.small_account_min_order_quote),
+            fee_rate=float(small_account_options.small_account_fee_rate),
+            replace_risk_steps=int(small_account_options.small_account_replace_risk_steps),
+            max_positions=int(small_account_options.small_account_max_positions),
         ),
     }
 
@@ -734,6 +828,15 @@ def _build_economic_metrics(
     pred_edge_bps: np.ndarray,
     score: np.ndarray,
     trade_mask: np.ndarray,
+    operating_date_values: np.ndarray,
+    bucket_start_ts_ms: np.ndarray,
+    prices: np.ndarray,
+    quote: str,
+    target_notional_quote: float,
+    min_order_quote: float,
+    fee_rate: float,
+    replace_risk_steps: int,
+    max_positions: int,
 ) -> dict[str, Any]:
     true_edge = np.asarray(y_edge_bps, dtype=np.float64)
     pred_edge = np.asarray(pred_edge_bps, dtype=np.float64)
@@ -748,6 +851,21 @@ def _build_economic_metrics(
     selected_mean_true_edge = float(np.mean(selected_true_edge)) if selected_count > 0 else 0.0
     selected_mean_pred_edge = float(np.mean(selected_pred_edge)) if selected_count > 0 else 0.0
     false_positive_churn = float(np.mean((selected_true_edge <= 0.0).astype(np.float64))) if selected_count > 0 else 0.0
+    small_account = _build_small_account_realism_summary(
+        quote=quote,
+        target_notional_quote=target_notional_quote,
+        min_order_quote=min_order_quote,
+        fee_rate=fee_rate,
+        replace_risk_steps=replace_risk_steps,
+        max_positions=max_positions,
+        operating_date_values=operating_date_values,
+        bucket_start_ts_ms=bucket_start_ts_ms,
+        prices=prices,
+        y_edge_bps=true_edge,
+        pred_edge_bps=pred_edge,
+        score=raw_score,
+        trade_mask=selected,
+    )
     return {
         "selected_count": selected_count,
         "selected_ratio": (float(selected_count) / float(total_count)) if total_count > 0 else 0.0,
@@ -758,7 +876,192 @@ def _build_economic_metrics(
         "selected_calibration_gap_bps": selected_mean_pred_edge - selected_mean_true_edge,
         "false_positive_churn_ratio": false_positive_churn,
         "top10_mean_true_edge_bps": float(np.mean(true_edge[top_idx])) if top_idx.size > 0 else 0.0,
+        "small_account": small_account,
     }
+
+
+def _build_small_account_realism_summary(
+    *,
+    quote: str,
+    target_notional_quote: float,
+    min_order_quote: float,
+    fee_rate: float,
+    replace_risk_steps: int,
+    max_positions: int,
+    operating_date_values: np.ndarray,
+    bucket_start_ts_ms: np.ndarray,
+    prices: np.ndarray,
+    y_edge_bps: np.ndarray,
+    pred_edge_bps: np.ndarray,
+    score: np.ndarray,
+    trade_mask: np.ndarray,
+) -> dict[str, Any]:
+    price_values = np.asarray(prices, dtype=np.float64)
+    true_edge = np.asarray(y_edge_bps, dtype=np.float64)
+    pred_edge = np.asarray(pred_edge_bps, dtype=np.float64)
+    raw_score = np.asarray(score, dtype=np.float64)
+    selected = np.asarray(trade_mask, dtype=bool)
+    date_values = np.asarray(operating_date_values, dtype=object)
+    bucket_values = np.asarray(bucket_start_ts_ms, dtype=np.int64)
+
+    assumptions = {
+        "quote": str(quote).strip().upper() or "KRW",
+        "target_notional_quote": float(target_notional_quote),
+        "min_order_quote": float(min_order_quote),
+        "fee_rate": float(fee_rate),
+        "replace_risk_steps": int(replace_risk_steps),
+        "max_positions": max(int(max_positions), 1),
+        "tick_size_policy": "upbit_price_ladder_proxy",
+        "policy_source": [
+            "config/risk.yaml:risk.per_trade_krw",
+            "config/risk.yaml:risk.min_order_krw",
+            "config/base.yaml:live.small_account.max_positions",
+        ],
+    }
+    selected_count = int(np.sum(selected))
+    if selected_count <= 0:
+        return {
+            "assumptions": assumptions,
+            "selected_count": 0,
+            "admissible_count": 0,
+            "admissible_ratio": 0.0,
+            "selected_viability_rate": 0.0,
+            "viable_selected_count": 0,
+            "viable_selected_ratio": 0.0,
+            "capped_by_max_positions_count": 0,
+            "rejected_for_min_order_count": 0,
+            "rejected_for_cost_count": 0,
+            "admissible_mean_true_edge_bps": 0.0,
+            "admissible_mean_pred_edge_after_adjustments_bps": 0.0,
+            "viable_selected_mean_true_edge_bps": 0.0,
+            "viable_selected_mean_pred_edge_after_adjustments_bps": 0.0,
+            "mean_incremental_cost_bps": 0.0,
+            "cost_breakdown_samples": [],
+        }
+
+    admissible_mask = np.zeros(selected.shape[0], dtype=bool)
+    rejected_for_min_order = 0
+    rejected_for_cost = 0
+    adjusted_pred_edge = np.zeros(selected.shape[0], dtype=np.float64)
+    incremental_costs = np.zeros(selected.shape[0], dtype=np.float64)
+    cost_breakdown_samples: list[dict[str, Any]] = []
+
+    for index in np.flatnonzero(selected):
+        price = float(price_values[index])
+        predicted_edge = float(pred_edge[index])
+        inferred_tick_size = _infer_upbit_tick_size(price=float(price), quote=str(quote))
+        sizing = derive_volume_from_target_notional(
+            side="bid",
+            price=float(price),
+            target_notional_quote=float(target_notional_quote),
+            fee_rate=float(fee_rate),
+        )
+        if float(sizing.admissible_notional_quote) + 1e-12 < float(min_order_quote):
+            rejected_for_min_order += 1
+            continue
+        breakdown = compute_small_account_cost_breakdown(
+            price=float(price),
+            tick_size=float(inferred_tick_size),
+            fee_rate=float(fee_rate),
+            expected_edge_bps=float(predicted_edge),
+            replace_risk_steps=int(replace_risk_steps),
+        )
+        if breakdown.expected_net_edge_bps is None or float(breakdown.expected_net_edge_bps) <= 0.0:
+            rejected_for_cost += 1
+            continue
+        admissible_mask[index] = True
+        adjusted_pred_edge[index] = float(breakdown.expected_net_edge_bps)
+        incremental_costs[index] = float(breakdown.estimated_total_cost_bps)
+        if len(cost_breakdown_samples) < 3:
+            cost_breakdown_samples.append(cost_breakdown_to_payload(breakdown))
+
+    capped_mask = _cap_selected_by_bucket(
+        admissible_mask=admissible_mask,
+        score=raw_score,
+        operating_date_values=date_values,
+        bucket_start_ts_ms=bucket_values,
+        max_positions=max(int(max_positions), 1),
+    )
+    admissible_count = int(np.sum(admissible_mask))
+    viable_selected_count = int(np.sum(capped_mask))
+    admissible_true_edges = true_edge[admissible_mask]
+    admissible_predicted_after_adjustments = adjusted_pred_edge[admissible_mask]
+    viable_true_edges = true_edge[capped_mask]
+    viable_predicted_after_adjustments = adjusted_pred_edge[capped_mask]
+    viable_incremental_costs = incremental_costs[capped_mask]
+
+    return {
+        "assumptions": assumptions,
+        "selected_count": selected_count,
+        "admissible_count": admissible_count,
+        "admissible_ratio": float(admissible_count) / float(selected_count) if selected_count > 0 else 0.0,
+        "selected_viability_rate": float(admissible_count) / float(selected_count) if selected_count > 0 else 0.0,
+        "viable_selected_count": viable_selected_count,
+        "viable_selected_ratio": float(viable_selected_count) / float(selected_count) if selected_count > 0 else 0.0,
+        "capped_by_max_positions_count": int(max(admissible_count - viable_selected_count, 0)),
+        "rejected_for_min_order_count": int(rejected_for_min_order),
+        "rejected_for_cost_count": int(rejected_for_cost),
+        "admissible_mean_true_edge_bps": float(np.mean(admissible_true_edges)) if admissible_true_edges.size > 0 else 0.0,
+        "admissible_mean_pred_edge_after_adjustments_bps": (
+            float(np.mean(admissible_predicted_after_adjustments)) if admissible_predicted_after_adjustments.size > 0 else 0.0
+        ),
+        "viable_selected_mean_true_edge_bps": float(np.mean(viable_true_edges)) if viable_true_edges.size > 0 else 0.0,
+        "viable_selected_mean_pred_edge_after_adjustments_bps": (
+            float(np.mean(viable_predicted_after_adjustments)) if viable_predicted_after_adjustments.size > 0 else 0.0
+        ),
+        "mean_incremental_cost_bps": float(np.mean(viable_incremental_costs)) if viable_incremental_costs.size > 0 else 0.0,
+        "cost_breakdown_samples": cost_breakdown_samples,
+    }
+
+
+def _cap_selected_by_bucket(
+    *,
+    admissible_mask: np.ndarray,
+    score: np.ndarray,
+    operating_date_values: np.ndarray,
+    bucket_start_ts_ms: np.ndarray,
+    max_positions: int,
+) -> np.ndarray:
+    admissible = np.asarray(admissible_mask, dtype=bool)
+    if int(np.sum(admissible)) <= 0:
+        return admissible
+    result = np.zeros(admissible.shape[0], dtype=bool)
+    by_bucket: dict[tuple[str, int], list[int]] = {}
+    for index in np.flatnonzero(admissible):
+        key = (str(operating_date_values[index]).strip(), int(bucket_start_ts_ms[index]))
+        by_bucket.setdefault(key, []).append(int(index))
+    for indices in by_bucket.values():
+        ranked = sorted(indices, key=lambda idx: float(score[idx]), reverse=True)
+        for index in ranked[: max(int(max_positions), 1)]:
+            result[index] = True
+    return result
+
+
+def _infer_upbit_tick_size(*, price: float, quote: str) -> float:
+    quote_value = str(quote).strip().upper()
+    if quote_value != "KRW":
+        return 0.00000001
+
+    px = max(float(price), 0.0)
+    if px >= 2_000_000:
+        return 1000.0
+    if px >= 1_000_000:
+        return 500.0
+    if px >= 500_000:
+        return 100.0
+    if px >= 100_000:
+        return 50.0
+    if px >= 10_000:
+        return 10.0
+    if px >= 1_000:
+        return 1.0
+    if px >= 100:
+        return 0.1
+    if px >= 10:
+        return 0.01
+    if px >= 1:
+        return 0.001
+    return 0.0001
 
 
 def _build_label_audit(
@@ -828,6 +1131,22 @@ def _build_horizon_diagnostics(frame: pl.DataFrame) -> dict[str, Any]:
     return diagnostics
 
 
+def _build_small_account_assumptions(options: TrainV6Edge2StageOptions) -> dict[str, Any]:
+    return {
+        "quote": str(options.quote).strip().upper() or "KRW",
+        "target_notional_quote": float(options.small_account_target_notional_quote),
+        "min_order_quote": float(options.small_account_min_order_quote),
+        "fee_rate": float(options.small_account_fee_rate),
+        "replace_risk_steps": int(options.small_account_replace_risk_steps),
+        "max_positions": max(int(options.small_account_max_positions), 1),
+        "policy_source": [
+            "config/risk.yaml:risk.per_trade_krw",
+            "config/risk.yaml:risk.min_order_krw",
+            "config/base.yaml:live.small_account.max_positions",
+        ],
+    }
+
+
 def _resolve_dates(start: str, end: str) -> tuple[str, ...]:
     from autobot.data.micro.raw_readers import parse_date_range
 
@@ -865,3 +1184,8 @@ def _sha256_file(path: Path) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> Path:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path

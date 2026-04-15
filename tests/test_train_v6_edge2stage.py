@@ -10,7 +10,11 @@ from autobot.data.derived.market_state_training_slice_v1 import (
 )
 from autobot.models.registry import load_json
 from autobot.models.predictor import load_predictor_from_registry
-from autobot.models.train_v6_edge2stage import TrainV6Edge2StageOptions, train_and_register_v6_edge2stage
+from autobot.models.train_v6_edge2stage import (
+    TrainV6Edge2StageOptions,
+    _build_small_account_realism_summary,
+    train_and_register_v6_edge2stage,
+)
 
 
 def test_train_v6_edge2stage_writes_registry_artifacts(tmp_path: Path) -> None:
@@ -179,6 +183,7 @@ def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path
     runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
     selection_policy = load_json(result.run_dir / "selection_policy.json")
     train_config = load_json(result.run_dir / "train_config.yaml")
+    economic_objective_profile = load_json(result.run_dir / "economic_objective_profile.json")
     diagnostics = train_config["horizon_diagnostics"]
 
     assert label_spec["classification_label"] == "structural_tradeable_20m"
@@ -197,6 +202,8 @@ def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path
     assert runtime_recommendations["stage_a_label"] == "structural_tradeable_20m"
     assert runtime_recommendations["promotion_label"] == "tradeable_20m"
     assert "structural_tradeable_20m" in runtime_recommendations["decision_rule"]
+    assert train_config["small_account_realism"]["assumptions"]["target_notional_quote"] == 10_000.0
+    assert train_config["small_account_realism"]["assumptions"]["max_positions"] == 1
     assert selection_policy["mode"] == "raw_threshold"
     assert selection_policy["tradeable_prob_min"] == 0.55
     assert selection_policy["expected_net_edge_bps_min"] == 3.0
@@ -209,6 +216,194 @@ def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path
     assert 0.0 < diagnostics["20m"]["above_3bps_ratio"] < 1.0
     report = load_json(result.train_report_path)
     assert report["architecture_bakeoff"]["direct_ranker_challenger"]["test"]["economic"]["selected_count"] >= 0
+    assert report["architecture_bakeoff"]["default_candidate"]["test"]["economic"]["small_account"]["selected_count"] >= 0
+    assert economic_objective_profile["v6_small_account_realism"]["target_notional_quote"] == 10_000.0
+
+
+def test_train_v6_edge2stage_persists_small_account_runtime_contract(tmp_path: Path) -> None:
+    for offset in range(20):
+        date_value = f"2026-04-{offset + 1:02d}"
+        positive = (offset % 2) == 0
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-BTC",
+            label_available=True,
+            tradeable_value=1 if positive else 0,
+            net_edge_20m_bps=8.0 if positive else -4.0,
+        )
+    build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start="2026-04-01",
+            end="2026-04-20",
+            markets=("KRW-BTC",),
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+        )
+    )
+
+    result = train_and_register_v6_edge2stage(
+        TrainV6Edge2StageOptions(
+            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+            registry_root=tmp_path / "registry",
+            logs_root=tmp_path / "logs",
+            model_family="train_v6_edge2stage",
+            quote="KRW",
+            start="2026-04-01",
+            end="2026-04-20",
+            seed=42,
+            nthread=1,
+            small_account_target_notional_quote=10_000.0,
+            small_account_min_order_quote=5_000.0,
+            small_account_fee_rate=0.0005,
+            small_account_replace_risk_steps=2,
+        )
+    )
+
+    predictor_contract = load_json(result.run_dir / "predictor_contract.json")
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+
+    assert predictor_contract["small_account_assumptions"]["target_notional_quote"] == 10_000.0
+    assert predictor_contract["small_account_assumptions"]["min_order_quote"] == 5_000.0
+    assert predictor_contract["small_account_assumptions"]["fee_rate"] == 0.0005
+    assert predictor_contract["small_account_assumptions"]["replace_risk_steps"] == 2
+    assert runtime_recommendations["small_account_realism"]["target_notional_quote"] == 10_000.0
+    assert runtime_recommendations["small_account_realism"]["min_order_quote"] == 5_000.0
+    assert runtime_recommendations["small_account_realism"]["test_summary"]["assumptions"]["max_positions"] == 1
+
+
+def test_train_v6_edge2stage_report_includes_small_account_execution_feasibility(tmp_path: Path) -> None:
+    for offset in range(20):
+        date_value = f"2026-04-{offset + 1:02d}"
+        positive = (offset % 2) == 0
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-BTC",
+            label_available=True,
+            tradeable_value=1 if positive else 0,
+            net_edge_20m_bps=8.0 if positive else -4.0,
+        )
+    build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start="2026-04-01",
+            end="2026-04-20",
+            markets=("KRW-BTC",),
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+        )
+    )
+
+    _baseline = train_and_register_v6_edge2stage(
+        TrainV6Edge2StageOptions(
+            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+            registry_root=tmp_path / "registry",
+            logs_root=tmp_path / "logs",
+            model_family="train_v6_edge2stage",
+            quote="KRW",
+            start="2026-04-01",
+            end="2026-04-20",
+            seed=42,
+            nthread=1,
+            tradeable_prob_threshold=0.0,
+            net_edge_threshold_bps=-100.0,
+            small_account_target_notional_quote=10_000.0,
+            small_account_min_order_quote=5_000.0,
+            small_account_fee_rate=0.0,
+        )
+    )
+
+    result = train_and_register_v6_edge2stage(
+        TrainV6Edge2StageOptions(
+            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+            registry_root=tmp_path / "registry-high-fee",
+            logs_root=tmp_path / "logs-high-fee",
+            model_family="train_v6_edge2stage",
+            quote="KRW",
+            start="2026-04-01",
+            end="2026-04-20",
+            seed=42,
+            nthread=1,
+            tradeable_prob_threshold=0.0,
+            net_edge_threshold_bps=-100.0,
+            small_account_target_notional_quote=10_000.0,
+            small_account_min_order_quote=5_000.0,
+            small_account_fee_rate=0.01,
+        )
+    )
+
+    report = load_json(result.train_report_path)
+    small_account = report["small_account_realism"]["test"]
+
+    assert small_account["selected_count"] >= 0
+    assert small_account["rejected_for_min_order_count"] >= 0
+    assert small_account["rejected_for_cost_count"] >= 0
+    assert 0.0 <= small_account["admissible_ratio"] <= 1.0
+    assert 0.0 <= small_account["selected_viability_rate"] <= 1.0
+    assert 0.0 <= small_account["viable_selected_ratio"] <= 1.0
+    assert small_account["assumptions"]["target_notional_quote"] == 10_000.0
+    assert small_account["assumptions"]["min_order_quote"] == 5_000.0
+    assert small_account["assumptions"]["fee_rate"] == 0.01
+    assert small_account["assumptions"]["max_positions"] == 1
+    assert small_account["mean_incremental_cost_bps"] >= 0.0
+    assert isinstance(small_account["cost_breakdown_samples"], list)
+
+
+def test_train_v6_edge2stage_small_account_summary_caps_concurrent_positions(tmp_path: Path) -> None:
+    for offset in range(20):
+        date_value = f"2026-04-{offset + 1:02d}"
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-BTC",
+            label_available=True,
+            tradeable_value=1,
+            net_edge_20m_bps=8.0,
+        )
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-ETH",
+            label_available=True,
+            tradeable_value=1,
+            net_edge_20m_bps=7.0,
+        )
+    build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start="2026-04-01",
+            end="2026-04-20",
+            markets=("KRW-BTC", "KRW-ETH"),
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+        )
+    )
+
+    result = train_and_register_v6_edge2stage(
+        TrainV6Edge2StageOptions(
+            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+            registry_root=tmp_path / "registry",
+            logs_root=tmp_path / "logs",
+            model_family="train_v6_edge2stage",
+            quote="KRW",
+            start="2026-04-01",
+            end="2026-04-20",
+            seed=42,
+            nthread=1,
+            small_account_max_positions=1,
+        )
+    )
+
+    report = load_json(result.train_report_path)
+    small_account = report["architecture_bakeoff"]["default_candidate"]["test"]["economic"]["small_account"]
+
+    assert small_account["admissible_count"] >= small_account["viable_selected_count"]
+    assert small_account["capped_by_max_positions_count"] >= 0
 
 
 def test_train_v6_edge2stage_uses_usable_pairs_bootstrap_when_data_is_not_yet_adequate(tmp_path: Path) -> None:
