@@ -141,6 +141,7 @@
     raw_ticks_daily_service: "체결 REST 일간 수집 서비스",
     raw_ticks_backfill_service: "체결 REST 보강 서비스",
     raw_trade_v1_service: "통합 체결 원천 빌드 서비스",
+    market_state_v1_service: "2차 레이어 생성 서비스",
     private_ws_archive_service: "개인 WS 수집",
     spawn_timer: "야간 학습 체인 타이머",
     promote_timer: "후보 승급 타이머",
@@ -148,7 +149,8 @@
     candles_api_refresh_timer: "캔들 원천 수집 타이머",
     raw_ticks_daily_timer: "체결 REST 일간 수집 타이머",
     raw_ticks_backfill_timer: "체결 REST 보강 타이머",
-    raw_trade_v1_timer: "통합 체결 원천 빌드 타이머"
+    raw_trade_v1_timer: "통합 체결 원천 빌드 타이머",
+    market_state_v1_timer: "2차 레이어 생성 타이머"
   };
 
   const OPS_ACTION_TEXT = {
@@ -1939,6 +1941,8 @@
     const rawTicksBackfillTimer = services.raw_ticks_backfill_timer || {};
     const rawTradeService = services.raw_trade_v1_service || {};
     const rawTradeTimer = services.raw_trade_v1_timer || {};
+    const marketStateService = services.market_state_v1_service || {};
+    const marketStateTimer = services.market_state_v1_timer || {};
     const health = ws.health_snapshot || {};
     const latestRun = ws.runs_summary_latest || {};
     const rawWs = foundation.raw_ws_public || {};
@@ -1946,6 +1950,7 @@
     const rawTicks = foundation.raw_ticks_daily || {};
     const rawTicksBackfill = foundation.raw_ticks_backfill || {};
     const rawTrade = foundation.raw_trade_v1 || {};
+    const marketState = foundation.market_state_v1 || {};
     const candlesApi = foundation.candles_api_v1 || {};
     const sequenceSupport = ((datasets.sequence_v1 || {}).support_level_counts) || {};
     const sequenceCurrent = (((datasets.sequence_v1 || {}).current_window_support || {}).support_level_counts) || {};
@@ -2011,6 +2016,8 @@
             compactStat("통합 체결 최근", fmtDateTime(rawTrade.latest_generated_at_utc)),
             compactStat("통합 체결 행", fmtNumber(rawTrade.merged_rows_total, 0)),
             compactStat("통합 페어 수", fmtNumber(rawTrade.built_pairs, 0)),
+            compactStat("2차 레이어 타이머", translate(marketStateTimer.active_state)),
+            compactStat("2차 레이어 최근", fmtDateTime(marketState.latest_generated_at_utc)),
             compactStat("개인 WS 파일 수", fmtNumber(rawPrivate.file_count, 0)),
             compactStat("REST 체결 파일 수", fmtNumber(rawTicks.file_count, 0)),
             compactStat("통합 체결 파일 수", fmtNumber(rawTrade.file_count, 0)),
@@ -2026,6 +2033,12 @@
             compactStat("WS 캔들", maybe((datasets.ws_candle_v1 || {}).status)),
             compactStat("호가 30", maybe((datasets.lob30_v1 || {}).status)),
             compactStat("시퀀스", maybe((datasets.sequence_v1 || {}).status)),
+            compactStat("2차 운영일", maybe(marketState.latest_operating_date_kst)),
+            compactStat("2차 built", fmtNumber(marketState.built_pairs, 0)),
+            compactStat("2차 reused", fmtNumber(marketState.reused_pairs, 0)),
+            compactStat("2차 skipped", fmtNumber(marketState.skipped_pairs, 0)),
+            compactStat("slice 최근", fmtDateTime(marketState.training_slice_latest_generated_at_utc)),
+            compactStat("slice 행", fmtNumber(marketState.training_slice_rows_total, 0)),
             compactStat("정상 문맥", maybe(sequenceSupport.strict_full, "0")),
             compactStat("축약 문맥", maybe(sequenceSupport.reduced_context, "0")),
             compactStat("구조 오류", maybe(sequenceSupport.structural_invalid, "0")),

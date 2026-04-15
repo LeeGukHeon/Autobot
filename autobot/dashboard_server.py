@@ -3028,6 +3028,12 @@ def _summarize_foundation_ingestion(
     raw_trade_summary = _load_json(raw_trade_summary_path)
     raw_trade_build_report_path = project_root / "data" / "raw_trade_v1" / "_meta" / "build_report.json"
     raw_trade_build_report = _load_json(raw_trade_build_report_path)
+    market_state_root = project_root / "data" / "derived" / "market_state_v1"
+    market_state_summary_path = market_state_root / "_meta" / "market_state_v1_latest.json"
+    market_state_summary = _load_json(market_state_summary_path)
+    training_slice_root = project_root / "data" / "derived" / "market_state_training_slice_v1"
+    training_slice_summary_path = training_slice_root / "_meta" / "market_state_training_slice_v1_latest.json"
+    training_slice_summary = _load_json(training_slice_summary_path)
     train_snapshot_close_summary_path = project_root / "data" / "collect" / "_meta" / "train_snapshot_close_latest.json"
     train_snapshot_close_summary = _load_json(train_snapshot_close_summary_path)
     private_ws_root = project_root / "data" / "raw_ws" / "upbit" / "private"
@@ -3100,6 +3106,23 @@ def _summarize_foundation_ingestion(
             "built_pairs": _coerce_int(raw_trade_build_report.get("built_pairs")),
             "service": dict(services.get("raw_trade_v1_service") or {}),
             "timer": dict(services.get("raw_trade_v1_timer") or {}),
+        },
+        "market_state_v1": {
+            "status": "ready" if bool(market_state_summary) and market_state_root.exists() else ("present" if market_state_root.exists() else "missing"),
+            "exists": market_state_root.exists(),
+            "latest_generated_at_utc": market_state_summary.get("generated_at_utc") or _path_mtime_iso(market_state_summary_path),
+            "summary_path": str(market_state_summary_path),
+            "latest_operating_date_kst": (list(market_state_summary.get("operating_dates_kst") or [])[-1] if bool(market_state_summary.get("operating_dates_kst")) else None),
+            "built_pairs": _coerce_int(market_state_summary.get("built_pairs")),
+            "reused_pairs": _coerce_int(market_state_summary.get("reused_pairs")),
+            "skipped_pairs": _coerce_int(market_state_summary.get("skipped_pairs")),
+            "training_slice_latest_generated_at_utc": training_slice_summary.get("generated_at_utc") or _path_mtime_iso(training_slice_summary_path),
+            "training_slice_summary_path": str(training_slice_summary_path),
+            "training_slice_built_dates": _coerce_int(training_slice_summary.get("built_dates")),
+            "training_slice_reused_dates": _coerce_int(training_slice_summary.get("reused_dates")),
+            "training_slice_rows_total": _coerce_int(training_slice_summary.get("rows_total")),
+            "service": dict(services.get("market_state_v1_service") or {}),
+            "timer": dict(services.get("market_state_v1_timer") or {}),
         },
         "raw_ws_private": {
             "status": "ready" if bool(private_ws_report) else ("present" if private_ws_root.exists() else "missing"),
@@ -3989,6 +4012,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "raw_ticks_daily_service": _unit_snapshot("autobot-raw-ticks-daily.service"),
         "raw_ticks_backfill_service": _unit_snapshot("autobot-raw-ticks-backfill.service"),
         "raw_trade_v1_service": _unit_snapshot("autobot-raw-trade-v1.service"),
+        "market_state_v1_service": _unit_snapshot("autobot-market-state-v1.service"),
         "private_ws_archive_service": _unit_snapshot("autobot-private-ws-archive.service"),
         "spawn_timer": _unit_snapshot_first(*_SPAWN_TIMER_UNITS, timer=True),
         "promote_timer": _unit_snapshot_first(*_PROMOTE_TIMER_UNITS, timer=True),
@@ -3997,6 +4021,7 @@ def build_dashboard_snapshot(project_root: Path) -> dict[str, Any]:
         "raw_ticks_daily_timer": _unit_snapshot("autobot-raw-ticks-daily.timer", timer=True),
         "raw_ticks_backfill_timer": _unit_snapshot("autobot-raw-ticks-backfill.timer", timer=True),
         "raw_trade_v1_timer": _unit_snapshot("autobot-raw-trade-v1.timer", timer=True),
+        "market_state_v1_timer": _unit_snapshot("autobot-market-state-v1.timer", timer=True),
     }
     foundation_ingestion = _summarize_foundation_ingestion(
         project_root,
