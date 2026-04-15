@@ -17,13 +17,6 @@ from .breakers import (
     clear_breaker,
     new_intents_allowed,
 )
-from .daemon import (
-    LiveDaemonSettings,
-    run_live_sync_daemon,
-    run_live_sync_daemon_with_executor_events,
-    run_live_sync_daemon_with_private_ws,
-)
-from .model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
 from .model_handoff import (
     build_live_runtime_sync_status,
     load_feature_platform_runtime_contract,
@@ -55,12 +48,47 @@ from .reconcile import (
 from .state_store import IntentRecord, LiveStateStore, OrderRecord, PositionRecord, RiskPlanRecord
 from .ws_handlers import apply_private_ws_event
 
+_OPTIONAL_EXPORTS: list[str] = []
+
+
+def _is_optional_live_dependency_missing(exc: ModuleNotFoundError) -> bool:
+    return str(getattr(exc, "name", "") or "").strip() in {"torch"}
+
+try:
+    from .daemon import (
+        LiveDaemonSettings,
+        run_live_sync_daemon,
+        run_live_sync_daemon_with_executor_events,
+        run_live_sync_daemon_with_private_ws,
+    )
+    _OPTIONAL_EXPORTS.extend(
+        [
+            "LiveDaemonSettings",
+            "run_live_sync_daemon",
+            "run_live_sync_daemon_with_executor_events",
+            "run_live_sync_daemon_with_private_ws",
+        ]
+    )
+except ModuleNotFoundError as exc:
+    if not _is_optional_live_dependency_missing(exc):
+        raise
+
+try:
+    from .model_alpha_runtime import LiveModelAlphaRuntimeSettings, run_live_model_alpha_runtime
+    _OPTIONAL_EXPORTS.extend(
+        [
+            "LiveModelAlphaRuntimeSettings",
+            "run_live_model_alpha_runtime",
+        ]
+    )
+except ModuleNotFoundError as exc:
+    if not _is_optional_live_dependency_missing(exc):
+        raise
+
 __all__ = [
     "IntentRecord",
     "LiveOrderAdmissibilityDecision",
     "LiveOrderAdmissibilitySnapshot",
-    "LiveDaemonSettings",
-    "LiveModelAlphaRuntimeSettings",
     "LiveStateStore",
     "OrderRecord",
     "PositionRecord",
@@ -86,10 +114,6 @@ __all__ = [
     "resolve_rollout_gate_inputs",
     "rollout_gate_to_payload",
     "rollout_latest_artifact_path",
-    "run_live_sync_daemon",
-    "run_live_model_alpha_runtime",
-    "run_live_sync_daemon_with_executor_events",
-    "run_live_sync_daemon_with_private_ws",
     "reconcile_exchange_snapshot",
     "resolve_live_model_ref_source",
     "resolve_live_runtime_model_contract",
@@ -104,4 +128,4 @@ __all__ = [
     "DEFAULT_LIVE_TARGET_UNIT",
     "VALID_ROLLOUT_MODES",
     "write_rollout_latest",
-]
+] + _OPTIONAL_EXPORTS

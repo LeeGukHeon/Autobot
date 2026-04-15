@@ -298,25 +298,6 @@ def test_train_v6_edge2stage_report_includes_small_account_execution_feasibility
         )
     )
 
-    _baseline = train_and_register_v6_edge2stage(
-        TrainV6Edge2StageOptions(
-            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
-            registry_root=tmp_path / "registry",
-            logs_root=tmp_path / "logs",
-            model_family="train_v6_edge2stage",
-            quote="KRW",
-            start="2026-04-01",
-            end="2026-04-20",
-            seed=42,
-            nthread=1,
-            tradeable_prob_threshold=0.0,
-            net_edge_threshold_bps=-100.0,
-            small_account_target_notional_quote=10_000.0,
-            small_account_min_order_quote=5_000.0,
-            small_account_fee_rate=0.0,
-        )
-    )
-
     result = train_and_register_v6_edge2stage(
         TrainV6Edge2StageOptions(
             dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
@@ -351,6 +332,38 @@ def test_train_v6_edge2stage_report_includes_small_account_execution_feasibility
     assert small_account["assumptions"]["max_positions"] == 1
     assert small_account["mean_incremental_cost_bps"] >= 0.0
     assert isinstance(small_account["cost_breakdown_samples"], list)
+
+    baseline_small_account = _build_small_account_realism_summary(
+        quote="KRW",
+        target_notional_quote=10_000.0,
+        min_order_quote=5_000.0,
+        fee_rate=0.0,
+        replace_risk_steps=2,
+        max_positions=1,
+        operating_date_values=["2026-04-20"],
+        bucket_start_ts_ms=[1_000],
+        prices=[100_000.0],
+        y_edge_bps=[8.0],
+        pred_edge_bps=[120.0],
+        score=[120.0],
+        trade_mask=[True],
+    )
+    high_fee_small_account = _build_small_account_realism_summary(
+        quote="KRW",
+        target_notional_quote=10_000.0,
+        min_order_quote=5_000.0,
+        fee_rate=0.01,
+        replace_risk_steps=2,
+        max_positions=1,
+        operating_date_values=["2026-04-20"],
+        bucket_start_ts_ms=[1_000],
+        prices=[100_000.0],
+        y_edge_bps=[8.0],
+        pred_edge_bps=[120.0],
+        score=[120.0],
+        trade_mask=[True],
+    )
+    assert high_fee_small_account["mean_incremental_cost_bps"] > baseline_small_account["mean_incremental_cost_bps"]
 
 
 def test_train_v6_edge2stage_small_account_summary_caps_concurrent_positions(tmp_path: Path) -> None:

@@ -1022,6 +1022,10 @@ def build_parser() -> argparse.ArgumentParser:
     model_train_edge2stage_parser.add_argument("--model-family", default="train_v6_edge2stage")
     model_train_edge2stage_parser.add_argument("--seed", type=int, default=42)
     model_train_edge2stage_parser.add_argument("--nthread", type=int, default=1)
+    model_train_edge2stage_parser.add_argument("--small-account-target-notional-quote", type=float)
+    model_train_edge2stage_parser.add_argument("--small-account-min-order-quote", type=float)
+    model_train_edge2stage_parser.add_argument("--small-account-fee-rate", type=float)
+    model_train_edge2stage_parser.add_argument("--small-account-replace-risk-steps", type=int)
 
     model_train_variant_parser = model_subparsers.add_parser(
         "train-variant-matrix",
@@ -3238,6 +3242,26 @@ def _handle_model_command(args: argparse.Namespace, config_dir: Path, base_confi
                     end=str(getattr(args, "end", "")).strip(),
                     seed=int(getattr(args, "seed", None) if getattr(args, "seed", None) is not None else defaults["seed"]),
                     nthread=int(getattr(args, "nthread", None) if getattr(args, "nthread", None) is not None else 1),
+                    small_account_target_notional_quote=float(
+                        getattr(args, "small_account_target_notional_quote", None)
+                        if getattr(args, "small_account_target_notional_quote", None) is not None
+                        else 10_000.0
+                    ),
+                    small_account_min_order_quote=float(
+                        getattr(args, "small_account_min_order_quote", None)
+                        if getattr(args, "small_account_min_order_quote", None) is not None
+                        else 5_000.0
+                    ),
+                    small_account_fee_rate=float(
+                        getattr(args, "small_account_fee_rate", None)
+                        if getattr(args, "small_account_fee_rate", None) is not None
+                        else 0.0005
+                    ),
+                    small_account_replace_risk_steps=int(
+                        getattr(args, "small_account_replace_risk_steps", None)
+                        if getattr(args, "small_account_replace_risk_steps", None) is not None
+                        else 2
+                    ),
                 )
             )
             print(
