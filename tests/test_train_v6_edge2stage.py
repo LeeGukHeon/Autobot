@@ -123,7 +123,7 @@ def test_train_v6_edge2stage_predictor_returns_edge2stage_fields(tmp_path: Path)
     assert "final_go_score" in payload
 
 
-def test_train_v6_edge2stage_uses_complete_dates_only_when_data_is_not_yet_adequate(tmp_path: Path) -> None:
+def test_train_v6_edge2stage_uses_usable_pairs_bootstrap_when_data_is_not_yet_adequate(tmp_path: Path) -> None:
     for offset in range(5):
         date_value = f"2026-04-{offset + 1:02d}"
         positive = (offset % 2) == 0
@@ -166,15 +166,23 @@ def test_train_v6_edge2stage_uses_complete_dates_only_when_data_is_not_yet_adequ
             end="2026-04-05",
             seed=42,
             nthread=1,
+            bootstrap_min_pair_rows=1,
+            bootstrap_min_usable_pairs_per_date=1,
         )
     )
     train_config = load_json(result.run_dir / "train_config.yaml")
-    assert train_config["date_selection_policy"] == "complete_dates_only_until_adequate"
-    assert train_config["effective_operating_dates"] == ["2026-04-01", "2026-04-02", "2026-04-03"]
+    assert train_config["date_selection_policy"] == "usable_pairs_bootstrap_until_adequate"
+    assert train_config["effective_operating_dates"] == [
+        "2026-04-01",
+        "2026-04-02",
+        "2026-04-03",
+        "2026-04-04",
+        "2026-04-05",
+    ]
     assert train_config["operating_date_split"] == {
-        "train_dates": ["2026-04-01"],
-        "valid_dates": ["2026-04-02"],
-        "test_dates": ["2026-04-03"],
+        "train_dates": ["2026-04-01", "2026-04-02", "2026-04-03"],
+        "valid_dates": ["2026-04-04"],
+        "test_dates": ["2026-04-05"],
     }
 
 

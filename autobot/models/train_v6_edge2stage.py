@@ -30,6 +30,12 @@ DEFAULT_HARD_NEGATIVE_HIGH_BPS = 3.0
 DEFAULT_FLAT_NEGATIVE_DOWNSAMPLE = 0.10
 DEFAULT_MIN_STANDARD_DATES = 14
 DEFAULT_MIN_BOOTSTRAP_DATES = 3
+DEFAULT_BOOTSTRAP_MIN_TICKER_RATIO = 0.99
+DEFAULT_BOOTSTRAP_MIN_TRADE_RATIO = 0.20
+DEFAULT_BOOTSTRAP_MIN_BOOK_RATIO = 0.20
+DEFAULT_BOOTSTRAP_MIN_LABEL_RATIO = 0.20
+DEFAULT_BOOTSTRAP_MIN_PAIR_ROWS = 10_000
+DEFAULT_BOOTSTRAP_MIN_USABLE_PAIRS_PER_DATE = 10
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,12 @@ class TrainV6Edge2StageOptions:
     hard_negative_low_bps: float = DEFAULT_HARD_NEGATIVE_LOW_BPS
     hard_negative_high_bps: float = DEFAULT_HARD_NEGATIVE_HIGH_BPS
     flat_negative_downsample: float = DEFAULT_FLAT_NEGATIVE_DOWNSAMPLE
+    bootstrap_min_ticker_ratio: float = DEFAULT_BOOTSTRAP_MIN_TICKER_RATIO
+    bootstrap_min_trade_ratio: float = DEFAULT_BOOTSTRAP_MIN_TRADE_RATIO
+    bootstrap_min_book_ratio: float = DEFAULT_BOOTSTRAP_MIN_BOOK_RATIO
+    bootstrap_min_label_ratio: float = DEFAULT_BOOTSTRAP_MIN_LABEL_RATIO
+    bootstrap_min_pair_rows: int = DEFAULT_BOOTSTRAP_MIN_PAIR_ROWS
+    bootstrap_min_usable_pairs_per_date: int = DEFAULT_BOOTSTRAP_MIN_USABLE_PAIRS_PER_DATE
     run_scope: str = "manual_edge2stage"
 
 
@@ -129,14 +141,27 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     selected_markets = _load_selected_markets(options.dataset_root)
     operating_dates = sorted({str(item).strip() for item in frame.get_column("operating_date_kst").to_list() if str(item).strip()})
     complete_operating_dates = _resolve_complete_operating_dates(frame=frame, selected_markets=selected_markets)
+    usable_pair_summary = _summarize_usable_pair_quality(frame)
+    usable_pairs = _select_usable_pairs(usable_pair_summary, options=options)
+    usable_operating_dates = _resolve_usable_operating_dates(
+        usable_pairs=usable_pairs,
+        min_pairs_per_date=int(options.bootstrap_min_usable_pairs_per_date),
+    )
     effective_operating_dates, date_selection_policy = _resolve_effective_operating_dates(
         all_operating_dates=operating_dates,
         complete_operating_dates=complete_operating_dates,
+        usable_operating_dates=usable_operating_dates,
     )
     if len(effective_operating_dates) < DEFAULT_MIN_BOOTSTRAP_DATES:
         raise ValueError(
             "train_v6_edge2stage requires at least 3 effective operating dates "
             f"(found={len(effective_operating_dates)} policy={date_selection_policy})"
+        )
+    if date_selection_policy == "usable_pairs_bootstrap_until_adequate":
+        frame = frame.join(
+            usable_pairs.select(["operating_date_kst", "market"]),
+            on=["operating_date_kst", "market"],
+            how="inner",
         )
     frame = frame.filter(pl.col("operating_date_kst").is_in(list(effective_operating_dates)))
     split = _resolve_operating_date_split(effective_operating_dates)
@@ -270,8 +295,22 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         "date_selection_policy": str(date_selection_policy),
         "all_operating_dates": list(operating_dates),
         "complete_operating_dates": list(complete_operating_dates),
+        "usable_operating_dates": list(usable_operating_dates),
         "effective_operating_dates": list(effective_operating_dates),
         "selected_markets": list(selected_markets),
+        "usable_pair_thresholds": {
+            "ticker_ratio_min": float(options.bootstrap_min_ticker_ratio),
+            "trade_ratio_min": float(options.bootstrap_min_trade_ratio),
+            "book_ratio_min": float(options.bootstrap_min_book_ratio),
+            "label_ratio_min": float(options.bootstrap_min_label_ratio),
+            "rows_min": int(options.bootstrap_min_pair_rows),
+            "min_usable_pairs_per_date": int(options.bootstrap_min_usable_pairs_per_date),
+        },
+        "usable_pairs_by_date": (
+            usable_pairs.group_by("operating_date_kst").len().sort("operating_date_kst").to_dicts()
+            if usable_pairs.height > 0
+            else []
+        ),
         "autobot_version": autobot_version,
     }
     data_fingerprint = _build_data_fingerprint(
@@ -419,6 +458,60 @@ def _load_selected_markets(dataset_root: Path) -> tuple[str, ...]:
     return values
 
 
+def _summarize_usable_pair_quality(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.height <= 0:
+        return pl.DataFrame(
+            schema={
+                "operating_date_kst": pl.Utf8,
+                "market": pl.Utf8,
+                "rows": pl.Int64,
+                "ticker_ratio": pl.Float64,
+                "trade_ratio": pl.Float64,
+                "book_ratio": pl.Float64,
+                "label_ratio": pl.Float64,
+                "source_quality_mean": pl.Float64,
+            }
+        )
+    return (
+        frame.group_by(["operating_date_kst", "market"])
+        .agg(
+            [
+                pl.len().cast(pl.Int64).alias("rows"),
+                pl.col("ticker_available").cast(pl.Float64).mean().alias("ticker_ratio"),
+                pl.col("trade_available").cast(pl.Float64).mean().alias("trade_ratio"),
+                pl.col("book_available").cast(pl.Float64).mean().alias("book_ratio"),
+                pl.col("label_available_20m").cast(pl.Float64).mean().alias("label_ratio"),
+                pl.col("source_quality_score").mean().alias("source_quality_mean"),
+            ]
+        )
+        .sort(["operating_date_kst", "market"])
+    )
+
+
+def _select_usable_pairs(summary: pl.DataFrame, *, options: TrainV6Edge2StageOptions) -> pl.DataFrame:
+    if summary.height <= 0:
+        return summary
+    return summary.filter(
+        (pl.col("ticker_ratio") >= float(options.bootstrap_min_ticker_ratio))
+        & (pl.col("trade_ratio") >= float(options.bootstrap_min_trade_ratio))
+        & (pl.col("book_ratio") >= float(options.bootstrap_min_book_ratio))
+        & (pl.col("label_ratio") >= float(options.bootstrap_min_label_ratio))
+        & (pl.col("rows") >= int(options.bootstrap_min_pair_rows))
+    )
+
+
+def _resolve_usable_operating_dates(*, usable_pairs: pl.DataFrame, min_pairs_per_date: int) -> list[str]:
+    if usable_pairs.height <= 0:
+        return []
+    counts = (
+        usable_pairs.group_by("operating_date_kst")
+        .len()
+        .filter(pl.col("len") >= int(max(min_pairs_per_date, 1)))
+        .sort("operating_date_kst")
+    )
+    return [str(item).strip() for item in counts.get_column("operating_date_kst").to_list()]
+
+
 def _resolve_operating_date_split(operating_dates: list[str]) -> dict[str, list[str]]:
     total = len(operating_dates)
     if total >= 30:
@@ -455,9 +548,16 @@ def _resolve_complete_operating_dates(*, frame: pl.DataFrame, selected_markets: 
     return [str(item).strip() for item in counts.get_column("operating_date_kst").to_list()]
 
 
-def _resolve_effective_operating_dates(*, all_operating_dates: list[str], complete_operating_dates: list[str]) -> tuple[list[str], str]:
+def _resolve_effective_operating_dates(
+    *,
+    all_operating_dates: list[str],
+    complete_operating_dates: list[str],
+    usable_operating_dates: list[str],
+) -> tuple[list[str], str]:
     if len(all_operating_dates) >= DEFAULT_MIN_STANDARD_DATES:
         return list(all_operating_dates), "all_dates_standard"
+    if len(usable_operating_dates) >= DEFAULT_MIN_BOOTSTRAP_DATES:
+        return list(usable_operating_dates), "usable_pairs_bootstrap_until_adequate"
     return list(complete_operating_dates), "complete_dates_only_until_adequate"
 
 

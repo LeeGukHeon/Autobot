@@ -67,6 +67,10 @@ TRAINING_SLICE_SCHEMA: dict[str, pl.DataType] = {
     "universe_breadth_up_ratio": pl.Float64,
     "universe_notional_rank_pct": pl.Float64,
     "source_quality_score": pl.Float64,
+    "ticker_available": pl.Boolean,
+    "trade_available": pl.Boolean,
+    "book_available": pl.Boolean,
+    "candle_context_available": pl.Boolean,
     "label_available_20m": pl.Boolean,
     "tradeable_20m": pl.Int8,
     "net_edge_10m_bps": pl.Float64,
@@ -373,6 +377,10 @@ def _normalize_training_slice_frame(frame: pl.DataFrame) -> pl.DataFrame:
     ]
     bool_fill_false = [
         "ticker_proxy_available",
+        "ticker_available",
+        "trade_available",
+        "book_available",
+        "candle_context_available",
         "label_available_20m",
     ]
     for column in numeric_fill_zero:
