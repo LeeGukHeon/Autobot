@@ -76,3 +76,9 @@ Thumbs.db
 **/__pycache__/
 **/*.pyc
 **/*.pyo
+.omx/
+.codex/
+
+# Local verification/bootstrap artifacts
+.tmp-pydeps/
+.venv-verify/

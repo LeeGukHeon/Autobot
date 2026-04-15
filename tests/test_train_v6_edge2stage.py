@@ -123,7 +123,92 @@ def test_train_v6_edge2stage_predictor_returns_edge2stage_fields(tmp_path: Path)
     assert "final_go_score" in payload
     report = load_json(result.train_report_path)
     assert "horizon_diagnostics" in report
+    assert "label_audit" in report
+    assert "architecture_bakeoff" in report
     assert set(report["horizon_diagnostics"].keys()) >= {"10m", "20m", "40m"}
+
+
+def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path) -> None:
+    for offset in range(20):
+        date_value = f"2026-04-{offset + 1:02d}"
+        positive = (offset % 2) == 0
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-BTC",
+            label_available=True,
+            tradeable_value=1 if positive else 0,
+            net_edge_20m_bps=8.0 if positive else -4.0,
+        )
+        _write_market_state_pair(
+            tmp_path,
+            date_value,
+            "KRW-ETH",
+            label_available=True,
+            tradeable_value=0 if positive else 1,
+            net_edge_20m_bps=-2.0 if positive else 7.0,
+        )
+    build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start="2026-04-01",
+            end="2026-04-20",
+            markets=("KRW-BTC", "KRW-ETH"),
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+        )
+    )
+
+    result = train_and_register_v6_edge2stage(
+        TrainV6Edge2StageOptions(
+            dataset_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+            registry_root=tmp_path / "registry",
+            logs_root=tmp_path / "logs",
+            model_family="train_v6_edge2stage",
+            quote="KRW",
+            start="2026-04-01",
+            end="2026-04-20",
+            seed=42,
+            nthread=1,
+        )
+    )
+
+    label_spec = load_json(result.run_dir / "label_spec.json")
+    predictor_contract = load_json(result.run_dir / "predictor_contract.json")
+    runtime_recommendations = load_json(result.run_dir / "runtime_recommendations.json")
+    selection_policy = load_json(result.run_dir / "selection_policy.json")
+    train_config = load_json(result.run_dir / "train_config.yaml")
+    diagnostics = train_config["horizon_diagnostics"]
+
+    assert label_spec["classification_label"] == "structural_tradeable_20m"
+    assert label_spec["promotion_label"] == "tradeable_20m"
+    assert label_spec["regression_label"] == "net_edge_20m_bps"
+    assert label_spec["auxiliary_labels"] == ["net_edge_10m_bps", "net_edge_40m_bps"]
+    assert train_config["label_audit"]["stage_a_label"] == "structural_tradeable_20m"
+    assert train_config["label_audit"]["promotion_label"] == "tradeable_20m"
+    assert train_config["label_audit"]["tradeable_vs_edge_threshold_agreement"] == 1.0
+    assert train_config["label_audit"]["stage_a_positive_ratio"] == 1.0
+    assert train_config["label_audit"]["stage_a_vs_edge_threshold_agreement"] < 1.0
+    assert train_config["label_audit"]["stage_a_vs_tradeable_agreement"] < 1.0
+    assert predictor_contract["tradeable_prob_semantics"] == "structural_tradeable_20m"
+    assert predictor_contract["promotion_label"] == "tradeable_20m"
+    assert "structural_tradeable_20m" in predictor_contract["decision_rule"]
+    assert runtime_recommendations["stage_a_label"] == "structural_tradeable_20m"
+    assert runtime_recommendations["promotion_label"] == "tradeable_20m"
+    assert "structural_tradeable_20m" in runtime_recommendations["decision_rule"]
+    assert selection_policy["mode"] == "raw_threshold"
+    assert selection_policy["tradeable_prob_min"] == 0.55
+    assert selection_policy["expected_net_edge_bps_min"] == 3.0
+    assert selection_policy["fallback_used"] is False
+    assert diagnostics["10m"]["rows"] > 0
+    assert diagnostics["20m"]["rows"] > 0
+    assert diagnostics["40m"]["rows"] > 0
+    assert diagnostics["10m"]["above_3bps_ratio"] == 0.0
+    assert diagnostics["40m"]["above_3bps_ratio"] == 1.0
+    assert 0.0 < diagnostics["20m"]["above_3bps_ratio"] < 1.0
+    report = load_json(result.train_report_path)
+    assert report["architecture_bakeoff"]["direct_ranker_challenger"]["test"]["economic"]["selected_count"] >= 0
 
 
 def test_train_v6_edge2stage_uses_usable_pairs_bootstrap_when_data_is_not_yet_adequate(tmp_path: Path) -> None:

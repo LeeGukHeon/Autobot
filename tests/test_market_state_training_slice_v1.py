@@ -33,6 +33,7 @@ def test_build_market_state_training_slice_v1_joins_and_filters_label_available(
     assert row["market"] == "KRW-BTC"
     assert row["ticker_source_kind"] == "ws_raw"
     assert row["ticker_source_kind_code"] == 2
+    assert row["structural_tradeable_20m"] == 1
     assert row["tradeable_20m"] == 1
 
 
@@ -56,6 +57,47 @@ def test_build_market_state_training_slice_v1_reuses_existing_dates_by_default(t
     assert second.reused_dates == 1
     manifest = pl.read_parquet(tmp_path / "data" / "derived" / "market_state_training_slice_v1" / "_meta" / "manifest.parquet")
     assert manifest.height == 1
+
+
+def test_build_market_state_training_slice_v1_preserves_tradeable_independently_of_net_edge(tmp_path: Path) -> None:
+    _write_market_state_pair(
+        tmp_path,
+        "2026-04-12",
+        "KRW-BTC",
+        label_available=True,
+        tradeable_value=0,
+        net_edge_20m_bps=9.0,
+    )
+    _write_market_state_pair(
+        tmp_path,
+        "2026-04-12",
+        "KRW-ETH",
+        label_available=True,
+        tradeable_value=1,
+        net_edge_20m_bps=-4.0,
+    )
+
+    build_market_state_training_slice_v1(
+        MarketStateTrainingSliceBuildOptions(
+            start="2026-04-12",
+            end="2026-04-12",
+            markets=("KRW-BTC", "KRW-ETH"),
+            market_state_root=tmp_path / "data" / "derived" / "market_state_v1",
+            tradeable_label_root=tmp_path / "data" / "derived" / "tradeable_label_v1",
+            net_edge_label_root=tmp_path / "data" / "derived" / "net_edge_label_v1",
+            out_root=tmp_path / "data" / "derived" / "market_state_training_slice_v1",
+        )
+    )
+
+    frame = pl.read_parquet(next((tmp_path / "data" / "derived" / "market_state_training_slice_v1" / "date=2026-04-12").glob("*.parquet")))
+    rows = {str(row["market"]): row for row in frame.to_dicts()}
+
+    assert rows["KRW-BTC"]["structural_tradeable_20m"] == 1
+    assert rows["KRW-BTC"]["tradeable_20m"] == 0
+    assert rows["KRW-BTC"]["net_edge_20m_bps"] == 9.0
+    assert rows["KRW-ETH"]["structural_tradeable_20m"] == 1
+    assert rows["KRW-ETH"]["tradeable_20m"] == 1
+    assert rows["KRW-ETH"]["net_edge_20m_bps"] == -4.0
 
 
 def _write_market_state_pair(

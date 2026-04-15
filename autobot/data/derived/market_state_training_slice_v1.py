@@ -86,6 +86,10 @@ TRAINING_SLICE_SCHEMA: dict[str, pl.DataType] = {
     "book_available": pl.Boolean,
     "candle_context_available": pl.Boolean,
     "label_available_20m": pl.Boolean,
+    "spread_quality_pass_20m": pl.Boolean,
+    "liquidity_pass_20m": pl.Boolean,
+    "structure_pass_20m": pl.Boolean,
+    "structural_tradeable_20m": pl.Int8,
     "tradeable_20m": pl.Int8,
     "net_edge_10m_bps": pl.Float64,
     "net_edge_20m_bps": pl.Float64,
@@ -397,12 +401,29 @@ def _normalize_training_slice_frame(frame: pl.DataFrame) -> pl.DataFrame:
         "book_available",
         "candle_context_available",
         "label_available_20m",
+        "spread_quality_pass_20m",
+        "liquidity_pass_20m",
+        "structure_pass_20m",
     ]
     for column in numeric_fill_zero:
         result = result.with_columns(pl.col(column).cast(pl.Float64, strict=False).fill_null(0.0).fill_nan(0.0).alias(column))
     for column in bool_fill_false:
         result = result.with_columns(pl.col(column).cast(pl.Boolean, strict=False).fill_null(False).alias(column))
-    result = result.with_columns(pl.col("tradeable_20m").cast(pl.Int8, strict=False).fill_null(0).alias("tradeable_20m"))
+    result = result.with_columns(
+        [
+            pl.col("tradeable_20m").cast(pl.Int8, strict=False).fill_null(0).alias("tradeable_20m"),
+            (
+                pl.when(
+                    pl.col("label_available_20m")
+                    & pl.col("spread_quality_pass_20m")
+                    & pl.col("liquidity_pass_20m")
+                    & pl.col("structure_pass_20m")
+                )
+                .then(1)
+                .otherwise(0)
+            ).cast(pl.Int8).alias("structural_tradeable_20m"),
+        ]
+    )
     result = result.with_columns(
         [
             (pl.col("acc_trade_price_24h").clip(lower_bound=0.0) + 1.0).log().alias("acc_trade_price_24h_log1p"),
@@ -541,6 +562,7 @@ def _write_slice_contracts(out_root: Path, selected_markets: tuple[str, ...]) ->
     label_spec = {
         "policy": "market_state_training_slice_v1_label_spec",
         "primary_class_label": "tradeable_20m",
+        "stage_a_class_label": "structural_tradeable_20m",
         "primary_regression_label": "net_edge_20m_bps",
         "auxiliary_labels": ["net_edge_10m_bps", "net_edge_40m_bps"],
     }

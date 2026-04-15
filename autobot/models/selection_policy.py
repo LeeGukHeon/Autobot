@@ -91,6 +91,23 @@ def normalize_selection_policy(
 ) -> dict[str, Any]:
     payload = dict(policy or {})
     mode = str(payload.get("mode", "")).strip().lower()
+    if mode == "raw_threshold":
+        payload["version"] = int(payload.get("version") or DEFAULT_SELECTION_POLICY_VERSION)
+        payload["mode"] = "raw_threshold"
+        payload["threshold_key"] = str(payload.get("threshold_key", "")).strip() or (
+            str(fallback_threshold_key).strip() or _DEFAULT_THRESHOLD_KEY
+        )
+        payload["tradeable_prob_min"] = _safe_optional_float(payload.get("tradeable_prob_min"))
+        payload["expected_net_edge_bps_min"] = _safe_optional_float(payload.get("expected_net_edge_bps_min"))
+        payload["recommended_top_pct"] = _clamp_fraction(payload.get("recommended_top_pct"), default=0.0)
+        payload["min_candidates_per_ts"] = max(_coerce_int(payload.get("min_candidates_per_ts"), default=1), 1)
+        payload["constraint_reasons"] = list(payload.get("constraint_reasons") or [])
+        payload["score_source"] = str(payload.get("score_source", "score_mean")).strip() or "score_mean"
+        payload["selection_recommendation_source"] = str(
+            payload.get("selection_recommendation_source", "manual_threshold")
+        ).strip() or "manual_threshold"
+        payload["fallback_used"] = bool(payload.get("fallback_used", False))
+        return payload
     if mode == DEFAULT_SELECTION_POLICY_MODE:
         selected_fraction = _clamp_fraction(payload.get("selection_fraction"), default=0.05)
         min_candidates = max(_coerce_int(payload.get("min_candidates_per_ts"), default=1), 1)
