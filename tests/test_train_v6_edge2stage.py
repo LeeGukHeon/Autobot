@@ -121,6 +121,9 @@ def test_train_v6_edge2stage_predictor_returns_edge2stage_fields(tmp_path: Path)
     assert "final_tradeable_prob" in payload
     assert "final_expected_net_edge_bps" in payload
     assert "final_go_score" in payload
+    report = load_json(result.train_report_path)
+    assert "horizon_diagnostics" in report
+    assert set(report["horizon_diagnostics"].keys()) >= {"10m", "20m", "40m"}
 
 
 def test_train_v6_edge2stage_uses_usable_pairs_bootstrap_when_data_is_not_yet_adequate(tmp_path: Path) -> None:

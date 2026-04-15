@@ -164,6 +164,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
             how="inner",
         )
     frame = frame.filter(pl.col("operating_date_kst").is_in(list(effective_operating_dates)))
+    horizon_diagnostics = _build_horizon_diagnostics(frame)
     split = _resolve_operating_date_split(effective_operating_dates)
     train_dates = set(split["train_dates"])
     valid_dates = set(split["valid_dates"])
@@ -311,6 +312,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
             if usable_pairs.height > 0
             else []
         ),
+        "horizon_diagnostics": horizon_diagnostics,
         "autobot_version": autobot_version,
     }
     data_fingerprint = _build_data_fingerprint(
@@ -409,6 +411,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
                 "metrics": {"valid": valid_metrics, "test": test_metrics},
                 "leaderboard_row": leaderboard_row,
                 "thresholds": thresholds,
+                "horizon_diagnostics": horizon_diagnostics,
             },
             ensure_ascii=False,
             indent=2,
@@ -610,6 +613,35 @@ def _build_edge2stage_metrics(*, y_tradeable: np.ndarray, y_edge_bps: np.ndarray
             "top10_mean_true_edge_bps": top10_mean_true_edge,
         },
     }
+
+
+def _build_horizon_diagnostics(frame: pl.DataFrame) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    for minutes in (10, 20, 40):
+        column = f"net_edge_{minutes}m_bps"
+        if column not in frame.columns:
+            continue
+        values = frame.get_column(column).cast(pl.Float64)
+        finite = values.drop_nulls()
+        if finite.len() <= 0:
+            diagnostics[f"{minutes}m"] = {
+                "rows": 0,
+                "mean_bps": None,
+                "median_bps": None,
+                "p90_bps": None,
+                "positive_ratio": None,
+                "above_3bps_ratio": None,
+            }
+            continue
+        diagnostics[f"{minutes}m"] = {
+            "rows": int(finite.len()),
+            "mean_bps": float(finite.mean()),
+            "median_bps": float(finite.median()),
+            "p90_bps": float(finite.quantile(0.90)),
+            "positive_ratio": float((finite > 0.0).cast(pl.Float64).mean()),
+            "above_3bps_ratio": float((finite > 3.0).cast(pl.Float64).mean()),
+        }
+    return diagnostics
 
 
 def _resolve_dates(start: str, end: str) -> tuple[str, ...]:

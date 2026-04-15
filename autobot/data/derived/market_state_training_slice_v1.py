@@ -30,16 +30,20 @@ TRAINING_SLICE_SCHEMA: dict[str, pl.DataType] = {
     "ticker_proxy_available": pl.Boolean,
     "ticker_source_kind": pl.Utf8,
     "ticker_source_kind_code": pl.Int8,
+    "acc_trade_price_24h_log1p": pl.Float64,
     "trade_events_5s": pl.Int64,
     "trade_events_15s": pl.Int64,
     "trade_events_60s": pl.Int64,
     "trade_notional_5s": pl.Float64,
     "trade_notional_60s": pl.Float64,
+    "trade_notional_5s_log1p": pl.Float64,
+    "trade_notional_60s_log1p": pl.Float64,
     "buy_volume_5s": pl.Float64,
     "sell_volume_5s": pl.Float64,
     "signed_volume_5s": pl.Float64,
     "trade_imbalance_5s": pl.Float64,
     "vwap_5s": pl.Float64,
+    "vwap_5s_vs_last_bps": pl.Float64,
     "large_trade_ratio_60s": pl.Float64,
     "best_bid": pl.Float64,
     "best_ask": pl.Float64,
@@ -48,11 +52,18 @@ TRAINING_SLICE_SCHEMA: dict[str, pl.DataType] = {
     "ask_depth_top1_krw": pl.Float64,
     "bid_depth_top5_krw": pl.Float64,
     "ask_depth_top5_krw": pl.Float64,
+    "bid_depth_top1_log1p": pl.Float64,
+    "ask_depth_top1_log1p": pl.Float64,
+    "bid_depth_top5_log1p": pl.Float64,
+    "ask_depth_top5_log1p": pl.Float64,
+    "depth_to_notional_bid_top5_log_ratio": pl.Float64,
+    "depth_to_notional_ask_top5_log_ratio": pl.Float64,
     "queue_imbalance_top1": pl.Float64,
     "queue_imbalance_top5": pl.Float64,
     "microprice": pl.Float64,
     "microprice_bias_bps": pl.Float64,
     "book_update_count_5s": pl.Int64,
+    "book_updates_per_trade": pl.Float64,
     "ret_1m": pl.Float64,
     "ret_5m": pl.Float64,
     "ret_15m": pl.Float64,
@@ -60,10 +71,13 @@ TRAINING_SLICE_SCHEMA: dict[str, pl.DataType] = {
     "rv_1m_5m_window": pl.Float64,
     "rv_1m_15m_window": pl.Float64,
     "atr_pct_14": pl.Float64,
+    "spread_over_atr": pl.Float64,
+    "notional_burst_5s_vs_60s": pl.Float64,
     "distance_from_15m_high_low": pl.Float64,
     "btc_rel_strength_5m": pl.Float64,
     "eth_rel_strength_5m": pl.Float64,
     "market_cap_rank_fixed30": pl.Int64,
+    "market_cap_rank_pct": pl.Float64,
     "universe_breadth_up_ratio": pl.Float64,
     "universe_notional_rank_pct": pl.Float64,
     "source_quality_score": pl.Float64,
@@ -95,35 +109,36 @@ _TICKER_SOURCE_KIND_CODE = {
 }
 
 _FEATURE_COLUMNS: tuple[str, ...] = (
-    "last_price",
-    "acc_trade_price_24h",
     "signed_change_rate",
     "ticker_age_ms",
     "ticker_proxy_available",
     "ticker_source_kind_code",
+    "acc_trade_price_24h_log1p",
     "trade_events_5s",
     "trade_events_15s",
     "trade_events_60s",
-    "trade_notional_5s",
-    "trade_notional_60s",
+    "trade_notional_5s_log1p",
+    "trade_notional_60s_log1p",
+    "notional_burst_5s_vs_60s",
     "buy_volume_5s",
     "sell_volume_5s",
     "signed_volume_5s",
     "trade_imbalance_5s",
-    "vwap_5s",
+    "vwap_5s_vs_last_bps",
     "large_trade_ratio_60s",
-    "best_bid",
-    "best_ask",
     "spread_bps",
-    "bid_depth_top1_krw",
-    "ask_depth_top1_krw",
-    "bid_depth_top5_krw",
-    "ask_depth_top5_krw",
+    "spread_over_atr",
+    "bid_depth_top1_log1p",
+    "ask_depth_top1_log1p",
+    "bid_depth_top5_log1p",
+    "ask_depth_top5_log1p",
+    "depth_to_notional_bid_top5_log_ratio",
+    "depth_to_notional_ask_top5_log_ratio",
     "queue_imbalance_top1",
     "queue_imbalance_top5",
-    "microprice",
     "microprice_bias_bps",
     "book_update_count_5s",
+    "book_updates_per_trade",
     "ret_1m",
     "ret_5m",
     "ret_15m",
@@ -134,7 +149,7 @@ _FEATURE_COLUMNS: tuple[str, ...] = (
     "distance_from_15m_high_low",
     "btc_rel_strength_5m",
     "eth_rel_strength_5m",
-    "market_cap_rank_fixed30",
+    "market_cap_rank_pct",
     "universe_breadth_up_ratio",
     "universe_notional_rank_pct",
     "source_quality_score",
@@ -388,6 +403,46 @@ def _normalize_training_slice_frame(frame: pl.DataFrame) -> pl.DataFrame:
     for column in bool_fill_false:
         result = result.with_columns(pl.col(column).cast(pl.Boolean, strict=False).fill_null(False).alias(column))
     result = result.with_columns(pl.col("tradeable_20m").cast(pl.Int8, strict=False).fill_null(0).alias("tradeable_20m"))
+    result = result.with_columns(
+        [
+            (pl.col("acc_trade_price_24h").clip(lower_bound=0.0) + 1.0).log().alias("acc_trade_price_24h_log1p"),
+            (pl.col("trade_notional_5s").clip(lower_bound=0.0) + 1.0).log().alias("trade_notional_5s_log1p"),
+            (pl.col("trade_notional_60s").clip(lower_bound=0.0) + 1.0).log().alias("trade_notional_60s_log1p"),
+            (
+                pl.when(pl.col("last_price") > 0.0)
+                .then(((pl.col("vwap_5s") / pl.col("last_price")) - 1.0) * 10_000.0)
+                .otherwise(0.0)
+            ).alias("vwap_5s_vs_last_bps"),
+            (pl.col("bid_depth_top1_krw").clip(lower_bound=0.0) + 1.0).log().alias("bid_depth_top1_log1p"),
+            (pl.col("ask_depth_top1_krw").clip(lower_bound=0.0) + 1.0).log().alias("ask_depth_top1_log1p"),
+            (pl.col("bid_depth_top5_krw").clip(lower_bound=0.0) + 1.0).log().alias("bid_depth_top5_log1p"),
+            (pl.col("ask_depth_top5_krw").clip(lower_bound=0.0) + 1.0).log().alias("ask_depth_top5_log1p"),
+            (
+                ((pl.col("bid_depth_top5_krw").clip(lower_bound=0.0) + 1.0).log())
+                - ((pl.col("trade_notional_60s").clip(lower_bound=0.0) + 1.0).log())
+            ).alias("depth_to_notional_bid_top5_log_ratio"),
+            (
+                ((pl.col("ask_depth_top5_krw").clip(lower_bound=0.0) + 1.0).log())
+                - ((pl.col("trade_notional_60s").clip(lower_bound=0.0) + 1.0).log())
+            ).alias("depth_to_notional_ask_top5_log_ratio"),
+            (
+                pl.col("book_update_count_5s")
+                / pl.max_horizontal(pl.col("trade_events_5s"), pl.lit(1.0))
+            ).alias("book_updates_per_trade"),
+            (
+                pl.col("spread_bps")
+                / pl.max_horizontal(pl.col("atr_pct_14") * pl.lit(10_000.0), pl.lit(1e-6))
+            ).alias("spread_over_atr"),
+            (
+                pl.col("trade_notional_5s")
+                / pl.max_horizontal(pl.col("trade_notional_60s") / pl.lit(12.0), pl.lit(1.0))
+            ).alias("notional_burst_5s_vs_60s"),
+            (
+                pl.col("market_cap_rank_fixed30")
+                / pl.lit(30.0)
+            ).alias("market_cap_rank_pct"),
+        ]
+    )
     return result.select([name for name in TRAINING_SLICE_SCHEMA.keys()])
 
 
