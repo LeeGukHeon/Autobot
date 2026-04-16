@@ -130,6 +130,7 @@ def test_train_v6_edge2stage_predictor_returns_edge2stage_fields(tmp_path: Path)
     assert "label_audit" in report
     assert "architecture_bakeoff" in report
     assert set(report["horizon_diagnostics"].keys()) >= {"10m", "20m", "40m"}
+    assert result.leaderboard_row["champion_backend"] == "xgboost_direct_ranker"
 
 
 def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path) -> None:
@@ -196,12 +197,14 @@ def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path
     assert train_config["label_audit"]["stage_a_positive_ratio"] == 1.0
     assert train_config["label_audit"]["stage_a_vs_edge_threshold_agreement"] < 1.0
     assert train_config["label_audit"]["stage_a_vs_tradeable_agreement"] < 1.0
-    assert predictor_contract["tradeable_prob_semantics"] == "structural_tradeable_20m"
+    assert predictor_contract["tradeable_prob_semantics"] == "derived_trade_intent_proxy_from_expected_net_edge_bps"
     assert predictor_contract["promotion_label"] == "tradeable_20m"
-    assert "structural_tradeable_20m" in predictor_contract["decision_rule"]
+    assert predictor_contract["default_candidate_model"] == "direct_ranker"
+    assert "expected_net_edge_bps" in predictor_contract["decision_rule"]
     assert runtime_recommendations["stage_a_label"] == "structural_tradeable_20m"
     assert runtime_recommendations["promotion_label"] == "tradeable_20m"
-    assert "structural_tradeable_20m" in runtime_recommendations["decision_rule"]
+    assert runtime_recommendations["default_candidate_model"] == "direct_ranker"
+    assert "expected_net_edge_bps" in runtime_recommendations["decision_rule"]
     assert train_config["small_account_realism"]["assumptions"]["target_notional_quote"] == 10_000.0
     assert train_config["small_account_realism"]["assumptions"]["max_positions"] == 1
     assert selection_policy["mode"] == "raw_threshold"
@@ -215,7 +218,7 @@ def test_train_v6_edge2stage_exposes_horizon_competition_surfaces(tmp_path: Path
     assert diagnostics["40m"]["above_3bps_ratio"] == 1.0
     assert 0.0 < diagnostics["20m"]["above_3bps_ratio"] < 1.0
     report = load_json(result.train_report_path)
-    assert report["architecture_bakeoff"]["direct_ranker_challenger"]["test"]["economic"]["selected_count"] >= 0
+    assert report["architecture_bakeoff"]["two_stage_challenger"]["test"]["economic"]["selected_count"] >= 0
     assert report["architecture_bakeoff"]["default_candidate"]["test"]["economic"]["small_account"]["selected_count"] >= 0
     assert economic_objective_profile["v6_small_account_realism"]["target_notional_quote"] == 10_000.0
 

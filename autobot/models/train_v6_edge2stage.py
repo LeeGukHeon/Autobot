@@ -128,6 +128,20 @@ class V6Edge2StageEstimator:
 
 
 @dataclass
+class V6DirectRankerEstimator:
+    edge_model: Any
+    feature_names: tuple[str, ...]
+    net_edge_threshold_bps: float
+
+    def predict_edge2stage_contract(self, x: np.ndarray) -> dict[str, np.ndarray]:
+        expected_edge_bps = np.asarray(self.edge_model.predict(np.asarray(x, dtype=np.float64)), dtype=np.float64)
+        return _build_direct_ranker_payload(
+            expected_edge_bps,
+            edge_threshold_bps=float(self.net_edge_threshold_bps),
+        )
+
+
+@dataclass
 class _ConstantBinaryModel:
     positive_prob: float
 
@@ -273,16 +287,6 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     )
     direct_ranker.fit(x[train_mask], y_edge[train_mask])
 
-    estimator = V6Edge2StageEstimator(
-        tradeable_model=stage_a,
-        edge_model=stage_b,
-        feature_names=feature_columns,
-        tradeable_prob_threshold=float(options.tradeable_prob_threshold),
-        net_edge_threshold_bps=float(options.net_edge_threshold_bps),
-    )
-
-    valid_payload = estimator.predict_edge2stage_contract(x[valid_mask])
-    test_payload = estimator.predict_edge2stage_contract(x[test_mask])
     valid_direct_ranker_payload = _build_direct_ranker_payload(
         direct_ranker.predict(x[valid_mask]),
         edge_threshold_bps=float(options.net_edge_threshold_bps),
@@ -291,44 +295,66 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         direct_ranker.predict(x[test_mask]),
         edge_threshold_bps=float(options.net_edge_threshold_bps),
     )
-    valid_metrics = _build_edge2stage_metrics(
-        y_stage_a=y_stage_a[valid_mask],
+    estimator = V6DirectRankerEstimator(
+        edge_model=direct_ranker,
+        feature_names=feature_columns,
+        net_edge_threshold_bps=float(options.net_edge_threshold_bps),
+    )
+
+    valid_payload = estimator.predict_edge2stage_contract(x[valid_mask])
+    test_payload = estimator.predict_edge2stage_contract(x[test_mask])
+    valid_metrics = _build_direct_ranker_metrics(
         y_tradeable=y_tradeable[valid_mask],
         y_edge_bps=y_edge[valid_mask],
         operating_date_values=operating_date_values[valid_mask],
         bucket_start_ts_ms=bucket_start_values[valid_mask],
         prices=price_values[valid_mask],
         payload=valid_payload,
-        tradeable_prob_threshold=float(options.tradeable_prob_threshold),
-        edge_threshold_bps=float(options.net_edge_threshold_bps),
         small_account_options=options,
     )
-    test_metrics = _build_edge2stage_metrics(
-        y_stage_a=y_stage_a[test_mask],
+    test_metrics = _build_direct_ranker_metrics(
         y_tradeable=y_tradeable[test_mask],
         y_edge_bps=y_edge[test_mask],
         operating_date_values=operating_date_values[test_mask],
         bucket_start_ts_ms=bucket_start_values[test_mask],
         prices=price_values[test_mask],
         payload=test_payload,
-        tradeable_prob_threshold=float(options.tradeable_prob_threshold),
-        edge_threshold_bps=float(options.net_edge_threshold_bps),
         small_account_options=options,
     )
-    valid_challenger_metrics = _build_direct_ranker_metrics(
+    valid_challenger_metrics = _build_edge2stage_metrics(
+        y_stage_a=y_stage_a[valid_mask],
+        y_tradeable=y_tradeable[valid_mask],
         y_edge_bps=y_edge[valid_mask],
         operating_date_values=operating_date_values[valid_mask],
         bucket_start_ts_ms=bucket_start_values[valid_mask],
         prices=price_values[valid_mask],
-        payload=valid_direct_ranker_payload,
+        payload=V6Edge2StageEstimator(
+            tradeable_model=stage_a,
+            edge_model=stage_b,
+            feature_names=feature_columns,
+            tradeable_prob_threshold=float(options.tradeable_prob_threshold),
+            net_edge_threshold_bps=float(options.net_edge_threshold_bps),
+        ).predict_edge2stage_contract(x[valid_mask]),
+        tradeable_prob_threshold=float(options.tradeable_prob_threshold),
+        edge_threshold_bps=float(options.net_edge_threshold_bps),
         small_account_options=options,
     )
-    test_challenger_metrics = _build_direct_ranker_metrics(
+    test_challenger_metrics = _build_edge2stage_metrics(
+        y_stage_a=y_stage_a[test_mask],
+        y_tradeable=y_tradeable[test_mask],
         y_edge_bps=y_edge[test_mask],
         operating_date_values=operating_date_values[test_mask],
         bucket_start_ts_ms=bucket_start_values[test_mask],
         prices=price_values[test_mask],
-        payload=test_direct_ranker_payload,
+        payload=V6Edge2StageEstimator(
+            tradeable_model=stage_a,
+            edge_model=stage_b,
+            feature_names=feature_columns,
+            tradeable_prob_threshold=float(options.tradeable_prob_threshold),
+            net_edge_threshold_bps=float(options.net_edge_threshold_bps),
+        ).predict_edge2stage_contract(x[test_mask]),
+        tradeable_prob_threshold=float(options.tradeable_prob_threshold),
+        edge_threshold_bps=float(options.net_edge_threshold_bps),
         small_account_options=options,
     )
     valid_small_account_realism = dict(((valid_metrics.get("economic") or {}).get("small_account")) or {})
@@ -346,15 +372,15 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         "run_id": run_id,
         "created_at_utc": _utc_now(),
         "model_family": options.model_family,
-        "champion": "edge2stage_xgboost",
-        "champion_backend": "xgboost_two_stage",
-        "test_pr_auc": float((test_metrics.get("stage_a") or {}).get("pr_auc") or 0.0),
-        "test_roc_auc": float((test_metrics.get("stage_a") or {}).get("roc_auc") or 0.0),
-        "test_edge_mae_bps": float((test_metrics.get("stage_b") or {}).get("mae_bps") or 0.0),
-        "test_edge_rmse_bps": float((test_metrics.get("stage_b") or {}).get("rmse_bps") or 0.0),
-        "test_go_top10_mean_true_edge_bps": float((test_metrics.get("joint") or {}).get("top10_mean_true_edge_bps") or 0.0),
-        "test_tradeable_pass_ratio": float((test_metrics.get("joint") or {}).get("tradeable_pass_ratio") or 0.0),
-        "test_no_trade_ratio": float((test_metrics.get("joint") or {}).get("no_trade_ratio") or 0.0),
+        "champion": "direct_ranker_xgboost",
+        "champion_backend": "xgboost_direct_ranker",
+        "test_pr_auc": float((test_metrics.get("classification") or {}).get("pr_auc") or 0.0),
+        "test_roc_auc": float((test_metrics.get("classification") or {}).get("roc_auc") or 0.0),
+        "test_edge_mae_bps": float((test_metrics.get("regression") or {}).get("mae_bps") or 0.0),
+        "test_edge_rmse_bps": float((test_metrics.get("regression") or {}).get("rmse_bps") or 0.0),
+        "test_go_top10_mean_true_edge_bps": float((test_metrics.get("economic") or {}).get("top10_mean_true_edge_bps") or 0.0),
+        "test_tradeable_pass_ratio": float((test_metrics.get("economic") or {}).get("selected_ratio") or 0.0),
+        "test_no_trade_ratio": float((test_metrics.get("economic") or {}).get("no_trade_ratio") or 0.0),
         "test_selected_mean_true_edge_bps": float((test_metrics.get("economic") or {}).get("selected_mean_true_edge_bps") or 0.0),
         "test_false_positive_churn_ratio": float((test_metrics.get("economic") or {}).get("false_positive_churn_ratio") or 0.0),
         "test_small_account_admissible_ratio": float(test_small_account_realism.get("selected_viability_rate") or 0.0),
@@ -422,8 +448,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         rows_total=int(frame.height),
         selected_markets=list(selected_markets),
     )
-    decision_rule = _build_edge2stage_decision_rule(
-        stage_a_label=stage_a_label,
+    decision_rule = _build_direct_ranker_decision_rule(
         tradeable_prob_threshold=float(options.tradeable_prob_threshold),
         edge_threshold_bps=float(options.net_edge_threshold_bps),
     )
@@ -431,7 +456,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
         "version": 1,
         "policy": "v6_edge2stage_predictor_contract_v1",
         "tradeable_prob_field": "final_tradeable_prob",
-        "tradeable_prob_semantics": stage_a_label,
+        "tradeable_prob_semantics": "derived_trade_intent_proxy_from_expected_net_edge_bps",
         "expected_net_edge_bps_field": "final_expected_net_edge_bps",
         "go_score_field": "final_go_score",
         "promotion_label": "tradeable_20m",
@@ -441,6 +466,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
             "tick_size_policy": "upbit_price_ladder_proxy",
             "predicted_edge_semantics": "small-account report applies configured fee/tick/replace and min-order assumptions to final_expected_net_edge_bps for conservative execution viability scoring",
         },
+        "default_candidate_model": "direct_ranker",
         "feature_columns": list(feature_columns),
     }
     selection_policy = normalize_selection_policy(
@@ -476,6 +502,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
             "tradeable_prob_threshold": float(options.tradeable_prob_threshold),
             "net_edge_bps_threshold": float(options.net_edge_threshold_bps),
             "decision_rule": decision_rule,
+            "default_candidate_model": "direct_ranker",
             "small_account_realism": {
                 **_build_small_account_assumptions(options),
                 "test_summary": test_small_account_realism,
@@ -487,7 +514,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
     model_card = render_model_card(
         run_id=run_id,
         model_family=options.model_family,
-        champion="edge2stage_xgboost",
+        champion="direct_ranker_xgboost",
         metrics={"valid_metrics": valid_metrics, "champion_metrics": test_metrics},
         thresholds=thresholds,
         data_fingerprint=data_fingerprint,
@@ -497,7 +524,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
             registry_root=options.registry_root,
             model_family=options.model_family,
             run_id=run_id,
-            model_bundle={"model_type": "v6_edge2stage", "estimator": estimator},
+            model_bundle={"model_type": "v6_direct_ranker", "estimator": estimator},
             metrics={"valid_metrics": valid_metrics, "champion_metrics": test_metrics, "joint_metrics": test_metrics.get("joint", {})},
             thresholds=thresholds,
             feature_spec=feature_spec,
@@ -529,7 +556,7 @@ def train_and_register_v6_edge2stage(options: TrainV6Edge2StageOptions) -> Train
                 "economic_objective_profile": economic_objective_profile,
                 "architecture_bakeoff": {
                     "default_candidate": {"valid": valid_metrics, "test": test_metrics},
-                    "direct_ranker_challenger": {"valid": valid_challenger_metrics, "test": test_challenger_metrics},
+                    "two_stage_challenger": {"valid": valid_challenger_metrics, "test": test_challenger_metrics},
                 },
                 "small_account_realism": {
                     "valid": valid_small_account_realism,
@@ -785,6 +812,7 @@ def _build_direct_ranker_payload(pred_edge_bps: np.ndarray, *, edge_threshold_bp
 
 def _build_direct_ranker_metrics(
     *,
+    y_tradeable: np.ndarray,
     y_edge_bps: np.ndarray,
     operating_date_values: np.ndarray,
     bucket_start_ts_ms: np.ndarray,
@@ -792,13 +820,16 @@ def _build_direct_ranker_metrics(
     payload: dict[str, np.ndarray],
     small_account_options: TrainV6Edge2StageOptions,
 ) -> dict[str, Any]:
+    y_trade = np.asarray(y_tradeable, dtype=np.int8)
     y_edge = np.asarray(y_edge_bps, dtype=np.float64)
     pred_edge = np.asarray(payload["final_expected_net_edge_bps"], dtype=np.float64)
+    tradeable_prob = np.asarray(payload["final_tradeable_prob"], dtype=np.float64)
     trade_mask = np.asarray(payload["final_trade_flag"], dtype=np.int8) == 1
     score = np.asarray(payload["final_go_score"], dtype=np.float64)
     mae = float(np.mean(np.abs(pred_edge - y_edge)))
     rmse = float(np.sqrt(np.mean(np.square(pred_edge - y_edge))))
     return {
+        "classification": classification_metrics(y_trade, tradeable_prob),
         "regression": {
             "mae_bps": mae,
             "rmse_bps": rmse,
@@ -1097,6 +1128,18 @@ def _build_edge2stage_decision_rule(
 ) -> str:
     return (
         f"trade if p({stage_a_label})>={float(tradeable_prob_threshold):.2f} "
+        f"and expected_net_edge_bps>{float(edge_threshold_bps):.1f}; "
+        "promotion_label=tradeable_20m"
+    )
+
+
+def _build_direct_ranker_decision_rule(
+    *,
+    tradeable_prob_threshold: float,
+    edge_threshold_bps: float,
+) -> str:
+    return (
+        f"trade if derived_trade_intent_proxy>={float(tradeable_prob_threshold):.2f} "
         f"and expected_net_edge_bps>{float(edge_threshold_bps):.1f}; "
         "promotion_label=tradeable_20m"
     )
